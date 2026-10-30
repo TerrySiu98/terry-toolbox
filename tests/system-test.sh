@@ -563,7 +563,8 @@ if printf 'YES\nYES\n' | toolbox_system 2 >/dev/null 2>&1; then exit 1; fi
 : > "$log"
 TEST_OS=alpine; export TEST_OS
 printf 'YES\nYES\n' | toolbox_system MAIN_DEPS >/dev/null
-[ "$(<"$log")" = 'apk add --no-cache curl socat wget sudo nano iptables' ]
+# This fixture reports all Alpine dependency commands present (including ss).
+[ ! -s "$log" ]
 unset TEST_OS
 : > "$log"
 if printf 'YES\nYES\n' | MOCK_FAIL=1 toolbox_system MAIN_DEPS >/dev/null 2>&1; then exit 1; fi

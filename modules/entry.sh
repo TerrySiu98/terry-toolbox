@@ -122,7 +122,7 @@ _tb_banner() {
 _tb_main_screen() {
   _tb_banner
   _tb_head '请选择要执行的操作'
-  _tb_pair '🌐 1. 网络服务' '💽 4. 重装系统'
+  _tb_pair '🌐 1. 网络服务' '💽 4. 重装系统（未实现）'
   _tb_pair '⚡ 2. 安装 BBR' '🛠️  5. 常用工具'
   _tb_pair '📦 3. 安装基础依赖' '🔄 99. 重新启动'
   _tb_pair '🩺  DIAG 只读体检' '🚪 0. 退出脚本'
@@ -196,8 +196,8 @@ _tb_bootstrap_exec() { "$@"; }
 _tb_bootstrap() {
   # Interactive startup only. --help, --list and piped runs never install anything.
   [[ -t 0 && -t 1 ]] || return 0
-  local command answer missing=() manager=''
-  for command in curl wget socat sudo nano openssl tar; do
+  local command answer missing=() packages=() package manager=''
+  for command in curl wget socat sudo nano openssl tar ss; do
     _tb_bootstrap_has "$command" || missing+=("$command")
   done
   if (( ${#missing[@]} == 0 )); then
@@ -219,17 +219,24 @@ _tb_bootstrap() {
     printf ' 未找到支持的包管理器，跳过安装；各功能会自行检查依赖。\n'
     return 0
   fi
+  for command in "${missing[@]}"; do
+    package=$command
+    if [[ $command == ss ]]; then
+      case $manager in apk) package=iproute2-ss;; apt-get) package=iproute2;; dnf|yum) package=iproute;; esac
+    fi
+    packages+=("$package")
+  done
   printf ' 将用 %s 只补缺失项（不升级系统）。按 Y 安装，其他键跳过：' "$manager"
   IFS= read -r answer || return 0
   [[ ${answer^^} == Y ]] || { printf ' %s已跳过%s，稍后可从 [3] 安装。\n' "$TB_DIM" "$TB_RESET"; return 0; }
   (( EUID == 0 )) || { printf ' %s安装依赖需要 root%s；未执行。\n' "$TB_RED" "$TB_RESET"; return 1; }
   case "$manager" in
-    apt-get) _tb_bootstrap_exec apt-get update && _tb_bootstrap_exec apt-get install -y --no-upgrade -- "${missing[@]}";;
-    apk) _tb_bootstrap_exec apk add --no-cache -- "${missing[@]}";;
-    dnf|yum) _tb_bootstrap_exec "$manager" install -y -- "${missing[@]}";;
+    apt-get) _tb_bootstrap_exec apt-get update && _tb_bootstrap_exec apt-get install -y --no-upgrade -- "${packages[@]}";;
+    apk) _tb_bootstrap_exec apk add --no-cache -- "${packages[@]}";;
+    dnf|yum) _tb_bootstrap_exec "$manager" install -y -- "${packages[@]}";;
   esac || { printf ' %s装依赖失败%s，可检查软件源后从 [3] 重试。\n' "$TB_RED" "$TB_RESET" >&2; return 1; }
   missing=()
-  for command in curl wget socat sudo nano openssl tar; do _tb_bootstrap_has "$command" || missing+=("$command"); done
+  for command in curl wget socat sudo nano openssl tar ss; do _tb_bootstrap_has "$command" || missing+=("$command"); done
   (( ${#missing[@]} == 0 )) || { printf ' %s仍缺少%s：%s\n' "$TB_RED" "$TB_RESET" "${missing[*]}" >&2; return 1; }
   printf ' %s✓%s 依赖检查通过。\n' "$TB_GREEN" "$TB_RESET"
 }

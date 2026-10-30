@@ -13,9 +13,9 @@ _toolbox_system_confirm() {
     local answer
     printf '%s\n' "$1" >&2
     printf '输入 YES 确认: ' >&2
-    IFS= read -r answer && [[ $answer == YES ]] || { _toolbox_system_error '已取消。'; return 1; }
+    IFS= read -r answer && [[ ${answer^^} == YES ]] || { _toolbox_system_error '已取消。'; return 1; }
     printf '再次输入 YES 确认: ' >&2
-    IFS= read -r answer && [[ $answer == YES ]] || { _toolbox_system_error '已取消。'; return 1; }
+    IFS= read -r answer && [[ ${answer^^} == YES ]] || { _toolbox_system_error '已取消。'; return 1; }
 }
 _toolbox_system_os() {
     # Parse OS metadata as data rather than executing shell from /etc/os-release.
@@ -133,8 +133,21 @@ _toolbox_system_deps() {
         apt-get update || return
         apt-get install -y --no-upgrade "${missing_packages[@]}"
     else
-        _toolbox_system_confirm '将通过 Alpine 安装 curl socat wget sudo nano iptables；依赖可能改变。' || return
-        apk add --no-cache curl socat wget sudo nano iptables
+        local c
+        local -a required_commands=(curl socat wget sudo nano iptables ss)
+        # BusyBox wget is sufficient when present. ss is a split Alpine package:
+        # https://pkgs.alpinelinux.org/package/v3.24/main/x86_64/iproute2-ss
+        for c in "${required_commands[@]}"; do
+            _toolbox_system_has "$c" && continue
+            case $c in ss) missing_packages+=(iproute2-ss);; *) missing_packages+=("$c");; esac
+        done
+        if (( ${#missing_packages[@]} == 0 )); then printf '基础依赖命令已齐全；未升级或安装。\n'; return 0; fi
+        _toolbox_system_need_tools apk || return
+        _toolbox_system_confirm "将通过 apk add --no-cache 仅补缺失命令对应包：${missing_packages[*]}；不执行 upgrade，依赖仍可能改变。" || return
+        apk add --no-cache "${missing_packages[@]}" || return
+        _toolbox_system_need_tools "${required_commands[@]}" || {
+            _toolbox_system_error '补装后命令回读失败；保留已安装包，请检查 apk 输出与 PATH。'; return 1; }
+        printf '基础依赖命令回读通过；未执行全量升级。\n'
     fi
 }
 _toolbox_system_bbr() {
@@ -169,8 +182,10 @@ _toolbox_system_docker_release() {
 }
 _toolbox_system_docker_verify() {
     local version
+    local -a endpoint=()
+    [[ $# == 0 ]] || endpoint=(--host "$1")
     _toolbox_system_has docker || { _toolbox_system_error '安装后 docker 命令仍不可用。'; return 1; }
-    version=$(docker version --format '{{.Server.Version}}' 2>/dev/null) || {
+    version=$(docker "${endpoint[@]}" version --format '{{.Server.Version}}' 2>/dev/null) || {
         _toolbox_system_error '无法回读 Docker Engine 版本（服务可能未启动）；不宣称安装成功。'; return 1; }
     if [[ ! $version =~ ^([0-9]{1,3})\.([0-9]+)\.([0-9]+)(\+[A-Za-z0-9._+-]+)?$ ]] \
         || (( 10#${BASH_REMATCH[1]} < 28 )); then
@@ -209,6 +224,123 @@ _toolbox_system_docker_global_candidates_absent() {
             _toolbox_system_error "全局 APT 已有 $pkg 候选或状态未知；不混用现有包源，请人工处理。"; return 1; }
     done
 }
+# Alpine only supports a NEW local daemon in this installer. Existing/partial
+# installs require manual recovery; no ownership marker is fabricated on retry.
+_toolbox_system_docker_alpine_preflight() {
+    local c pkg status path
+    _toolbox_system_need_tools apk rc-service rc-status || return 1
+    [[ -r ${TOOLBOX_DOCKER_OPENRC_RUN:-/run/openrc}/softlevel ]] \
+        && rc-status >/dev/null 2>&1 || {
+        _toolbox_system_error '需要已运行的 OpenRC（/run/openrc/softlevel 与 rc-status）；不在 chroot/无 init 环境安装或手工伪造状态。'; return 1; }
+    if [[ -n ${DOCKER_HOST:-}${DOCKER_CONTEXT:-}${DOCKER_TLS_VERIFY:-}${DOCKER_CERT_PATH:-}${DOCKER_CONFIG:-}${DOCKER_OPTS:-}${DOCKERD_BINARY:-} ]]; then
+        _toolbox_system_error '检测到 Docker 端点/CLI/daemon 环境覆盖；未安装或启动，请在无覆盖环境中人工核对。'; return 1
+    fi
+    for c in docker dockerd containerd runc; do
+        if _toolbox_system_has "$c"; then
+            _toolbox_system_error "已有 $c；不接管现有运行时，请人工检查服务和数据。"; return 1
+        fi
+    done
+    for pkg in docker docker-engine docker-cli docker-openrc docker-cli-compose docker-cli-buildx \
+               docker-rootless-extras docker-systemd podman-docker containerd containerd-openrc runc; do
+        status=0; apk info --exists "$pkg" >/dev/null 2>&1 || status=$?
+        case $status in
+            1) ;;
+            0) _toolbox_system_error "已有包 $pkg（含可能的半安装）；未升级/启动，请人工恢复。"; return 1;;
+            *) _toolbox_system_error "无法确认 Alpine 包状态：$pkg；未改动。"; return 1;;
+        esac
+    done
+    for path in "${TOOLBOX_DOCKER_DATA_ROOT:-/var/lib}/docker" "${TOOLBOX_DOCKER_DATA_ROOT:-/var/lib}/containerd" \
+        "${TOOLBOX_DOCKER_ETC_DIR:-/etc/docker}" "${TOOLBOX_DOCKER_CONTAINERD_ETC_DIR:-/etc/containerd}" \
+        "${TOOLBOX_DOCKER_OPENRC_INIT_DIR:-/etc/init.d}/docker" "${TOOLBOX_DOCKER_OPENRC_INIT_DIR:-/etc/init.d}/containerd" \
+        "${TOOLBOX_DOCKER_OPENRC_CONF_DIR:-/etc/conf.d}/docker" "${TOOLBOX_DOCKER_OPENRC_CONF_DIR:-/etc/conf.d}/containerd" \
+        "${TOOLBOX_DOCKER_RUN_DIR:-/run}/docker.sock" "${TOOLBOX_DOCKER_RUN_DIR:-/run}/docker.pid" \
+        "${TOOLBOX_DOCKER_RUN_DIR:-/run}/docker" "${TOOLBOX_DOCKER_RUN_DIR:-/run}/containerd" \
+        "${TOOLBOX_DOCKER_OPENRC_RUN:-/run/openrc}/started/docker" "${TOOLBOX_DOCKER_OPENRC_RUN:-/run/openrc}/started/containerd" \
+        "${TOOLBOX_DOCKER_OPENRC_RUNLEVEL_DIR:-/etc/runlevels}/"*/docker \
+        "${TOOLBOX_DOCKER_OPENRC_RUNLEVEL_DIR:-/etc/runlevels}/"*/containerd; do
+        [[ ! -e $path && ! -L $path ]] || {
+            _toolbox_system_error "已有 Docker/containerd 配置、服务或数据路径：$path；不覆盖/接管。"; return 1; }
+    done
+}
+_toolbox_system_docker_alpine_recovery() {
+    _toolbox_system_error "$1；保留本次已安装包、服务文件和可能产生的数据，不自动卸载、停服或删除。"
+    [[ -z ${install_log:-} ]] || _toolbox_system_error "安装/启动记录：$install_log（600，保留）；未声称还原安装前状态。"
+    _toolbox_system_error '人工排查（只读）：apk info --exists docker-engine docker-openrc；rc-service docker status；日志 /var/log/docker.log。'
+    _toolbox_system_error '核对 /etc/init.d/docker、/etc/conf.d/docker、/etc/docker、/var/lib/docker 与 /var/lib/containerd；确认归属与失败原因后才人工启动，不要再次强行安装 B1。'
+}
+_toolbox_system_docker_alpine_owned_file() {
+    local path=$1 owner
+    [[ -f $path && ! -L $path ]] || return 1
+    owner=$(apk info --who-owns "$path" 2>/dev/null) || return 1
+    [[ $owner == "$path is owned by docker-openrc-"* ]]
+}
+_toolbox_system_docker_alpine_logged() {
+    local rc=0
+    printf '\n== %s ==\n' "$*" >> "$install_log" || return 1
+    "$@" >> "$install_log" 2>&1 || rc=$?
+    return "$rc"
+}
+_toolbox_system_docker_alpine() {
+    local service conf stamp conf_stamp i ready=0 install_log='' state
+    _toolbox_system_docker_alpine_preflight || return 1
+    printf 'Alpine Docker：使用本机已配置的签名校验仓库（需启用同版本 community；不改包源、不执行 upgrade）。\n'
+    printf '  包：docker docker-cli-compose docker-openrc；依赖可能改变。\n'
+    printf '  OpenRC：只启动本次新安装的 docker；依赖 sysfs/cgroups/net 也可能启动，不设置开机自启。\n'
+    printf '  文件/数据：包将创建 /etc/init.d/docker、/etc/conf.d/docker、/etc/containerd；daemon 可能写 /etc/docker、/var/lib/docker、/var/lib/containerd、/run/docker.sock 与 /var/log/docker.log。\n'
+    printf '  安装日志：%s/docker-alpine.log.*（新建随机文件，600，失败保留）。\n' "$(_toolbox_system_state)"
+    printf '  影响：root daemon、cgroups、网络桥与防火墙规则；不手写 daemon 配置，不接管已有服务，不改 sysctl/引导配置。\n'
+    _toolbox_system_confirm '确认安装并通过 OpenRC 启动新的本机 Docker？回读稳定 Engine ≥28 才算成功；失败保留现场供人工恢复。' || return
+    # Repeat absence checks after confirmation; never overwrite a new conflict.
+    _toolbox_system_docker_alpine_preflight || return 1
+    state=$(_toolbox_system_state)
+    _toolbox_system_need_tools mkdir mktemp chmod stat sha256sum || return 1
+    [[ ! -L $state ]] && mkdir -p -- "$state" || { _toolbox_system_error '无法安全创建安装日志目录；未安装。'; return 1; }
+    install_log=$(mktemp "$state/docker-alpine.log.XXXXXXXX") || return 1
+    chmod 0600 -- "$install_log" || { _toolbox_system_error "安装日志权限设置失败，未安装：$install_log"; return 1; }
+    printf '安装/启动记录：%s（600，保留；包与服务命令输出写入此文件）。\n' "$install_log"
+    _toolbox_system_docker_alpine_logged apk update || {
+        _toolbox_system_docker_alpine_recovery 'Alpine 仓库索引刷新失败，未安装 Docker'; return 1; }
+    _toolbox_system_docker_alpine_preflight || return 1
+    _toolbox_system_docker_alpine_logged apk add --no-cache docker docker-cli-compose docker-openrc || {
+        _toolbox_system_docker_alpine_recovery 'Alpine Docker 包安装失败，可能部分安装'; return 1; }
+    service="${TOOLBOX_DOCKER_OPENRC_INIT_DIR:-/etc/init.d}/docker"
+    conf="${TOOLBOX_DOCKER_OPENRC_CONF_DIR:-/etc/conf.d}/docker"
+    if ! _toolbox_system_need_tools docker dockerd \
+        || ! apk info --exists docker-engine docker-cli docker-openrc docker-cli-compose >/dev/null 2>&1 \
+        || ! _toolbox_system_docker_alpine_owned_file "$service" \
+        || ! _toolbox_system_docker_alpine_owned_file "$conf"; then
+        _toolbox_system_docker_alpine_recovery '安装后包/命令/OpenRC 服务文件归属未通过检查，未启动'; return 1
+    fi
+    stamp=$(_toolbox_system_file_stamp "$service") && conf_stamp=$(_toolbox_system_file_stamp "$conf") || {
+        _toolbox_system_docker_alpine_recovery '无法记录新服务文件身份，未启动'; return 1; }
+    local path
+    for path in "${TOOLBOX_DOCKER_ETC_DIR:-/etc/docker}" \
+        "${TOOLBOX_DOCKER_DATA_ROOT:-/var/lib}/docker" "${TOOLBOX_DOCKER_DATA_ROOT:-/var/lib}/containerd" \
+        "${TOOLBOX_DOCKER_RUN_DIR:-/run}/docker.sock" "${TOOLBOX_DOCKER_RUN_DIR:-/run}/docker.pid" \
+        "${TOOLBOX_DOCKER_RUN_DIR:-/run}/docker" "${TOOLBOX_DOCKER_RUN_DIR:-/run}/containerd" \
+        "${TOOLBOX_DOCKER_OPENRC_RUN:-/run/openrc}/started/docker" "${TOOLBOX_DOCKER_OPENRC_RUN:-/run/openrc}/started/containerd"; do
+        [[ ! -e $path && ! -L $path ]] || {
+            _toolbox_system_docker_alpine_recovery "安装后出现配置/数据/运行时冲突：$path，未启动"; return 1; }
+    done
+    [[ $(_toolbox_system_file_stamp "$service") == "$stamp" \
+        && $(_toolbox_system_file_stamp "$conf") == "$conf_stamp" ]] || {
+        _toolbox_system_docker_alpine_recovery '启动前配置已变化，未启动'; return 1; }
+    _toolbox_system_docker_alpine_logged rc-service docker start || {
+        _toolbox_system_docker_alpine_recovery 'OpenRC docker start 失败（不代表 daemon 一定未运行）'; return 1; }
+    # OpenRC start returning zero is not Engine readiness. Poll only read-only
+    # status and the explicit local socket; never restart to hide a failed start.
+    for ((i=0; i<30; i++)); do
+        if _toolbox_system_docker_alpine_logged rc-service docker status \
+            && _toolbox_system_docker_alpine_logged docker --host unix:///var/run/docker.sock version --format '{{.Server.Version}}'; then
+            ready=1; break
+        fi
+        if (( i < 29 )); then sleep 1 || return 1; fi
+    done
+    if (( ready == 0 )) || ! _toolbox_system_docker_verify unix:///var/run/docker.sock; then
+        _toolbox_system_docker_alpine_recovery '未通过 OpenRC/本机稳定 Engine ≥28 验收'; return 1
+    fi
+    printf 'OpenRC docker 已启动并验收；不设置开机自启，未创建测试容器。若需自启，请核对后自行 rc-update add docker default。\n'
+}
 _toolbox_system_docker() {
     local os release distro codename arch pkg status aptroot key source tmp fingerprint gpgout
     local -a missing_packages=() repo_paths=() repo_owned=()
@@ -218,10 +350,7 @@ _toolbox_system_docker() {
     fi
     os=$(_toolbox_system_os) || return
     if [[ $os == alpine ]]; then
-        _toolbox_system_confirm '将通过 Alpine 官方仓库安装 Docker；可能启动服务或改变防火墙，安装后必须回读 Engine ≥28。' || return
-        apk update || return
-        apk add --no-cache docker docker-cli-compose || return
-        _toolbox_system_docker_verify
+        _toolbox_system_docker_alpine
         return
     fi
     _toolbox_system_need_tools apt-get apt-cache dpkg dpkg-query dpkg-deb || return
@@ -1291,7 +1420,7 @@ _toolbox_system_alpine_hop_apply() {
     local etc conf start end target port
     local -a spec=()
     _toolbox_system_alpine_require || return
-    _toolbox_system_need_tools iptables ss || { _toolbox_system_error '缺少 iptables 或 ss（iproute2）；Alpine 可 apk add iptables iproute2。'; return 1; }
+    _toolbox_system_need_tools iptables ss || { _toolbox_system_error '缺少 iptables 或 ss（iproute2-ss）；Alpine 可 apk add iptables iproute2-ss。'; return 1; }
     etc=$(_toolbox_system_etc); conf="$etc/$_TOOLBOX_HOP_CONF_NAME"
     if [[ -e $conf ]] && ! _toolbox_system_ours "$conf" "$_TOOLBOX_SYS_MARK_B19"; then
         _toolbox_system_error "$conf 已存在但不是本工具生成的，未覆盖。"

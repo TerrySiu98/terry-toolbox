@@ -66,6 +66,7 @@ done
 
 printf 'ID=alpine\nVERSION_ID="3.22"\n' > "$TOOLBOX_NET_OS_RELEASE"
 printf 'ID=debian\n' > "$work/os-debian"
+: > "$TOOLBOX_NET_OPENRC_RUN/softlevel"
 : > "$work/dns/systemd/resolve/stub-resolv.conf"
 ln -s "$work/dns/systemd/resolve/stub-resolv.conf" "$work/resolv.conf"
 
@@ -82,13 +83,13 @@ case $action in
     start)
         [[ -e $SD/start_fail ]] && exit 1
         : > "$SD/active_$name"
-        printf '%s\n' 4242 > "$TOOLBOX_NET_RUN/$name.pid"
+        printf '%s\n' 2147483000 > "$TOOLBOX_NET_RUN/$name.pid"
         port=$(cat "$SD/port" 2>/dev/null) || port=''
         if [[ -z $port ]]; then exit 0; fi
         if [[ -e $SD/foreign_owner ]]; then
             line='users:(("nginx",pid=999,fd=3))'
         else
-            line="users:((\"$name\",pid=4242,fd=3))"
+            line="users:((\"$name\",pid=2147483000,fd=3))"
         fi
         case $name in
             terry-toolbox-hy2) printf 'UNCONN 0 0 0.0.0.0:%s 0.0.0.0:* %s\n' "$port" "$line" > "$SD/ports.udp" ;;
@@ -126,7 +127,9 @@ cat > "$work/bin/curl" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$SD/curl.log"
 case " $* " in
-    *--socks5-hostname*) [[ -e $SD/data_fail ]] && exit 7; printf '200'; exit 0 ;;
+    *--socks5-hostname*)
+        [[ -e $SD/data_fail || -e $SD/negative_client ]] && exit 7
+        printf '200'; exit 0 ;;
 esac
 [[ -e $SD/download_fail ]] && exit 22
 out='' prev=''
@@ -223,8 +226,9 @@ case ${1:-} in
         [[ -e $SD/probe_fail ]] && { printf 'Failed to start: TLS handshake failure\n'; exit 1; }
         # 负向探测用固定错误 UUID；stub 只按配置里的 id 前缀判断。
         if grep -q '11111111-1111' "$cfg"; then
-            printf 'Failed to start: TLS handshake failure\n'
-            exit 1
+            : > "$SD/negative_client"
+        else
+            rm -f "$SD/negative_client"
         fi
         printf 'Warning: Xray started\n'
         exec /bin/sleep 300
@@ -243,6 +247,11 @@ TOOLBOX_A1_SHA256=$(sha256sum -- "$TOOLBOX_A1_BIN_SRC" | cut -d' ' -f1)
 TOOLBOX_A2_SHA256=$(sha256sum -- "$TOOLBOX_A2_ZIP_SRC" | cut -d' ' -f1)
 
 source "$ROOT/modules/network.sh"
+# OpenRC/ss unit fixtures never launch a real daemon. Their unreachable PID proves
+# only call wiring; real /proc/exe safety is exercised by network-alpine-feedback-test.
+net_alpine_pid_exe() {
+    [[ $1 == 2147483000 && ( $2 == "$(net_a1_bin)" || $2 == "$(net_a2_bin)" ) ]]
+}
 
 # ---------------------------------------------------------------- 断言工具
 reset() {
@@ -256,7 +265,7 @@ reset() {
     find "$work/run" -mindepth 1 -delete
     rm -f "$SD"/*.log "$SD"/active_* "$SD"/ports.* "$SD"/port "$SD"/status.txt \
         "$SD"/smoke_fail "$SD"/silent "$SD"/probe_fail "$SD"/accept_any "$SD"/download_fail \
-        "$SD"/data_fail "$SD"/start_fail "$SD"/rcupd_fail "$SD"/test_fail "$SD"/foreign_owner \
+        "$SD"/data_fail "$SD"/negative_client "$SD"/start_fail "$SD"/rcupd_fail "$SD"/test_fail "$SD"/foreign_owner \
         "$SD"/query_fail "$SD"/resolved_down "$SD"/restart_fail
     rm -f "$work/dns/dropin"/* "$work/dns/dropin"/*.pre-toolbox 2>/dev/null || true
     rm -f "$TOOLBOX_DNS_RESOLV_CONF"
@@ -477,8 +486,8 @@ cmp -s "$work/good.key" "$TOOLBOX_A1_ETC/key.pem" || fail 'A1 私钥副本内容
 grep -q 'hysteria2://' <<< "$out" || fail 'A1 未输出客户端链接'
 grep -q 'sni=a1.example.test&insecure=1' <<< "$out" || fail 'A1 自签证书的链接应带 insecure=1'
 grep -q '\[已验证\]' <<< "$out" || fail 'A1 未报告验证结果'
-[[ -s "$work/run/terry-toolbox-hy2-verify/good.yaml" ]] || fail 'A1 探测配置未生成'
-grep -q 'FATAL' "$work/run/terry-toolbox-hy2-verify/bad.log" 2>/dev/null \
+[[ -s $(find "$TOOLBOX_A1_ETC" -name good.yaml -print -quit) ]] || fail 'A1 探测配置未生成'
+grep -q 'FATAL' "$(find "$TOOLBOX_A1_ETC" -name bad.log -print -quit)" 2>/dev/null \
     || fail 'A1 未执行负向探测'
 # 本机信任库判定：系统信任库不认自签证书 → 明确说明并带 insecure。
 grep -q '证书链未被本机信任库验证通过' <<< "$out" || fail 'A1 未说明证书链不受信任'
@@ -533,8 +542,8 @@ if TOOLBOX_NET_CAFILE=$work/other.crt net_tls_trusted "$work/good.crt"; then fai
 printf '18443\n' > "$SD/port"
 out=$(printf 'YES\n' | TOOLBOX_NET_CAFILE=$work/good.crt toolbox_network A1 install "$work/good.crt" "$work/good.key" "$H" 18443 2>&1) \
     || { printf '%s\n' "$out" >&2; fail 'A1 独立 CA 探针安装失败'; }
-grep -qF "$work/good.crt" "$(net_a1_client)/good.yaml" || fail 'A1 探针没有配置独立 CA'
-grep -q 'insecure: true' "$(net_a1_client)/good.yaml" && fail 'A1 独立 CA 探针关闭校验'
+grep -qF "$work/good.crt" "$(find "$TOOLBOX_A1_ETC" -name good.yaml -print -quit)" || fail 'A1 探针没有配置独立 CA'
+grep -q 'insecure: true' "$(find "$TOOLBOX_A1_ETC" -name good.yaml -print -quit)" && fail 'A1 独立 CA 探针关闭校验'
 toolbox_network A1 uninstall <<< YES >/dev/null 2>&1 || fail 'A1 独立 CA 卸载失败'
 reset
 

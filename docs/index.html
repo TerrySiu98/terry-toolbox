@@ -160,7 +160,7 @@ _tb_banner() {
 _tb_main_screen() {
   _tb_banner
   _tb_head '请选择要执行的操作'
-  _tb_pair '🌐 1. 网络服务' '💽 4. 重装系统'
+  _tb_pair '🌐 1. 网络服务' '💽 4. 重装系统（未实现）'
   _tb_pair '⚡ 2. 安装 BBR' '🛠️  5. 常用工具'
   _tb_pair '📦 3. 安装基础依赖' '🔄 99. 重新启动'
   _tb_pair '🩺  DIAG 只读体检' '🚪 0. 退出脚本'
@@ -234,8 +234,8 @@ _tb_bootstrap_exec() { "$@"; }
 _tb_bootstrap() {
   # Interactive startup only. --help, --list and piped runs never install anything.
   [[ -t 0 && -t 1 ]] || return 0
-  local command answer missing=() manager=''
-  for command in curl wget socat sudo nano openssl tar; do
+  local command answer missing=() packages=() package manager=''
+  for command in curl wget socat sudo nano openssl tar ss; do
     _tb_bootstrap_has "$command" || missing+=("$command")
   done
   if (( ${#missing[@]} == 0 )); then
@@ -257,17 +257,24 @@ _tb_bootstrap() {
     printf ' 未找到支持的包管理器，跳过安装；各功能会自行检查依赖。\n'
     return 0
   fi
+  for command in "${missing[@]}"; do
+    package=$command
+    if [[ $command == ss ]]; then
+      case $manager in apk) package=iproute2-ss;; apt-get) package=iproute2;; dnf|yum) package=iproute;; esac
+    fi
+    packages+=("$package")
+  done
   printf ' 将用 %s 只补缺失项（不升级系统）。按 Y 安装，其他键跳过：' "$manager"
   IFS= read -r answer || return 0
   [[ ${answer^^} == Y ]] || { printf ' %s已跳过%s，稍后可从 [3] 安装。\n' "$TB_DIM" "$TB_RESET"; return 0; }
   (( EUID == 0 )) || { printf ' %s安装依赖需要 root%s；未执行。\n' "$TB_RED" "$TB_RESET"; return 1; }
   case "$manager" in
-    apt-get) _tb_bootstrap_exec apt-get update && _tb_bootstrap_exec apt-get install -y --no-upgrade -- "${missing[@]}";;
-    apk) _tb_bootstrap_exec apk add --no-cache -- "${missing[@]}";;
-    dnf|yum) _tb_bootstrap_exec "$manager" install -y -- "${missing[@]}";;
+    apt-get) _tb_bootstrap_exec apt-get update && _tb_bootstrap_exec apt-get install -y --no-upgrade -- "${packages[@]}";;
+    apk) _tb_bootstrap_exec apk add --no-cache -- "${packages[@]}";;
+    dnf|yum) _tb_bootstrap_exec "$manager" install -y -- "${packages[@]}";;
   esac || { printf ' %s装依赖失败%s，可检查软件源后从 [3] 重试。\n' "$TB_RED" "$TB_RESET" >&2; return 1; }
   missing=()
-  for command in curl wget socat sudo nano openssl tar; do _tb_bootstrap_has "$command" || missing+=("$command"); done
+  for command in curl wget socat sudo nano openssl tar ss; do _tb_bootstrap_has "$command" || missing+=("$command"); done
   (( ${#missing[@]} == 0 )) || { printf ' %s仍缺少%s：%s\n' "$TB_RED" "$TB_RESET" "${missing[*]}" >&2; return 1; }
   printf ' %s✓%s 依赖检查通过。\n' "$TB_GREEN" "$TB_RESET"
 }
@@ -524,7 +531,7 @@ toolbox_app() (
 #
 # A1/A2 只走「Alpine + OpenRC + 固定官方发布产物 + SHA-256 白名单」这一条路径：
 # 不执行远程脚本、不改 apk 仓库、不碰防火墙；写盘前拒绝不确定状态，写盘后失败
-# 一律回滚。端口归属只认本机事实（pidfile、/proc/<pid>/exe、内核 comm）。
+# 未确认停止则保留现场。端口归属只认本机事实（目标端口 socket PID 与 /proc/<pid>/exe）。
 # A5 是同一套 Xray 产物的 Debian + systemd 路径：回落目标必须显式给出并当场验证
 # TLS 1.3/h2/证书覆盖，回退流量双向限速，写盘按清单回滚，安装后跑双向认证探针。
 # B23 只碰 systemd-resolved，且要求 /etc/resolv.conf 确由它以 stub 接管，
@@ -1726,8 +1733,8 @@ net_relay_status() {
 #
 # A1/A2 只支持「全新 Alpine + OpenRC + 固定官方发布二进制 + SHA-256 白名单」。
 # 不执行远程脚本、不改 apk 仓库、不碰防火墙。写盘前拒绝一切不确定状态，
-# 写盘后失败一律回滚。端口是否被自己持有只认本机事实（pidfile、/proc/<pid>/exe、
-# 内核 comm），不靠「看起来像我们的服务」。
+# 写盘后失败只回滚本轮归属且已确认停止的文件。端口归属必须核对目标 socket PID
+# 与 /proc/<pid>/exe，pidfile 只能增加约束，不靠进程名猜测。
 
 net_const NET_ALPINE_HY2_VERSION '2.13.0'
 net_const NET_ALPINE_XRAY_VERSION '26.10.29'
@@ -1753,7 +1760,7 @@ net_alpine_require_openrc() {
         net_die '未找到 rc-service/rc-update，本机不是 OpenRC 系统。'
         return 1
     fi
-    [[ -d $run ]] || { net_die "OpenRC 未作为 init 运行（缺少 $run）。"; return 1; }
+    [[ -d $run && -f $run/softlevel ]] || { net_die "OpenRC 未作为 init 运行（缺少 $run/softlevel）。"; return 1; }
 }
 
 net_alpine_arch() {
@@ -1798,23 +1805,70 @@ net_alpine_xray_url() { # arch
         "$NET_ALPINE_XRAY_VERSION" "$asset"
 }
 
-net_alpine_port_owned_by() { # proto port bin pidfile
-    local proto=$1 port=$2 bin=$3 pidfile=$4 line pid exe want svcpid='' comm
-    want=$(readlink -f -- "$bin" 2>/dev/null) || want=$bin
-    comm=${bin##*/}; comm=${comm:0:15}
-    [[ -r $pidfile ]] && svcpid=$(<"$pidfile")
-    [[ $svcpid =~ ^[0-9]+$ ]] || svcpid=''
+# Complete ss output is captured before parsing: process substitution loses its exit code.
+net_alpine_port_lines() { # proto port [include-processes]
+    local proto=$1 port=$2 processes=${3:-0} flags line field output
+    case $proto:$processes in
+        tcp:0) flags=-ltnH ;; tcp:1) flags=-ltnpH ;;
+        udp:0) flags=-lunH ;; udp:1) flags=-lunpH ;;
+        *) return 2 ;;
+    esac
+    output=$(ss "$flags" 2>/dev/null) || {
+        net_err "无法读取 $proto 监听表（ss 执行失败）；未将未知状态视为空闲。"
+        return 2
+    }
     while IFS= read -r line; do
-        while IFS= read -r pid; do
-            [[ -n $pid ]] || continue
-            [[ -n $svcpid && $pid == "$svcpid" ]] && return 0
-            exe=$(readlink -f "/proc/$pid/exe" 2>/dev/null) || exe=''
-            [[ -n $exe && $exe == "$want" ]] && return 0
-        done < <(grep -o 'pid=[0-9]*' <<< "$line" | cut -d= -f2)
-        # 内核 comm 被截断到 15 字符，只能按前缀兜底。
-        [[ $line == *"$comm"* ]] && return 0
-    done < <(if [[ $proto == tcp ]]; then ss -ltnpH 2>/dev/null; else ss -lunpH 2>/dev/null; fi)
+        [[ $line =~ ^(LISTEN|UNCONN|ESTAB)[[:space:]] ]] || continue
+        read -r _ _ _ field _ <<< "$line"
+        [[ ${field##*:} == "$port" ]] && printf '%s\n' "$line"
+    done <<< "$output"
+    return 0
+}
+
+net_alpine_require_free_port() {
+    local lines
+    lines=$(net_alpine_port_lines "$1" "$2" 1) || return 1
+    [[ -z $lines ]] || {
+        net_err "$1 端口 $2 已被占用，监听它的进程："
+        printf '%s\n' "$lines" | cut -c1-160 >&2
+        return 1
+    }
+}
+
+net_alpine_pid_exe() { # PID exact native binary; never comm or stale pidfile alone
+    local pid=$1 bin=$2 exe want
+    [[ $pid =~ ^[1-9][0-9]*$ ]] || return 1
+    want=$(readlink -f "$bin" 2>/dev/null) || return 1
+    exe=$(readlink "/proc/$pid/exe" 2>/dev/null) || return 1
+    [[ $exe == "$want" ]]
+}
+
+net_alpine_port_owned_by() { # proto port bin pidfile
+    local proto=$1 port=$2 bin=$3 pidfile=$4 line pid lines rest svcpid=''
+    lines=$(net_alpine_port_lines "$proto" "$port" 1) || return 2
+    if [[ -e $pidfile || -L $pidfile ]]; then
+        [[ -f $pidfile && ! -L $pidfile && -r $pidfile ]] || return 1
+        svcpid=$(<"$pidfile")
+        net_alpine_pid_exe "$svcpid" "$bin" || return 1
+    fi
+    while IFS= read -r line; do
+        rest=$line
+        while [[ $rest =~ pid=([0-9]+) ]]; do
+            pid=${BASH_REMATCH[1]}
+            rest=${rest#*pid="$pid"}
+            [[ -z $svcpid || $pid == "$svcpid" ]] || continue
+            net_alpine_pid_exe "$pid" "$bin" && return 0
+        done
+    done <<< "$lines"
     return 1
+}
+
+net_alpine_require_tools() {
+    net_require_cmds curl sha256sum install mktemp flock ss awk openssl stat timeout \
+        readlink sed cut grep tr chmod cp mkdir rm rmdir cat uname sleep date ln "$@" || {
+        net_err '可返回主菜单 3 检查/安装基础依赖后重试；本操作不会自动运行 apk。'
+        return 1
+    }
 }
 
 net_alpine_wait_owned() {
@@ -1828,8 +1882,8 @@ net_alpine_wait_owned() {
 
 # absent / ours / foreign：同名 init 脚本不代表是我们的。
 net_alpine_svc_state() { # init-script bin
-    [[ -e $1 ]] || { printf 'absent\n'; return 0; }
-    if grep -qF "command=\"$2\"" "$1" 2>/dev/null; then
+    [[ -e $1 || -L $1 ]] || { printf 'absent\n'; return 0; }
+    if [[ -f $1 && ! -L $1 ]] && grep -qxF "command=\"$2\"" "$1" 2>/dev/null; then
         printf 'ours\n'
     else
         printf 'foreign\n'
@@ -1847,21 +1901,103 @@ net_alpine_wait_active() {
     return 1
 }
 
-net_alpine_rollback() { # name init bin etc pidfile clientdir
-    local name=$1 init=$2 bin=$3 etc=$4 pid=$5 client=$6
+# An install owns only exclusively-created objects, identified by inode and content.
+# The arrays are local to the installer (Bash dynamic scope); a standalone rollback
+# has no transaction and must not erase a coincidentally named installation.
+net_alpine_record() { # path [mutable-log]
+    local path=$1 mutable=${2:-0} identity sum=''
+    identity=$(stat -c '%d:%i' "$path") || return 1
+    if [[ -f $path && $mutable == 0 ]]; then
+        sum=$(sha256sum "$path") || return 1
+        sum=${sum%% *}
+    fi
+    net_alpine_owned+=("$path|$identity|$sum")
+}
+
+net_alpine_place() { # mode src destination [mutable-log]
+    local mode=$1 src=$2 dest=$3 mutable=${4:-0} staged
+    # Same-directory hard link gives exclusive no-clobber placement across mount layouts.
+    staged=$(mktemp "${dest%/*}/.terry-toolbox-place.XXXXXXXX") || return 1
+    if ! install -m "$mode" "$src" "$staged" || ! ln -T "$staged" "$dest"; then
+        rm -f "$staged"
+        return 1
+    fi
+    rm -f "$staged" || return 1
+    net_alpine_record "$dest" "$mutable" || return 1
+}
+
+net_alpine_owned_unchanged() {
+    local path=$1 entry identity sum now
+    [[ ! -L $path && -e $path ]] || return 1
+    for entry in "${net_alpine_owned[@]}"; do
+        [[ ${entry%%|*} == "$path" ]] || continue
+        entry=${entry#*|}; identity=${entry%%|*}; sum=${entry#*|}
+        now=$(stat -c '%d:%i' "$path") || return 1
+        [[ $now == "$identity" ]] || return 1
+        if [[ -n $sum ]]; then
+            now=$(sha256sum "$path") || return 1
+            [[ ${now%% *} == "$sum" ]] || return 1
+        fi
+        return 0
+    done
+    return 1
+}
+
+net_alpine_stop_owned() { # name init bin pidfile
+    local name=$1 init=$2 bin=$3 pidfile=$4 svcpid='' rc=0
+    [[ $(net_alpine_svc_state "$init" "$bin") == ours ]] || return 1
+    if [[ -e $pidfile || -L $pidfile ]]; then
+        [[ -f $pidfile && ! -L $pidfile && -r $pidfile ]] || return 1
+        svcpid=$(<"$pidfile")
+        # Do not let OpenRC signal a foreign/reused PID or delete its pidfile.
+        net_alpine_pid_exe "$svcpid" "$bin" || return 1
+    else
+        # A service claiming started without an attributable PID is uncertain.
+        rc-service "$name" status >/dev/null 2>&1 || rc=$?
+        [[ $rc == 3 ]] || return 1
+    fi
+    rc-service "$name" stop >/dev/null 2>&1 || return 1
+    rc=0
+    rc-service "$name" status >/dev/null 2>&1 || rc=$?
+    # OpenRC: 3 = stopped; 0/4/8/16/32 and command errors are not confirmed stopped.
+    [[ $rc == 3 ]] || return 1
+    [[ -z $svcpid || ! -e /proc/$svcpid ]] || return 1
+    [[ ! -e $pidfile && ! -L $pidfile ]] || return 1
+}
+
+net_alpine_rollback() { # name init bin etc pidfile clientdir (client is never blindly deleted)
+    local name=$1 init=$2 bin=$3 entry path i retained=0
     net_err '--- 开始回滚 ---'
-    if [[ -e $init ]]; then
-        rc-service "$name" stop >/dev/null 2>&1 || true
-        rc-update del "$name" default >/dev/null 2>&1 || true
-        rm -f -- "$init"
+    if [[ ${net_alpine_transaction:-0} != 1 ]]; then
+        net_err '没有本轮归属清单，保留现场；未删除任何文件或停止服务。'
+        return 1
     fi
-    rm -f -- "$bin" "$pid"
-    [[ -d $etc ]] && rm -rf -- "$etc"
-    [[ -n $client && -d $client ]] && rm -rf -- "$client"
-    if net_alpine_svc_active "$name" 2>/dev/null; then
-        net_err "警告：回滚后 $name 仍在运行，请人工确认。"
+    if [[ -e $init || -L $init || ${net_alpine_registered:-0} == 1 ]]; then
+        if ! net_alpine_owned_unchanged "$init" || ! net_alpine_owned_unchanged "$bin" \
+            || ! net_alpine_stop_owned "$name" "$init" "$bin" "$5"; then
+            net_err "未确认 $name 身份与停止状态，保留本轮文件和现场供人工恢复。"
+            return 1
+        fi
     fi
-    net_err '已恢复到安装前状态（新增的 init 脚本、二进制、配置目录已删除）。'
+    if [[ ${net_alpine_registered:-0} == 1 ]]; then
+        rc-update del "$name" default >/dev/null 2>&1 || {
+            net_err '移除 default 运行级失败，保留现场。'; return 1;
+        }
+    fi
+    for ((i=${#net_alpine_owned[@]}-1; i>=0; i--)); do
+        entry=${net_alpine_owned[i]}; path=${entry%%|*}
+        [[ -e $path || -L $path ]] || continue
+        if ! net_alpine_owned_unchanged "$path"; then
+            net_err "保留 $path：身份或内容已改变。"; retained=1; continue
+        fi
+        if [[ -d $path ]]; then
+            rmdir "$path" 2>/dev/null || { net_err "保留非空目录 $path。"; retained=1; }
+        else
+            rm -f "$path" || retained=1
+        fi
+    done
+    if (( retained )); then net_err '回滚保留了未确认归属的现场。'; return 1; fi
+    net_err '已回滚本轮归属文件；未删除外来文件或共享验证目录。'
 }
 
 # 下载后立刻校验；测试用 *_SRC 注入本地文件，同样会走校验和。
@@ -1880,15 +2016,20 @@ net_alpine_fetch() { # url dest expected [local-src]
 }
 
 net_alpine_free_port() {
-    local p=$1
-    while net_port_busy udp "$p" || net_port_busy tcp "$p"; do ((p++)); done
-    printf '%s\n' "$p"
+    local p=$1 udp tcp
+    while net_valid_port "$p"; do
+        udp=$(net_alpine_port_lines udp "$p") || return 1
+        tcp=$(net_alpine_port_lines tcp "$p") || return 1
+        if [[ -z $udp && -z $tcp ]]; then printf '%s\n' "$p"; return 0; fi
+        p=$((p + 1))
+    done
+    net_die '没有找到可用的探测端口。'
 }
 
 net_curl_socks() { # socks-port url
     local out i
     for ((i = 0; i < 3; i++)); do
-        out=$(timeout 25 curl -fsS --max-time 20 --socks5-hostname "127.0.0.1:$1" \
+        out=$(timeout 25 curl -fsS --max-time 20 --noproxy '' --socks5-hostname "127.0.0.1:$1" \
             -o /dev/null -w '%{http_code}' "$2" 2>/dev/null) \
             && [[ $out == 2* ]] && return 0
         sleep 1
@@ -1900,7 +2041,7 @@ net_curl_socks() { # socks-port url
 net_hysteria_smoke() {
     local bin=$1 conf=$2 out pid i
     out=$(mktemp) || return 1
-    "$bin" server -c "$conf" --disable-update-check >"$out" 2>&1 &
+    "$bin" server -c "$conf" --disable-update-check >"$out" 2>&1 9>&- &
     pid=$!
     for ((i = 0; i < 60; i++)); do
         grep -q 'server up and running' "$out" 2>/dev/null && break
@@ -1920,13 +2061,26 @@ net_hysteria_smoke() {
     return 1
 }
 
+net_alpine_prepare_probe_dir() { # called in current shell to keep transaction registration
+    if [[ -n ${net_alpine_probe_dir:-} ]]; then
+        [[ -d $net_alpine_probe_dir && ! -L $net_alpine_probe_dir ]] || return 1
+    else
+        net_alpine_probe_dir=$(mktemp -d "$(net_rundir)/terry-toolbox-verify.XXXXXXXX") || return 1
+    fi
+}
+
+net_alpine_record_probe() {
+    [[ ${net_alpine_transaction:-0} == 1 ]] || return 0
+    net_alpine_record "$1" "${2:-0}"
+}
+
 # 认证探测：用同一份二进制当客户端；negative=1 时只在连通时返回 0。
 net_hysteria_probe() { # bin host port pass insecure label negative
     local bin=$1 host=$2 port=$3 pass=$4 insecure=$5 label=$6 negative=${7:-0}
     local dir sock out i cpid result=1
-    dir=$(net_rundir)/terry-toolbox-hy2-verify
-    mkdir -p "$dir" || return 1
-    sock=$(net_alpine_free_port $(( 39000 + RANDOM % 2000 )))
+    net_alpine_prepare_probe_dir || return 1
+    dir=$net_alpine_probe_dir
+    sock=$(net_alpine_free_port $(( 39000 + RANDOM % 2000 ))) || return 1
     out=$dir/$label.log
     {
         printf 'server: 127.0.0.1:%s\n' "$port"
@@ -1939,7 +2093,9 @@ net_hysteria_probe() { # bin host port pass insecure label negative
         fi
         printf 'socks5:\n  listen: 127.0.0.1:%s\n' "$sock"
     } > "$dir/$label.yaml" || return 1
-    "$bin" client -c "$dir/$label.yaml" --disable-update-check >"$out" 2>&1 &
+    chmod 0600 "$dir/$label.yaml" && net_alpine_record_probe "$dir/$label.yaml" || return 1
+    : > "$out" && chmod 0600 "$out" && net_alpine_record_probe "$out" 1 || return 1
+    "$bin" client -c "$dir/$label.yaml" --disable-update-check >"$out" 2>&1 9>&- &
     cpid=$!
     for ((i = 0; i < 75; i++)); do
         grep -q 'connected to server' "$out" 2>/dev/null && { result=0; break; }
@@ -1960,12 +2116,12 @@ net_hysteria_probe() { # bin host port pass insecure label negative
 # xray 客户端：等它真正开始监听再打数据面；判据是 HTTP 200，不是「进程还活着」。
 net_xray_probe() { # bin host port uuid pub shortid label negative
     local bin=$1 host=$2 port=$3 uuid=$4 pub=$5 shortid=$6 label=$7 negative=${8:-0}
-    local dir sock out i cpid result=1
-    dir=$(net_rundir)/terry-toolbox-xray-verify
-    mkdir -p "$dir" || return 1
-    sock=$(net_alpine_free_port $(( 41000 + RANDOM % 2000 )))
+    local dir sock out i cpid result=2
+    net_alpine_prepare_probe_dir || return 2
+    dir=$net_alpine_probe_dir
+    sock=$(net_alpine_free_port $(( 41000 + RANDOM % 2000 ))) || return 2
     out=$dir/$label.log
-    cat > "$dir/$label.json" <<EOF || return 1
+    cat > "$dir/$label.json" <<EOF || return 2
 {
   "log": { "loglevel": "info" },
   "inbounds": [
@@ -1982,18 +2138,22 @@ net_xray_probe() { # bin host port uuid pub shortid label negative
   ]
 }
 EOF
-    "$bin" run -c "$dir/$label.json" >"$out" 2>&1 &
+    chmod 0600 "$dir/$label.json" && net_alpine_record_probe "$dir/$label.json" || return 2
+    : > "$out" && chmod 0600 "$out" && net_alpine_record_probe "$out" 1 || return 2
+    "$bin" run -c "$dir/$label.json" >"$out" 2>&1 9>&- &
     cpid=$!
     for ((i = 0; i < 75; i++)); do
-        grep -q 'started' "$out" 2>/dev/null && { result=0; break; }
+        grep -q 'started' "$out" 2>/dev/null && break
         grep -q 'Failed to start' "$out" 2>/dev/null && break
         kill -0 "$cpid" 2>/dev/null || break
         sleep 0.2
     done
-    (( result == 1 )) && grep -q 'started' "$out" 2>/dev/null && result=0
-    if (( result == 0 && negative == 0 )); then
-        net_curl_socks "$sock" 'https://www.cloudflare.com/cdn-cgi/trace' \
-            || net_err "提示：$label 隧道已通，但数据面出站未成功（可能主机无外网出口）。"
+    # Local startup does not authenticate REALITY. Both credentials attempt HTTP
+    # over SOCKS; only a successful data-plane transfer can return success.
+    result=2
+    if grep -q 'started' "$out" 2>/dev/null; then
+        result=1
+        net_curl_socks "$sock" "${TOOLBOX_NET_PROBE_URL:-https://www.cloudflare.com/cdn-cgi/trace}" && result=0
     fi
     kill "$cpid" 2>/dev/null
     wait "$cpid" 2>/dev/null || true
@@ -2031,22 +2191,29 @@ net_a1_conflict() { # 写盘前的冲突判定
             ;;
         absent)
             # 没有 init 脚本却有同名二进制/配置目录：可能是别人的安装，不静默覆盖。
-            if [[ -e $(net_a1_bin) || -d $(net_a1_etc) ]]; then
+            if [[ -e $(net_a1_bin) || -L $(net_a1_bin) || -e $(net_a1_etc) || -L $(net_a1_etc) ]]; then
                 net_die "已存在 $(net_a1_bin) 或 $(net_a1_etc)，却没有本模块的 init 脚本；请人工确认后清理。"
                 return 1
             fi
             ;;
     esac
+    if [[ -e $(net_a1_pid) || -L $(net_a1_pid) ]]; then
+        net_die "已存在 $(net_a1_pid)，无法确认归属；未覆盖或删除。"
+        return 1
+    fi
+    return 0
 }
 
 _net_a1_install() {
     local cert=${1:-} key=${2:-} host=${3:-} port=${4:-} trusted=1 insecure=0
     local arch tmp etc bin init pid pass state interactive=0
     [[ -n $cert && -n $key && -n $host ]] || interactive=1
+    local net_alpine_transaction=1 net_alpine_registered=0
+    local net_alpine_probe_dir='' net_alpine_owned=()
     net_require_root || return 1
     net_alpine_require_os || return 1
     net_alpine_require_openrc || return 1
-    net_require_cmds curl sha256sum install mktemp flock ss awk openssl stat timeout || return 1
+    net_alpine_require_tools || return 1
     arch=$(net_alpine_arch) || return 1
 
     # 菜单只传动作：缺的项逐一问；EOF 在写盘前就退出。
@@ -2065,6 +2232,7 @@ _net_a1_install() {
         net_valid_port "$port" || { net_die "端口不正确：$port（1-65535，无前导零）"; return 1; }
     fi
     net_check_cert "$cert" "$key" "$host" || return 1
+    net_lock a1 || return 1
     net_a1_conflict || return 1
     net_tls_trusted "$cert" || trusted=0
     if [[ $trusted == 0 && ( ${TOOLBOX_NET_CAFILE+x} || ${TOOLBOX_NET_CAPATH+x} ) ]]; then
@@ -2073,12 +2241,7 @@ _net_a1_install() {
     fi
 
     etc=$(net_a1_etc); bin=$(net_a1_bin); init=$(net_a1_init); pid=$(net_a1_pid)
-    if net_port_busy udp "$port"; then
-        net_err "UDP 端口 $port 已被占用，监听它的进程："
-        ss -lunpH 2>/dev/null | awk -v p=":$port" '$4 ~ p "$" {print "  " $4 " " $0}' | cut -c1-160 >&2
-        net_die '换成其他端口，或先确认并停止占用方。'
-        return 1
-    fi
+    net_alpine_require_free_port udp "$port" || return 1
 
     printf '即将在 Alpine 上安装 Hysteria 2 服务端（OpenRC）：\n'
     printf '  版本    : v%s（官方发布，安装前校验 SHA-256）\n' "$NET_ALPINE_HY2_VERSION"
@@ -2091,7 +2254,6 @@ _net_a1_install() {
     printf '  防火墙  : 不改动；需自行放行 UDP %s\n' "$port"
     net_confirm_once || return 1
 
-    net_lock a1 || return 1
     tmp=$(mktemp -d) || { net_die '无法创建临时目录'; return 1; }
     pass=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | cut -c1-32)
     [[ ${#pass} -eq 32 ]] || { rm -rf -- "$tmp"; net_die '密码生成失败'; return 1; }
@@ -2102,13 +2264,13 @@ _net_a1_install() {
         "$tmp/hysteria" "$(net_alpine_hy2_sha256 "$arch")" "${TOOLBOX_A1_BIN_SRC:-}" \
         || { rm -rf -- "$tmp"; net_a1_rollback; return 1; }
 
-    install -d -m 0755 "$etc" \
-        && install -m 0755 "$tmp/hysteria" "$bin" \
-        && install -m 0600 "$cert" "$etc/cert.pem" \
-        && install -m 0600 "$key" "$etc/key.pem" \
+    mkdir -m 0755 "$etc" && net_alpine_record "$etc" \
+        && net_alpine_place 0755 "$tmp/hysteria" "$bin" \
+        && net_alpine_place 0600 "$cert" "$etc/cert.pem" \
+        && net_alpine_place 0600 "$key" "$etc/key.pem" \
         || { rm -rf -- "$tmp"; net_a1_rollback; return 1; }
 
-    cat > "$etc/config.yaml" <<EOF || { rm -rf -- "$tmp"; net_a1_rollback; return 1; }
+    cat > "$tmp/config.yaml" <<EOF || { rm -rf -- "$tmp"; net_a1_rollback; return 1; }
 listen: :$port
 tls:
   cert: $etc/cert.pem
@@ -2123,15 +2285,22 @@ masquerade:
     content: '$NET_ALPINE_HY2_MASQUERADE'
     statusCode: 200
 EOF
-    chmod 0600 "$etc/config.yaml" && [[ -s $etc/config.yaml ]] \
+    [[ -s $tmp/config.yaml ]] && net_alpine_place 0600 "$tmp/config.yaml" "$etc/config.yaml" \
         || { rm -rf -- "$tmp"; net_a1_rollback; return 1; }
 
-    cat > "$init" <<EOF || { rm -rf -- "$tmp"; net_a1_rollback; return 1; }
+    : > "$tmp/empty" || { rm -rf -- "$tmp"; net_a1_rollback; return 1; }
+    net_alpine_place 0600 "$tmp/empty" "$etc/service.log" 1 \
+        || { rm -rf -- "$tmp"; net_a1_rollback; return 1; }
+    net_alpine_probe_dir=$(mktemp -d "$etc/verify.XXXXXXXX") && net_alpine_record "$net_alpine_probe_dir" \
+        || { rm -rf -- "$tmp"; net_a1_rollback; return 1; }
+
+    cat > "$tmp/init" <<EOF || { rm -rf -- "$tmp"; net_a1_rollback; return 1; }
 #!/sbin/openrc-run
 description="Terry Toolbox Hysteria 2 server"
 command="$bin"
 command_args="server -c $etc/config.yaml --disable-update-check"
 command_background="yes"
+retry="TERM/5/KILL/5"
 pidfile="$pid"
 output_log="$etc/service.log"
 error_log="$etc/service.log"
@@ -2140,7 +2309,7 @@ depend() {
     after firewall nftables iptables
 }
 EOF
-    chmod 0755 "$init" && [[ -s $init ]] \
+    [[ -s $tmp/init ]] && net_alpine_place 0755 "$tmp/init" "$init" \
         || { rm -rf -- "$tmp"; net_a1_rollback; return 1; }
 
     if ! net_hysteria_smoke "$bin" "$etc/config.yaml"; then
@@ -2150,6 +2319,7 @@ EOF
         net_err 'rc-update add 失败。'
         rm -rf -- "$tmp"; net_a1_rollback; return 1
     fi
+    net_alpine_registered=1
     if ! rc-service "$NET_ALPINE_HY2_NAME" start >/dev/null 2>&1; then
         net_err 'rc-service start 失败。'
         rc-service "$NET_ALPINE_HY2_NAME" status >&2 2>&1 || true
@@ -2182,7 +2352,7 @@ EOF
     fi
     printf '  负向探测：错误密码被拒绝 ✓\n'
 
-    printf '%s|%s|%s|%s\n' "$host" "$port" "$insecure" "$NET_ALPINE_HY2_VERSION" > "$etc/meta" && chmod 0600 "$etc/meta" && [[ -s $etc/meta ]] \
+    printf '%s|%s|%s|%s\n' "$host" "$port" "$insecure" "$NET_ALPINE_HY2_VERSION" > "$tmp/meta" && net_alpine_place 0600 "$tmp/meta" "$etc/meta" \
         || { rm -rf -- "$tmp"; net_a1_rollback; return 1; }
     rm -rf -- "$tmp"
     net_a1_report "$host" "$port" "$pass" "$insecure"
@@ -2241,12 +2411,18 @@ net_a2_conflict() {
             return 1
             ;;
         absent)
-            if [[ -e $(net_a2_bin) || -d $(net_a2_etc) ]]; then
+            if [[ -e $(net_a2_bin) || -L $(net_a2_bin) || -e $(net_a2_etc) || -L $(net_a2_etc) ]]; then
                 net_die "已存在 $(net_a2_bin) 或 $(net_a2_etc)，却没有本模块的 init 脚本；请人工确认后清理。"
                 return 1
             fi
             ;;
     esac
+    if [[ -e $(net_a2_pid) || -L $(net_a2_pid) ]]; then
+        net_die "已存在 $(net_a2_pid)，无法确认归属；未覆盖或删除。"
+        return 1
+    fi
+    return 0
+
 }
 
 # 回落目标：主机名，或 主机名:端口。IPv6 目标暂不支持。
@@ -2260,10 +2436,12 @@ net_valid_dest() {
 _net_a2_install() {
     local port=${1:-} dest=${2:-} dhost='' dport=''
     local arch tmp etc bin init pid uuid priv pub shortid cfg state
+    local net_alpine_transaction=1 net_alpine_registered=0
+    local net_alpine_probe_dir='' net_alpine_owned=()
     net_require_root || return 1
     net_alpine_require_os || return 1
     net_alpine_require_openrc || return 1
-    net_require_cmds curl sha256sum install mktemp flock ss awk openssl stat timeout unzip
+    net_alpine_require_tools unzip || return 1
     arch=$(net_alpine_arch) || return 1
 
     if [[ -n $port ]]; then
@@ -2275,15 +2453,11 @@ _net_a2_install() {
     net_valid_dest "$dest" || { net_die "回落目标格式不正确：$dest（应为 主机名 或 主机名:端口）"; return 1; }
     dhost=${dest%:*}; dport=${dest##*:}
     [[ $dest == *:* ]] || dport=443
+    net_lock a2 || return 1
     net_a2_conflict || return 1
 
     etc=$(net_a2_etc); bin=$(net_a2_bin); init=$(net_a2_init); pid=$(net_a2_pid)
-    if net_port_busy tcp "$port"; then
-        net_err "TCP 端口 $port 已被占用，监听它的进程："
-        ss -ltnpH 2>/dev/null | awk -v p=":$port" '$4 ~ p "$" {print "  " $4 " " $0}' | cut -c1-160 >&2
-        net_die '换成其他端口，或先确认并停止占用方。'
-        return 1
-    fi
+    net_alpine_require_free_port tcp "$port" || return 1
 
     printf '即将在 Alpine 上安装 Xray 服务端（VLESS + TCP + REALITY，OpenRC）：\n'
     printf '  版本    : v%s（官方发布，安装前校验 SHA-256）\n' "$NET_ALPINE_XRAY_VERSION"
@@ -2295,7 +2469,6 @@ _net_a2_install() {
     printf '  局限    : REALITY 不限制回落流量；端口不是 443 时被封锁概率更高\n'
     net_confirm_once || return 1
 
-    net_lock a2 || return 1
     tmp=$(mktemp -d) || { net_die '无法创建临时目录'; return 1; }
     net_err '--- 开始写入 ---'
     net_alpine_fetch \
@@ -2307,22 +2480,23 @@ _net_a2_install() {
         || { rm -rf -- "$tmp"; net_a2_rollback; return 1; }
     [[ -s $tmp/x/xray ]] || { rm -rf -- "$tmp"; net_die '压缩包内没有 xray 二进制。'; return 1; }
 
-    install -d -m 0755 "$etc" && install -m 0755 "$tmp/x/xray" "$bin" \
+    mkdir -m 0755 "$etc" && net_alpine_record "$etc" && net_alpine_place 0755 "$tmp/x/xray" "$bin" \
         || { rm -rf -- "$tmp"; net_a2_rollback; return 1; }
 
     # 用刚校验过的二进制自己生成凭据，避免与 xray 的编码差异。
-    uuid=$("$bin" uuid 2>/dev/null) || { rm -rf -- "$tmp"; net_die 'uuid 生成失败。'; return 1; }
+    uuid=$("$bin" uuid 2>/dev/null) || { rm -rf -- "$tmp"; net_a2_rollback; net_die 'uuid 生成失败。'; return 1; }
     # 一次调用同时取公私钥：分两次调用会拿到两对不匹配的密钥。
     local kpair
     kpair=$("$bin" x25519 2>/dev/null) || kpair=''
     priv=$(sed -n 's/^PrivateKey: //p' <<< "$kpair")
     pub=$(sed -n 's/^Password (PublicKey): //p' <<< "$kpair")
-    net_valid_uuid "$uuid" || { rm -rf -- "$tmp"; net_die 'uuid 输出异常。'; return 1; }
-    [[ -n $priv && -n $pub ]] || { rm -rf -- "$tmp"; net_die 'x25519 密钥生成失败。'; return 1; }
-    shortid=$(openssl rand -hex 4)
+    net_valid_uuid "$uuid" || { rm -rf -- "$tmp"; net_a2_rollback; net_die 'uuid 输出异常。'; return 1; }
+    [[ -n $priv && -n $pub ]] || { rm -rf -- "$tmp"; net_a2_rollback; net_die 'x25519 密钥生成失败。'; return 1; }
+    shortid=$(openssl rand -hex 4) && [[ $shortid =~ ^[0-9a-f]{8}$ ]] \
+        || { rm -rf -- "$tmp"; net_a2_rollback; net_die 'shortId 生成失败。'; return 1; }
 
     cfg=$etc/config.json
-    cat > "$cfg" <<EOF
+    cat > "$tmp/config.json" <<EOF || { rm -rf -- "$tmp"; net_a2_rollback; return 1; }
 {
   "log": { "loglevel": "warning" },
   "inbounds": [
@@ -2352,7 +2526,7 @@ _net_a2_install() {
   "outbounds": [ { "protocol": "freedom" } ]
 }
 EOF
-    chmod 0600 "$cfg" && [[ -s $cfg ]] \
+    [[ -s $tmp/config.json ]] && net_alpine_place 0600 "$tmp/config.json" "$cfg" \
         || { rm -rf -- "$tmp"; net_a2_rollback; return 1; }
 
     if ! "$bin" run -test -c "$cfg" >"$tmp/t.log" 2>&1; then
@@ -2361,12 +2535,19 @@ EOF
         rm -rf -- "$tmp"; net_a2_rollback; return 1
     fi
 
-    cat > "$init" <<EOF
+    : > "$tmp/empty" || { rm -rf -- "$tmp"; net_a2_rollback; return 1; }
+    net_alpine_place 0600 "$tmp/empty" "$etc/service.log" 1 \
+        || { rm -rf -- "$tmp"; net_a2_rollback; return 1; }
+    net_alpine_probe_dir=$(mktemp -d "$etc/verify.XXXXXXXX") && net_alpine_record "$net_alpine_probe_dir" \
+        || { rm -rf -- "$tmp"; net_a2_rollback; return 1; }
+
+    cat > "$tmp/init" <<EOF || { rm -rf -- "$tmp"; net_a2_rollback; return 1; }
 #!/sbin/openrc-run
 description="Terry Toolbox Xray server"
 command="$bin"
 command_args="run -c $etc/config.json"
 command_background="yes"
+retry="TERM/5/KILL/5"
 pidfile="$pid"
 output_log="$etc/service.log"
 error_log="$etc/service.log"
@@ -2375,13 +2556,14 @@ depend() {
     after firewall nftables iptables
 }
 EOF
-    chmod 0755 "$init" && [[ -s $init ]] \
+    [[ -s $tmp/init ]] && net_alpine_place 0755 "$tmp/init" "$init" \
         || { rm -rf -- "$tmp"; net_a2_rollback; return 1; }
 
     if ! rc-update add "$NET_ALPINE_XRAY_NAME" default >/dev/null 2>&1; then
         net_err 'rc-update add 失败。'
         rm -rf -- "$tmp"; net_a2_rollback; return 1
     fi
+    net_alpine_registered=1
     if ! rc-service "$NET_ALPINE_XRAY_NAME" start >/dev/null 2>&1; then
         net_err 'rc-service start 失败。'
         rc-service "$NET_ALPINE_XRAY_NAME" status >&2 2>&1 || true
@@ -2400,15 +2582,18 @@ EOF
         net_err '认证探测失败（正确 UUID 未连通）。'
         rm -rf -- "$tmp"; net_a2_rollback; return 1
     fi
-    if net_xray_probe "$bin" "$dhost" "$port" '11111111-1111-4111-8111-111111111111' \
-        "$pub" "$shortid" bad 1; then
-        net_err '错误 UUID 也被接受，认证未生效。'
+    local negative_rc=0
+    net_xray_probe "$bin" "$dhost" "$port" '11111111-1111-4111-8111-111111111111' \
+        "$pub" "$shortid" bad 1 || negative_rc=$?
+    if [[ $negative_rc != 1 ]]; then
+        if [[ $negative_rc == 0 ]]; then net_err '错误 UUID 也被接受，认证未生效。'
+        else net_err '负向探测未真正发起数据面请求，不能宣称错误 UUID 被拒绝。'; fi
         rm -rf -- "$tmp"; net_a2_rollback; return 1
     fi
     printf '  负向探测：错误 UUID 被拒绝 ✓\n'
 
-    printf '%s|%s|%s|%s\n' "$dhost" "$port" "$dest" "$NET_ALPINE_XRAY_VERSION" > "$etc/meta"
-    chmod 0600 "$etc/meta"
+    printf '%s|%s|%s|%s\n' "$dhost" "$port" "$dest" "$NET_ALPINE_XRAY_VERSION" > "$tmp/meta" && net_alpine_place 0600 "$tmp/meta" "$etc/meta" \
+        || { rm -rf -- "$tmp"; net_a2_rollback; return 1; }
     rm -rf -- "$tmp"
     net_a2_report "$dhost" "$port" "$uuid" "$pub" "$shortid" "$dest"
 }
@@ -2431,35 +2616,46 @@ net_a2_report() {
 # ---------------------------------------------------------------- A1/A2 卸载与状态
 
 net_alpine_uninstall() { # name init bin etc pid client label lockkey
-    local name=$1 init=$2 bin=$3 etc=$4 pid=$5 client=$6 label=$7 lockkey=$8 state
+    local name=$1 init=$2 bin=$3 etc=$4 pid=$5 label=$7 lockkey=$8 state
     net_require_root || return 1
+    net_alpine_require_os || return 1
     net_alpine_require_openrc || return 1
+    net_require_cmds flock readlink grep stat sha256sum rm rmdir || return 1
+    net_lock "$lockkey" || return 1
+    [[ ! -L $etc ]] || { net_die "配置目录 $etc 是符号链接，未删除。"; return 1; }
     state=$(net_alpine_svc_state "$init" "$bin")
     if [[ $state == absent && ! -e $bin && ! -d $etc ]]; then
         net_die "$label：没有找到本模块的安装（init 脚本、二进制、配置都不存在）。"
         return 1
     fi
-    if [[ $state == foreign ]]; then
+    if [[ $state != ours ]]; then
         net_die "$init 不是本模块生成的，未删除；请人工确认。"
         return 1
     fi
     printf '将停止并删除：%s\n  %s\n  %s\n  %s\n' "$init" "$bin" "$etc" '（服务已从 default 运行级移除）'
     net_confirm_once || return 1
-    net_lock "$lockkey" || return 1
-    rc-service "$name" stop >/dev/null 2>&1 || true
-    rc-update del "$name" default >/dev/null 2>&1 || true
-    rm -f -- "$init" "$bin" "$pid"
-    [[ -d $etc ]] && rm -rf -- "$etc"
-    [[ -n $client && -d $client ]] && rm -rf -- "$client"
+    net_alpine_stop_owned "$name" "$init" "$bin" "$pid" || {
+        net_die '未确认服务身份与停止状态，保留现场，未删除文件。'; return 1;
+    }
+    rc-update del "$name" default >/dev/null 2>&1 || {
+        net_die '移除 default 运行级失败，保留现场。'; return 1;
+    }
+    rm -f -- "$init" "$bin" || return 1
+    # Explicit uninstall is confirmed by the user; never touch legacy shared verify dirs.
+    [[ ! -L $etc ]] || return 1
+    [[ ! -d $etc ]] || rm -rf -- "$etc" || return 1
     printf '已卸载。\n'
 }
 
 net_alpine_status() { # name init bin etc proto
-    local name=$1 init=$2 bin=$3 etc=$4 proto=$5 host='' port='' _extra='' version='' pid
+    local name=$1 init=$2 bin=$3 etc=$4 proto=$5 host='' port='' _extra='' version='' pid owned_rc=0
     if [[ ! -e $init ]]; then
         printf '%s 未安装。\n' "$name"
         return 1
     fi
+    net_alpine_require_os || return 1
+    net_alpine_require_openrc || return 1
+    net_require_cmds ss readlink grep sed || return 1
     pid=$(net_rundir)/$name.pid
     IFS='|' read -r host port _extra version < "$etc/meta" 2>/dev/null || true
     printf 'init: %s\n' "$init"
@@ -2467,11 +2663,13 @@ net_alpine_status() { # name init bin etc proto
     rc-service "$name" status 2>&1 | sed -n '1,6p'
     if [[ -n ${port:-} ]]; then
         printf '端口 %s 监听: ' "$port"
-        if net_alpine_port_owned_by "$proto" "$port" "$bin" "$pid"; then
-            printf '由本服务持有\n'
-        else
-            printf '不是本服务\n'
-        fi
+        owned_rc=0
+        net_alpine_port_owned_by "$proto" "$port" "$bin" "$pid" || owned_rc=$?
+        case $owned_rc in
+            0) printf '由本服务持有\n' ;;
+            1) printf '不是本服务\n' ;;
+            *) printf '未知（监听表读取失败）\n'; return 1 ;;
+        esac
     fi
     return 0
 }
@@ -2710,7 +2908,7 @@ net_a5_probe() { # bin port uuid pub shortid sni label
     local bin=$1 port=$2 uuid=$3 pub=$4 shortid=$5 sni=$6 label=$7
     local dir sock out i cpid result=1
     dir=$(net_a5_client); mkdir -p "$dir" || return 1
-    sock=$(net_alpine_free_port $(( 41000 + RANDOM % 2000 )))
+    sock=$(net_alpine_free_port $(( 41000 + RANDOM % 2000 ))) || return 1
     out=$dir/$label.log
     cat > "$dir/$label.json" <<EOF || return 1
 {
@@ -3605,9 +3803,9 @@ _toolbox_system_confirm() {
     local answer
     printf '%s\n' "$1" >&2
     printf '输入 YES 确认: ' >&2
-    IFS= read -r answer && [[ $answer == YES ]] || { _toolbox_system_error '已取消。'; return 1; }
+    IFS= read -r answer && [[ ${answer^^} == YES ]] || { _toolbox_system_error '已取消。'; return 1; }
     printf '再次输入 YES 确认: ' >&2
-    IFS= read -r answer && [[ $answer == YES ]] || { _toolbox_system_error '已取消。'; return 1; }
+    IFS= read -r answer && [[ ${answer^^} == YES ]] || { _toolbox_system_error '已取消。'; return 1; }
 }
 _toolbox_system_os() {
     # Parse OS metadata as data rather than executing shell from /etc/os-release.
@@ -3725,8 +3923,21 @@ _toolbox_system_deps() {
         apt-get update || return
         apt-get install -y --no-upgrade "${missing_packages[@]}"
     else
-        _toolbox_system_confirm '将通过 Alpine 安装 curl socat wget sudo nano iptables；依赖可能改变。' || return
-        apk add --no-cache curl socat wget sudo nano iptables
+        local c
+        local -a required_commands=(curl socat wget sudo nano iptables ss)
+        # BusyBox wget is sufficient when present. ss is a split Alpine package:
+        # https://pkgs.alpinelinux.org/package/v3.24/main/x86_64/iproute2-ss
+        for c in "${required_commands[@]}"; do
+            _toolbox_system_has "$c" && continue
+            case $c in ss) missing_packages+=(iproute2-ss);; *) missing_packages+=("$c");; esac
+        done
+        if (( ${#missing_packages[@]} == 0 )); then printf '基础依赖命令已齐全；未升级或安装。\n'; return 0; fi
+        _toolbox_system_need_tools apk || return
+        _toolbox_system_confirm "将通过 apk add --no-cache 仅补缺失命令对应包：${missing_packages[*]}；不执行 upgrade，依赖仍可能改变。" || return
+        apk add --no-cache "${missing_packages[@]}" || return
+        _toolbox_system_need_tools "${required_commands[@]}" || {
+            _toolbox_system_error '补装后命令回读失败；保留已安装包，请检查 apk 输出与 PATH。'; return 1; }
+        printf '基础依赖命令回读通过；未执行全量升级。\n'
     fi
 }
 _toolbox_system_bbr() {
@@ -3761,8 +3972,10 @@ _toolbox_system_docker_release() {
 }
 _toolbox_system_docker_verify() {
     local version
+    local -a endpoint=()
+    [[ $# == 0 ]] || endpoint=(--host "$1")
     _toolbox_system_has docker || { _toolbox_system_error '安装后 docker 命令仍不可用。'; return 1; }
-    version=$(docker version --format '{{.Server.Version}}' 2>/dev/null) || {
+    version=$(docker "${endpoint[@]}" version --format '{{.Server.Version}}' 2>/dev/null) || {
         _toolbox_system_error '无法回读 Docker Engine 版本（服务可能未启动）；不宣称安装成功。'; return 1; }
     if [[ ! $version =~ ^([0-9]{1,3})\.([0-9]+)\.([0-9]+)(\+[A-Za-z0-9._+-]+)?$ ]] \
         || (( 10#${BASH_REMATCH[1]} < 28 )); then
@@ -3801,6 +4014,123 @@ _toolbox_system_docker_global_candidates_absent() {
             _toolbox_system_error "全局 APT 已有 $pkg 候选或状态未知；不混用现有包源，请人工处理。"; return 1; }
     done
 }
+# Alpine only supports a NEW local daemon in this installer. Existing/partial
+# installs require manual recovery; no ownership marker is fabricated on retry.
+_toolbox_system_docker_alpine_preflight() {
+    local c pkg status path
+    _toolbox_system_need_tools apk rc-service rc-status || return 1
+    [[ -r ${TOOLBOX_DOCKER_OPENRC_RUN:-/run/openrc}/softlevel ]] \
+        && rc-status >/dev/null 2>&1 || {
+        _toolbox_system_error '需要已运行的 OpenRC（/run/openrc/softlevel 与 rc-status）；不在 chroot/无 init 环境安装或手工伪造状态。'; return 1; }
+    if [[ -n ${DOCKER_HOST:-}${DOCKER_CONTEXT:-}${DOCKER_TLS_VERIFY:-}${DOCKER_CERT_PATH:-}${DOCKER_CONFIG:-}${DOCKER_OPTS:-}${DOCKERD_BINARY:-} ]]; then
+        _toolbox_system_error '检测到 Docker 端点/CLI/daemon 环境覆盖；未安装或启动，请在无覆盖环境中人工核对。'; return 1
+    fi
+    for c in docker dockerd containerd runc; do
+        if _toolbox_system_has "$c"; then
+            _toolbox_system_error "已有 $c；不接管现有运行时，请人工检查服务和数据。"; return 1
+        fi
+    done
+    for pkg in docker docker-engine docker-cli docker-openrc docker-cli-compose docker-cli-buildx \
+               docker-rootless-extras docker-systemd podman-docker containerd containerd-openrc runc; do
+        status=0; apk info --exists "$pkg" >/dev/null 2>&1 || status=$?
+        case $status in
+            1) ;;
+            0) _toolbox_system_error "已有包 $pkg（含可能的半安装）；未升级/启动，请人工恢复。"; return 1;;
+            *) _toolbox_system_error "无法确认 Alpine 包状态：$pkg；未改动。"; return 1;;
+        esac
+    done
+    for path in "${TOOLBOX_DOCKER_DATA_ROOT:-/var/lib}/docker" "${TOOLBOX_DOCKER_DATA_ROOT:-/var/lib}/containerd" \
+        "${TOOLBOX_DOCKER_ETC_DIR:-/etc/docker}" "${TOOLBOX_DOCKER_CONTAINERD_ETC_DIR:-/etc/containerd}" \
+        "${TOOLBOX_DOCKER_OPENRC_INIT_DIR:-/etc/init.d}/docker" "${TOOLBOX_DOCKER_OPENRC_INIT_DIR:-/etc/init.d}/containerd" \
+        "${TOOLBOX_DOCKER_OPENRC_CONF_DIR:-/etc/conf.d}/docker" "${TOOLBOX_DOCKER_OPENRC_CONF_DIR:-/etc/conf.d}/containerd" \
+        "${TOOLBOX_DOCKER_RUN_DIR:-/run}/docker.sock" "${TOOLBOX_DOCKER_RUN_DIR:-/run}/docker.pid" \
+        "${TOOLBOX_DOCKER_RUN_DIR:-/run}/docker" "${TOOLBOX_DOCKER_RUN_DIR:-/run}/containerd" \
+        "${TOOLBOX_DOCKER_OPENRC_RUN:-/run/openrc}/started/docker" "${TOOLBOX_DOCKER_OPENRC_RUN:-/run/openrc}/started/containerd" \
+        "${TOOLBOX_DOCKER_OPENRC_RUNLEVEL_DIR:-/etc/runlevels}/"*/docker \
+        "${TOOLBOX_DOCKER_OPENRC_RUNLEVEL_DIR:-/etc/runlevels}/"*/containerd; do
+        [[ ! -e $path && ! -L $path ]] || {
+            _toolbox_system_error "已有 Docker/containerd 配置、服务或数据路径：$path；不覆盖/接管。"; return 1; }
+    done
+}
+_toolbox_system_docker_alpine_recovery() {
+    _toolbox_system_error "$1；保留本次已安装包、服务文件和可能产生的数据，不自动卸载、停服或删除。"
+    [[ -z ${install_log:-} ]] || _toolbox_system_error "安装/启动记录：$install_log（600，保留）；未声称还原安装前状态。"
+    _toolbox_system_error '人工排查（只读）：apk info --exists docker-engine docker-openrc；rc-service docker status；日志 /var/log/docker.log。'
+    _toolbox_system_error '核对 /etc/init.d/docker、/etc/conf.d/docker、/etc/docker、/var/lib/docker 与 /var/lib/containerd；确认归属与失败原因后才人工启动，不要再次强行安装 B1。'
+}
+_toolbox_system_docker_alpine_owned_file() {
+    local path=$1 owner
+    [[ -f $path && ! -L $path ]] || return 1
+    owner=$(apk info --who-owns "$path" 2>/dev/null) || return 1
+    [[ $owner == "$path is owned by docker-openrc-"* ]]
+}
+_toolbox_system_docker_alpine_logged() {
+    local rc=0
+    printf '\n== %s ==\n' "$*" >> "$install_log" || return 1
+    "$@" >> "$install_log" 2>&1 || rc=$?
+    return "$rc"
+}
+_toolbox_system_docker_alpine() {
+    local service conf stamp conf_stamp i ready=0 install_log='' state
+    _toolbox_system_docker_alpine_preflight || return 1
+    printf 'Alpine Docker：使用本机已配置的签名校验仓库（需启用同版本 community；不改包源、不执行 upgrade）。\n'
+    printf '  包：docker docker-cli-compose docker-openrc；依赖可能改变。\n'
+    printf '  OpenRC：只启动本次新安装的 docker；依赖 sysfs/cgroups/net 也可能启动，不设置开机自启。\n'
+    printf '  文件/数据：包将创建 /etc/init.d/docker、/etc/conf.d/docker、/etc/containerd；daemon 可能写 /etc/docker、/var/lib/docker、/var/lib/containerd、/run/docker.sock 与 /var/log/docker.log。\n'
+    printf '  安装日志：%s/docker-alpine.log.*（新建随机文件，600，失败保留）。\n' "$(_toolbox_system_state)"
+    printf '  影响：root daemon、cgroups、网络桥与防火墙规则；不手写 daemon 配置，不接管已有服务，不改 sysctl/引导配置。\n'
+    _toolbox_system_confirm '确认安装并通过 OpenRC 启动新的本机 Docker？回读稳定 Engine ≥28 才算成功；失败保留现场供人工恢复。' || return
+    # Repeat absence checks after confirmation; never overwrite a new conflict.
+    _toolbox_system_docker_alpine_preflight || return 1
+    state=$(_toolbox_system_state)
+    _toolbox_system_need_tools mkdir mktemp chmod stat sha256sum || return 1
+    [[ ! -L $state ]] && mkdir -p -- "$state" || { _toolbox_system_error '无法安全创建安装日志目录；未安装。'; return 1; }
+    install_log=$(mktemp "$state/docker-alpine.log.XXXXXXXX") || return 1
+    chmod 0600 -- "$install_log" || { _toolbox_system_error "安装日志权限设置失败，未安装：$install_log"; return 1; }
+    printf '安装/启动记录：%s（600，保留；包与服务命令输出写入此文件）。\n' "$install_log"
+    _toolbox_system_docker_alpine_logged apk update || {
+        _toolbox_system_docker_alpine_recovery 'Alpine 仓库索引刷新失败，未安装 Docker'; return 1; }
+    _toolbox_system_docker_alpine_preflight || return 1
+    _toolbox_system_docker_alpine_logged apk add --no-cache docker docker-cli-compose docker-openrc || {
+        _toolbox_system_docker_alpine_recovery 'Alpine Docker 包安装失败，可能部分安装'; return 1; }
+    service="${TOOLBOX_DOCKER_OPENRC_INIT_DIR:-/etc/init.d}/docker"
+    conf="${TOOLBOX_DOCKER_OPENRC_CONF_DIR:-/etc/conf.d}/docker"
+    if ! _toolbox_system_need_tools docker dockerd \
+        || ! apk info --exists docker-engine docker-cli docker-openrc docker-cli-compose >/dev/null 2>&1 \
+        || ! _toolbox_system_docker_alpine_owned_file "$service" \
+        || ! _toolbox_system_docker_alpine_owned_file "$conf"; then
+        _toolbox_system_docker_alpine_recovery '安装后包/命令/OpenRC 服务文件归属未通过检查，未启动'; return 1
+    fi
+    stamp=$(_toolbox_system_file_stamp "$service") && conf_stamp=$(_toolbox_system_file_stamp "$conf") || {
+        _toolbox_system_docker_alpine_recovery '无法记录新服务文件身份，未启动'; return 1; }
+    local path
+    for path in "${TOOLBOX_DOCKER_ETC_DIR:-/etc/docker}" \
+        "${TOOLBOX_DOCKER_DATA_ROOT:-/var/lib}/docker" "${TOOLBOX_DOCKER_DATA_ROOT:-/var/lib}/containerd" \
+        "${TOOLBOX_DOCKER_RUN_DIR:-/run}/docker.sock" "${TOOLBOX_DOCKER_RUN_DIR:-/run}/docker.pid" \
+        "${TOOLBOX_DOCKER_RUN_DIR:-/run}/docker" "${TOOLBOX_DOCKER_RUN_DIR:-/run}/containerd" \
+        "${TOOLBOX_DOCKER_OPENRC_RUN:-/run/openrc}/started/docker" "${TOOLBOX_DOCKER_OPENRC_RUN:-/run/openrc}/started/containerd"; do
+        [[ ! -e $path && ! -L $path ]] || {
+            _toolbox_system_docker_alpine_recovery "安装后出现配置/数据/运行时冲突：$path，未启动"; return 1; }
+    done
+    [[ $(_toolbox_system_file_stamp "$service") == "$stamp" \
+        && $(_toolbox_system_file_stamp "$conf") == "$conf_stamp" ]] || {
+        _toolbox_system_docker_alpine_recovery '启动前配置已变化，未启动'; return 1; }
+    _toolbox_system_docker_alpine_logged rc-service docker start || {
+        _toolbox_system_docker_alpine_recovery 'OpenRC docker start 失败（不代表 daemon 一定未运行）'; return 1; }
+    # OpenRC start returning zero is not Engine readiness. Poll only read-only
+    # status and the explicit local socket; never restart to hide a failed start.
+    for ((i=0; i<30; i++)); do
+        if _toolbox_system_docker_alpine_logged rc-service docker status \
+            && _toolbox_system_docker_alpine_logged docker --host unix:///var/run/docker.sock version --format '{{.Server.Version}}'; then
+            ready=1; break
+        fi
+        if (( i < 29 )); then sleep 1 || return 1; fi
+    done
+    if (( ready == 0 )) || ! _toolbox_system_docker_verify unix:///var/run/docker.sock; then
+        _toolbox_system_docker_alpine_recovery '未通过 OpenRC/本机稳定 Engine ≥28 验收'; return 1
+    fi
+    printf 'OpenRC docker 已启动并验收；不设置开机自启，未创建测试容器。若需自启，请核对后自行 rc-update add docker default。\n'
+}
 _toolbox_system_docker() {
     local os release distro codename arch pkg status aptroot key source tmp fingerprint gpgout
     local -a missing_packages=() repo_paths=() repo_owned=()
@@ -3810,10 +4140,7 @@ _toolbox_system_docker() {
     fi
     os=$(_toolbox_system_os) || return
     if [[ $os == alpine ]]; then
-        _toolbox_system_confirm '将通过 Alpine 官方仓库安装 Docker；可能启动服务或改变防火墙，安装后必须回读 Engine ≥28。' || return
-        apk update || return
-        apk add --no-cache docker docker-cli-compose || return
-        _toolbox_system_docker_verify
+        _toolbox_system_docker_alpine
         return
     fi
     _toolbox_system_need_tools apt-get apt-cache dpkg dpkg-query dpkg-deb || return
@@ -4883,7 +5210,7 @@ _toolbox_system_alpine_hop_apply() {
     local etc conf start end target port
     local -a spec=()
     _toolbox_system_alpine_require || return
-    _toolbox_system_need_tools iptables ss || { _toolbox_system_error '缺少 iptables 或 ss（iproute2）；Alpine 可 apk add iptables iproute2。'; return 1; }
+    _toolbox_system_need_tools iptables ss || { _toolbox_system_error '缺少 iptables 或 ss（iproute2-ss）；Alpine 可 apk add iptables iproute2-ss。'; return 1; }
     etc=$(_toolbox_system_etc); conf="$etc/$_TOOLBOX_HOP_CONF_NAME"
     if [[ -e $conf ]] && ! _toolbox_system_ours "$conf" "$_TOOLBOX_SYS_MARK_B19"; then
         _toolbox_system_error "$conf 已存在但不是本工具生成的，未覆盖。"

@@ -19,6 +19,7 @@ out, err = run('0\n')
 assert 'TERRY' in out or 'Terry' in out, 'missing branded reference-style banner'
 assert '1. 网络服务' in out, 'missing numeric main menu'
 assert '99. 重新启动' in out, 'missing reference restart key'
+assert '4. 重装系统（未实现）' in out, 'disabled reinstall must be visibly marked before selection'
 assert 'B31' not in out, 'flat all-options dump still present on home'
 assert '\x1b' not in out, 'ANSI in non-tty output'
 assert 'readonly variable' not in err

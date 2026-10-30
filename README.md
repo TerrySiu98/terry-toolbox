@@ -22,7 +22,9 @@ Terry Toolbox 是一个面向 Linux 服务器的中文菜单工具箱。登录�
 
 ## 开发进度
 
-- **本轮开发预览验证**：默认 shell 套件、真实 PTY 菜单、单文件构建及 Worker 路由；新增 swap 启动任务/SIGTERM、sysctl 缺键回滚与真实离线 APT 包源回归，回环 TLS / socat 通过。特权操作仍为模拟，不是真实安装验收。
+- **自动化回归**：默认 shell 套件、真实 PTY 菜单、单文件构建及 Worker 路由；包含 swap 启动任务/SIGTERM、sysctl 缺键回滚与真实离线 APT 包源回归。默认套件中的特权操作为模拟，不能当作真实安装验收。
+- **Alpine 3.24 隔离验证**：真实 APK 完成 M2 缺依赖补装并回读 `ss`；A2 使用真实 Xray/OpenRC，完成安装、正确认证 HTTP 200、错误 UUID 拒绝、服务重启后再次 HTTP 200、卸载清理。测试位于私有命名空间，使用本地 HTTP/TLS 源与明确标注的 OpenRC 启动状态；不等于用户机器、VM 启动、公网链路或崩溃恢复验收。
+- **Alpine Docker 隔离验证**：已修复只安装包不启动服务、日志文件名不兼容 BusyBox 的问题。全新 Alpine 3.24 用户态通过完整 B1 双确认菜单、真实签名 APK 安装、OpenRC 启动、Engine 29.9.2 / docker info 回读及服务归属核对，停止后确认不可连接，未配置自启。首次验证因 fixture 缺失 cgroup2 失败；仅补只读 cgroup2 挂载后通过。OpenRC 启动状态仍是 fixture，cgroup controller 有只读/支持警告；没有运行容器、验证应用或整机重启。
 - **历史实测记录**：部分 Docker 应用、Hysteria 2 全流程、WebSSH 认证拦截与卸载；不能据此声称当前全部功能已通过真实验收。
 - **已开发、待当前版本真机验收**：BBR、依赖、Docker、改密码、重启、路由追踪、Debian/Ubuntu swap、Xray、DNS、TCP Brutal、Relay、Alpine HY2/Xray、1Panel、流量告警、Telegram 通知、网络优化、WebSSH 和各 Docker 应用。
 - **计划或未启用**：系统重装（M3）、Docker IPv6、WebSSH 个人版/Easynode、Xray VMess + WS、Alpine swap。
@@ -56,7 +58,7 @@ bash toolbox.sh
 curl -fsSL sh.uw.cx | sha256sum
 ```
 
-与仓库 `docs/index.html` 的哈希对比，一致再执行。**当前发布版本的 SHA-256**：`38946953c2e24fb29c0f60b7a1dde5aee5fdf806e1875085b4683a26dc5f8d00`（每次发布后更新）。
+与仓库 `docs/index.html` 的哈希对比，一致再执行。**当前发布版本的 SHA-256**：`cdac369c7d03e118a5317071b3db90cf7bae3bb81a343115ef08d5a19355a542`（每次发布后更新）。
 
 服务端下载的是单文件版本，全部模块已经打包进去，不需要准备其他文件。Debian / Ubuntu 为当前主要支持环境，Alpine 仅部分功能。
 
@@ -67,12 +69,12 @@ curl -fsSL sh.uw.cx | sha256sum
 
 ### 启动与菜单
 
-启动时先识别系统与架构，只缺依赖时才提示安装（`Y` 确认，其他键跳过；只补齐缺失项，不升级系统）。不支持的系统仍可进菜单，由各功能自行检查。
+启动时先识别系统与架构，只缺依赖时才提示安装（`Y`/`y` 确认，其他键跳过；只补齐缺失项，安装后重新检查命令，不升级系统）。Alpine 的 `ss` 对应 `iproute2-ss`。功能操作的 `YES` 确认不区分大小写，空输入与 EOF 仍取消。不支持的系统仍可进菜单，由各功能自行检查。
 
 主菜单只有一屏；输入编号回车即可：
 
 - `1` 网络服务：Alpine HY2/Xray、TUIC、HY2、Xray
-- `2` 安装 BBR，`3` 安装基础依赖，`4` 重装系统（计划），`5` 常用工具（Docker、应用、体检以外的系统项）
+- `2` 安装 BBR，`3` 安装基础依赖，`4` 重装系统（未实现），`5` 常用工具（Docker、应用、体检以外的系统项）
 - `DIAG` 只读体检，`99` 重启，`0` 退出
 
 进入子菜单后 `0` 返回上一层；功能管理页返回所属分类，分类页返回主菜单，只有主菜单 `0` 才退出。操作结束后按回车留在当前功能页，单纯返回不再额外暂停。`A4`、`B9` 这类完整编号在任何界面都能直接输入。安装类功能需要 root，执行前会显示影响并要求确认。
@@ -91,10 +93,10 @@ curl -fsSL sh.uw.cx | sha256sum
 | --- | --- | --- |
 | `DIAG` | 服务器体检 | 开发中：只读查看系统、运行时间、内存、磁盘、网络和监听端口 |
 | `M1` | BBR | 开发中：调整当前运行期拥塞控制，重启后可能失效 |
-| `M2` | 基础依赖 | 开发中：通过系统包管理器安装常用依赖 |
+| `M2` | 基础依赖 | 开发中：按缺失命令补包并回读；Alpine 3.24 真实 APK 隔离验证通过，其他系统待当前版本实测 |
 | `M3` | 重装系统 | 计划、禁用：尚无经过验证的恢复与重装方案，选择此项不会执行重装 |
 | `M4` | 重启服务器 | 开发中：确认后重启本机 |
-| `B1` | Docker | 开发中：Debian/Ubuntu 使用固定 GPG 主密钥指纹、私有官方索引下载再安装本地包；拒绝全局已有 Docker 包索引及已有安装/冲突包/数据，普通依赖仍用系统源；Alpine 使用系统仓库；回读稳定版 Engine ≥28，Docker IPv6 未实现 |
+| `B1` | Docker | 开发中：Debian/Ubuntu 使用固定 GPG 主密钥指纹、私有官方索引下载再安装本地包；拒绝全局已有 Docker 包索引及已有安装/冲突包/数据，普通依赖仍用系统源；Alpine 使用系统签名仓库及 docker-openrc，拒绝接管已有安装，启动后回读稳定版 Engine ≥28；失败保留私有日志与现场，不自动卸载，不默认自启；Docker IPv6 未实现 |
 | `B2` | NodeQuality | 开发中：固定 SHA-256 后执行综合质量测试，真实运行已验证 |
 | `B4` | 哪吒面板 | 开发中：容器部署入口，真实运行待验证 |
 | `B5` | X-UI | 开发中：3X-UI 容器部署入口，真实运行待验证 |
@@ -113,7 +115,7 @@ curl -fsSL sh.uw.cx | sha256sum
 | 编号 | 功能 | 状态与说明 |
 | --- | --- | --- |
 | `A1` | Alpine Hysteria 2 | 开发中：仅 Alpine + OpenRC；固定官方发布二进制并校验 SHA-256，失败回滚 |
-| `A2` | Alpine Xray | 开发中：Alpine + OpenRC 的 VLESS + REALITY；固定校验值、失败回滚，回落流量不限 |
+| `A2` | Alpine Xray | 开发中：Alpine + OpenRC 的 VLESS + REALITY；依赖检查失败立即退出，按指定端口和真实可执行文件核对归属；隔离安装、正反认证、服务重启和卸载通过，用户机器与公网待验收；回落流量不限 |
 | `A3` | TUIC | 开发中：固定官方 v1.0.0 静态二进制，自动验证启动与端口归属；认证需客户端实测 |
 | `A4` | Hysteria 2 | 开发中：有 Debian 安装、认证、数据面、重启、卸载的历史实测记录；当前交互与安全修复版本待真机复验 |
 | `A5` | Xray | 开发中：VLESS Reality，回落限流、并发锁、回滚和认证自检 |
@@ -161,6 +163,7 @@ curl -fsSL sh.uw.cx | sha256sum
 ```bash
 for t in tests/*-test.sh; do bash "$t" || exit; done
 python3 tests/menu-test.py
+python3 tests/entry-feedback-test.py # 启动 ss 检查、包映射与装后回读
 python3 tests/docker-origin-test.py # 真实离线 APT，索引与空包为明确标注的合成 fixture
 node tests/worker-test.mjs
 ```
