@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Network operations for the toolbox. Sourcing this file only defines functions.
 # Network installers refuse unsafe or unsupported environments.
+# shellcheck disable=SC2015
+# A && B || rollback deliberately rolls back when either checked step fails.
 #
 # A1/A2 只走「Alpine + OpenRC + 固定官方发布产物 + SHA-256 白名单」这一条路径：
 # 不执行远程脚本、不改 apk 仓库、不碰防火墙；写盘前拒绝不确定状态，写盘后失败
@@ -176,6 +178,14 @@ net_confirm_once() {
     [[ ${answer^^} == YES ]] || { net_err '已取消。'; return 1; }
 }
 
+# 菜单只传动作不传参数，缺的参数在这里补问；EOF 视为取消（写盘前退出）。
+net_prompt() { # <提示语> <变量名>
+    local prompt=$1 name=$2 value
+    printf '%s' "$prompt"
+    IFS= read -r value || { net_err '没有收到输入，已取消。'; return 1; }
+    printf -v "$name" '%s' "$value"
+}
+
 net_lock() {
     local file="${TOOLBOX_NET_LOCK_DIR:-/run}/terry-toolbox-$1.lock"
     exec 9>"$file" || { net_die "无法创建锁文件 $file"; return 1; }
@@ -293,18 +303,27 @@ net_check_cert() {
         || { net_die "证书不包含主机名 $host（SAN/CN 不匹配）。"; return 1; }
 }
 
-# 证书链能否被本机信任库验证，决定自签证书要不要在客户端链接里带 insecure。
-# 判定只看本机 CA 文件；读不到信任库时按「不信任」处理（宁多带一个 insecure）。
-# TOOLBOX_NET_CAFILE / TOOLBOX_NET_CAPATH 供隔离测试注入。
-net_tls_trusted() {
-    local cert=$1 cafile=${TOOLBOX_NET_CAFILE:-/etc/ssl/certs/ca-certificates.crt}
-    local capath=${TOOLBOX_NET_CAPATH:-/etc/ssl/certs}
-    if [[ -n $cafile && -r $cafile ]]; then
-        openssl verify -CAfile "$cafile" "$cert" >/dev/null 2>&1
-        return
+# 独立 CA 只作信任锚，证书 PEM 里的中间证书仅作 untrusted chain。
+# 显式指定但缺失的 CA 不回退系统库；验证的是服务端用途，不是「文件能解析」。
+net_tls_verify() { # cert cafile capath
+    local cert=$1 cafile=$2 capath=$3
+    local -a trust=()
+    if [[ -n $cafile ]]; then
+        [[ -f $cafile && -r $cafile && -s $cafile ]] || return 1
+        trust=(-CAfile "$cafile" -no-CApath)
+    else
+        [[ -n $capath && -d $capath ]] || return 1
+        trust=(-CApath "$capath" -no-CAfile)
     fi
-    [[ -n $capath && -d $capath ]] || return 1
-    openssl verify -CApath "$capath" "$cert" >/dev/null 2>&1
+    openssl verify "${trust[@]}" -no-CAstore -purpose sslserver -untrusted "$cert" "$cert" >/dev/null 2>&1
+}
+
+net_tls_trusted() {
+    local cafile=${TOOLBOX_NET_CAFILE-/etc/ssl/certs/ca-certificates.crt}
+    local capath=${TOOLBOX_NET_CAPATH-/etc/ssl/certs}
+    [[ ! ${TOOLBOX_NET_CAFILE+x} || -n $cafile ]] || return 1
+    if [[ ! ${TOOLBOX_NET_CAFILE+x} && ! -r $cafile ]]; then cafile=''; fi
+    net_tls_verify "$1" "$cafile" "$capath"
 }
 
 # ================================================================ B12 TCP Brutal
@@ -723,22 +742,28 @@ net_tuic_rollback() {
 
 _net_tuic_install() {
     local cert=${1:-} key=${2:-} host=${3:-} port=${4:-} answer
-    local arch tmp etc bin unit pass uuid state
+    local arch tmp etc bin unit pass uuid state interactive=0
+    [[ -n $cert && -n $key && -n $host ]] || interactive=1
     net_require_root || return 1
     net_require_debian || return 1
     net_require_systemd || return 1
     net_require_cmds openssl sha256sum curl flock ss stat sed mktemp || return 1
     arch=$(net_tuic_arch) || return 1
 
-    [[ -n $cert ]] || { net_die '缺少证书路径。'; return 1; }
-    [[ -n $key ]] || { net_die '缺少私钥路径。'; return 1; }
-    [[ -n $host ]] || { net_die '缺少主机名（证书对应的域名）。'; return 1; }
+    # 菜单只传动作：缺的项逐一问；EOF 在写盘前就退出。
+    [[ -n $cert ]] || net_prompt '证书文件路径（PEM，含完整链）：' cert || { net_die '缺少证书路径。'; return 1; }
+    [[ -n $key ]] || net_prompt '私钥文件路径：' key || { net_die '缺少私钥路径。'; return 1; }
+    [[ -n $host ]] || net_prompt '证书对应的域名：' host || { net_die '缺少主机名（证书对应的域名）。'; return 1; }
     host=${host,,}
     net_valid_hostname "$host" || { net_die "主机名格式不正确：$host"; return 1; }
     if [[ -n $port ]]; then
         net_valid_port "$port" || { net_die "端口不正确：$port（1-65535，无前导零）"; return 1; }
     else
-        port=$TUIC_DEFAULT_PORT
+        if (( interactive )); then
+            net_prompt "监听 UDP 端口（回车用 $TUIC_DEFAULT_PORT）：" port || return 1
+        fi
+        port=${port:-$TUIC_DEFAULT_PORT}
+        net_valid_port "$port" || { net_die "端口不正确：$port（1-65535，无前导零）"; return 1; }
     fi
     net_check_cert "$cert" "$key" "$host" || return 1
 
@@ -797,7 +822,7 @@ _net_tuic_install() {
     install -m 0600 "$cert" "$etc/cert.pem" && install -m 0600 "$key" "$etc/key.pem" \
         || { rm -rf -- "$tmp"; net_tuic_rollback; return 1; }
 
-    cat > "$etc/config.json" <<EOF
+    cat > "$etc/config.json" <<EOF || { rm -rf -- "$tmp"; net_tuic_rollback; return 1; }
 {
     "server": "[::]:$port",
     "users": {
@@ -813,7 +838,7 @@ EOF
     chmod 0600 "$etc/config.json" && [[ -s $etc/config.json ]] \
         || { rm -rf -- "$tmp"; net_tuic_rollback; return 1; }
 
-    cat > "$unit" <<EOF
+    cat > "$unit" <<EOF || { rm -rf -- "$tmp"; net_tuic_rollback; return 1; }
 [Unit]
 Description=Terry Toolbox TUIC server
 Documentation=https://github.com/tuic-protocol/tuic
@@ -863,8 +888,8 @@ EOF
         rm -rf -- "$tmp"; net_tuic_rollback; return 1
     fi
 
-    printf '%s|%s|%s\n' "$uuid" "$pass" "$port" > "$etc/meta"
-    chmod 0600 "$etc/meta"
+    printf '%s|%s|%s\n' "$uuid" "$pass" "$port" > "$etc/meta" && chmod 0600 "$etc/meta" && [[ -s $etc/meta ]] \
+        || { rm -rf -- "$tmp"; net_tuic_rollback; return 1; }
     rm -rf -- "$tmp"
 
     printf '\n安装完成，服务 %s 已设为开机自启。\n' "$TUIC_UNIT_NAME"
@@ -977,7 +1002,7 @@ net_relay_write_unit() {
     local proto=$1 lport=$2 host=$3 tport=$4 unit exec
     unit=$(net_relay_unit "$proto" "$lport")
     exec=$(net_relay_exec_line "$proto" "$lport" "$host" "$tport") || return 1
-    cat > "$unit" <<EOF
+    cat > "$unit" <<EOF || return 1
 [Unit]
 Description=Terry Toolbox relay $proto $lport -> $host:$tport
 After=network-online.target
@@ -1023,12 +1048,17 @@ _net_relay_install() {
     net_require_systemd || return 1
     net_require_cmds flock ss sed mktemp || return 1
 
+    # 菜单只传动作：缺的参数问，协议给默认 tcp；EOF 在写盘前退出。
+    if [[ -z $proto ]]; then
+        net_prompt '转发协议 (tcp/udp，直接回车用 tcp)：' proto || return 1
+        [[ -n $proto ]] || proto=tcp
+    fi
     net_relay_valid_proto "$proto" || { net_die "协议只能是 tcp 或 udp：${proto:-空}"; return 1; }
-    [[ -n $lport ]] || { net_die '缺少本地端口。'; return 1; }
+    [[ -n $lport ]] || net_prompt '本地监听端口：' lport || { net_die '缺少本地端口。'; return 1; }
     net_valid_port "$lport" || { net_die "本地端口不正确：$lport"; return 1; }
-    [[ -n $host ]] || { net_die '缺少目标主机。'; return 1; }
+    [[ -n $host ]] || net_prompt '目标主机 (IPv4/域名)：' host || { net_die '缺少目标主机。'; return 1; }
     net_valid_target_host "$host" || { net_die "目标主机格式不正确：$host（仅 IPv4/域名）"; return 1; }
-    [[ -n $tport ]] || { net_die '缺少目标端口。'; return 1; }
+    [[ -n $tport ]] || net_prompt '目标端口：' tport || { net_die '缺少目标端口。'; return 1; }
     net_valid_port "$tport" || { net_die "目标端口不正确：$tport"; return 1; }
 
     socat=$(net_relay_socat) || socat=''
@@ -1384,7 +1414,11 @@ net_hysteria_probe() { # bin host port pass insecure label negative
         printf 'server: 127.0.0.1:%s\n' "$port"
         printf 'auth: %s\n' "$pass"
         printf 'tls:\n  sni: %s\n' "$host"
-        [[ $insecure == 1 ]] && printf '  insecure: true\n'
+        if [[ $insecure == 1 ]]; then
+            printf '  insecure: true\n'
+        elif [[ -n ${TOOLBOX_NET_CAFILE:-} ]]; then
+            printf "  ca: '%s'\n" "${TOOLBOX_NET_CAFILE//\'/\'\'}"
+        fi
         printf 'socks5:\n  listen: 127.0.0.1:%s\n' "$sock"
     } > "$dir/$label.yaml" || return 1
     "$bin" client -c "$dir/$label.yaml" --disable-update-check >"$out" 2>&1 &
@@ -1489,25 +1523,36 @@ net_a1_conflict() { # 写盘前的冲突判定
 
 _net_a1_install() {
     local cert=${1:-} key=${2:-} host=${3:-} port=${4:-} trusted=1 insecure=0
-    local arch tmp etc bin init pid pass state
+    local arch tmp etc bin init pid pass state interactive=0
+    [[ -n $cert && -n $key && -n $host ]] || interactive=1
     net_require_root || return 1
     net_alpine_require_os || return 1
     net_alpine_require_openrc || return 1
-    net_require_cmds curl sha256sum install mktemp flock ss awk openssl stat timeout
+    net_require_cmds curl sha256sum install mktemp flock ss awk openssl stat timeout || return 1
     arch=$(net_alpine_arch) || return 1
 
-    [[ -n $cert ]] || { net_die '缺少证书路径。'; return 1; }
-    [[ -n $key ]] || { net_die '缺少私钥路径。'; return 1; }
-    [[ -n $host ]] || { net_die '缺少主机名（证书对应的域名）。'; return 1; }
+    # 菜单只传动作：缺的项逐一问；EOF 在写盘前就退出。
+    [[ -n $cert ]] || net_prompt '证书文件路径（PEM，含完整链）：' cert || { net_die '缺少证书路径。'; return 1; }
+    [[ -n $key ]] || net_prompt '私钥文件路径：' key || { net_die '缺少私钥路径。'; return 1; }
+    [[ -n $host ]] || net_prompt '证书对应的域名：' host || { net_die '缺少主机名（证书对应的域名）。'; return 1; }
     host=${host,,}
     net_valid_hostname "$host" || { net_die "主机名格式不正确：$host"; return 1; }
     if [[ -n $port ]]; then
         net_valid_port "$port" || { net_die "端口不正确：$port（1-65535，无前导零）"; return 1; }
     else
-        port=$NET_ALPINE_DEFAULT_PORT
+        if (( interactive )); then
+            net_prompt "监听 UDP 端口（回车用 $NET_ALPINE_DEFAULT_PORT）：" port || return 1
+        fi
+        port=${port:-$NET_ALPINE_DEFAULT_PORT}
+        net_valid_port "$port" || { net_die "端口不正确：$port（1-65535，无前导零）"; return 1; }
     fi
     net_check_cert "$cert" "$key" "$host" || return 1
     net_a1_conflict || return 1
+    net_tls_trusted "$cert" || trusted=0
+    if [[ $trusted == 0 && ( ${TOOLBOX_NET_CAFILE+x} || ${TOOLBOX_NET_CAPATH+x} ) ]]; then
+        net_die '显式信任锚校验失败，拒绝降级为 insecure；请检查 CA 文件与完整证书链。'
+        return 1
+    fi
 
     etc=$(net_a1_etc); bin=$(net_a1_bin); init=$(net_a1_init); pid=$(net_a1_pid)
     if net_port_busy udp "$port"; then
@@ -1545,7 +1590,7 @@ _net_a1_install() {
         && install -m 0600 "$key" "$etc/key.pem" \
         || { rm -rf -- "$tmp"; net_a1_rollback; return 1; }
 
-    cat > "$etc/config.yaml" <<EOF
+    cat > "$etc/config.yaml" <<EOF || { rm -rf -- "$tmp"; net_a1_rollback; return 1; }
 listen: :$port
 tls:
   cert: $etc/cert.pem
@@ -1563,7 +1608,7 @@ EOF
     chmod 0600 "$etc/config.yaml" && [[ -s $etc/config.yaml ]] \
         || { rm -rf -- "$tmp"; net_a1_rollback; return 1; }
 
-    cat > "$init" <<EOF
+    cat > "$init" <<EOF || { rm -rf -- "$tmp"; net_a1_rollback; return 1; }
 #!/sbin/openrc-run
 description="Terry Toolbox Hysteria 2 server"
 command="$bin"
@@ -1601,7 +1646,12 @@ EOF
         rm -rf -- "$tmp"; net_a1_rollback; return 1
     fi
 
+    trusted=1
     net_tls_trusted "$etc/cert.pem" || trusted=0
+    if [[ $trusted == 0 && ( ${TOOLBOX_NET_CAFILE+x} || ${TOOLBOX_NET_CAPATH+x} ) ]]; then
+        net_die '写入后的证书链不被指定 CA 信任，拒绝降级为 insecure。'
+        rm -rf -- "$tmp"; net_a1_rollback; return 1
+    fi
     [[ $trusted == 0 ]] && insecure=1
 
     if ! net_hysteria_probe "$bin" "$host" "$port" "$pass" "$insecure" good; then
@@ -1614,8 +1664,8 @@ EOF
     fi
     printf '  负向探测：错误密码被拒绝 ✓\n'
 
-    printf '%s|%s|%s|%s\n' "$host" "$port" "$insecure" "$NET_ALPINE_HY2_VERSION" > "$etc/meta"
-    chmod 0600 "$etc/meta"
+    printf '%s|%s|%s|%s\n' "$host" "$port" "$insecure" "$NET_ALPINE_HY2_VERSION" > "$etc/meta" && chmod 0600 "$etc/meta" && [[ -s $etc/meta ]] \
+        || { rm -rf -- "$tmp"; net_a1_rollback; return 1; }
     rm -rf -- "$tmp"
     net_a1_report "$host" "$port" "$pass" "$insecure"
 }
@@ -1630,6 +1680,9 @@ net_a1_report() {
         printf '  证书链未被本机信任库验证通过：链接带 insecure=1，客户端需同样开启。\n'
     else
         printf '  证书链验证通过：客户端可保持严格校验（去掉 insecure=1）。\n'
+        if [[ -n ${TOOLBOX_NET_CAFILE:-} ]]; then
+            printf '  使用自定义 CA：其他客户端也需配置同一信任锚，不能只复制连接链接。\n'
+        fi
     fi
     printf '\n验证情况：\n'
     printf '  [已验证] 服务 started、UDP %s 由 %s 监听\n' "$port" "$NET_ALPINE_HY2_NAME"
@@ -2202,7 +2255,8 @@ _net_a5_install() {
     local thost='' tport='' arch tmp etc bin unit uuid priv pub shortid
     local cfg log smcfg accepted rejected after_accepted after_rejected
     local A5_AFTER='' A5_DOWN_BPS='' A5_DOWN_BURST='' A5_UP_BPS='' A5_UP_BURST=''
-    local spid=''
+    local spid='' interactive=0
+    [[ -n $target && -n $sni ]] || interactive=1
 
     net_require_root || return 1
     net_require_debian || return 1
@@ -2210,8 +2264,11 @@ _net_a5_install() {
     net_require_cmds openssl sha256sum curl install flock ss cut unzip mktemp timeout sed || return 1
     arch=$(net_alpine_arch) || return 1
 
-    [[ -n $target ]] || { net_die '缺少回落目标（显式给出 主机名[:端口]，默认端口 443）。'; return 1; }
-    [[ -n $sni ]] || { net_die '缺少 SNI 主机名（必须是回落目标证书覆盖的名字，需显式给出）。'; return 1; }
+    # 菜单只传动作：缺的项逐一问；EOF 在写盘前就退出。
+    [[ -n $target ]] || net_prompt '回落目标（主机名[:端口]，默认 443）：' target \
+        || { net_die '缺少回落目标（显式给出 主机名[:端口]，默认端口 443）。'; return 1; }
+    [[ -n $sni ]] || net_prompt 'SNI 主机名（须被回落目标证书覆盖）：' sni \
+        || { net_die '缺少 SNI 主机名（必须是回落目标证书覆盖的名字，需显式给出）。'; return 1; }
     sni=${sni,,}
 
     thost=${target%%:*}; tport=''
@@ -2223,7 +2280,11 @@ _net_a5_install() {
     if [[ -n $port ]]; then
         net_valid_port "$port" || { net_die "监听端口不正确：$port（1-65535，无前导零）"; return 1; }
     else
-        port=$NET_A5_DEFAULT_PORT
+        if (( interactive )); then
+            net_prompt "监听 TCP 端口（回车用 $NET_A5_DEFAULT_PORT）：" port || return 1
+        fi
+        port=${port:-$NET_A5_DEFAULT_PORT}
+        net_valid_port "$port" || { net_die "监听端口不正确：$port（1-65535，无前导零）"; return 1; }
     fi
 
     etc=$(net_a5_etc); bin=$(net_a5_bin); unit=$(net_a5_unit)
@@ -2294,7 +2355,7 @@ _net_a5_install() {
     install -d -m 0755 -- "$(dirname -- "$bin")" || { rm -rf -- "$tmp"; net_die '无法创建二进制目录'; return 1; }
 
     # 配置先落在临时目录，自检通过后才到位：partial 写入不会污染 etc。
-    cat > "$tmp/config.json" <<EOF
+    cat > "$tmp/config.json" <<EOF || { rm -rf -- "$tmp"; net_a5_rollback; return 1; }
 {
   "log": { "loglevel": "warning" },
   "inbounds": [
@@ -2336,7 +2397,7 @@ _net_a5_install() {
 }
 EOF
     chmod 0600 "$tmp/config.json" && [[ -s $tmp/config.json ]] \
-        || { rm -rf -- "$tmp"; net_die '配置写入失败'; return 1; }
+        || { rm -rf -- "$tmp"; net_a5_rollback; net_die '配置写入失败'; return 1; }
 
     # 二进制先到位（自检要用它），然后登记 → 之后任何失败都可回滚。
     net_a5_place 0755 "$tmp/x/xray" "$bin" || { rm -rf -- "$tmp"; net_a5_rollback; return 1; }
@@ -2347,7 +2408,7 @@ EOF
         rm -rf -- "$tmp"; net_a5_rollback; return 1
     fi
 
-    cat > "$tmp/unit" <<EOF
+    cat > "$tmp/unit" <<EOF || { rm -rf -- "$tmp"; net_a5_rollback; return 1; }
 [Unit]
 Description=Terry Toolbox Xray server
 Documentation=https://xtls.github.io/
@@ -2445,7 +2506,7 @@ EOF
     fi
 
     printf '%s|%s|%s|%s|%s|%s|%s|%s\n' "$thost" "$tport" "$sni" "$port" "$uuid" "$pub" \
-        "$shortid" "$NET_A5_VERSION" > "$tmp/meta" || { rm -rf -- "$tmp"; net_die 'meta 写入失败'; return 1; }
+        "$shortid" "$NET_A5_VERSION" > "$tmp/meta" || { rm -rf -- "$tmp"; net_a5_rollback; net_die 'meta 写入失败'; return 1; }
     net_a5_place 0600 "$tmp/meta" "$(net_a5_meta)" || { rm -rf -- "$tmp"; net_a5_rollback; return 1; }
     rm -rf -- "$tmp"
     net_a5_report "$thost" "$tport" "$sni" "$port" "$uuid" "$pub" "$shortid" \
@@ -2905,7 +2966,7 @@ toolbox_network() {
         printf '     toolbox_network B31 [install|uninstall|status] <tcp|udp> <本地端口> [目标主机] [目标端口]\n' >&2
         return 2
     fi
-    local key=$1 action description
+    local key=$1 action
     shift || true
     case $key in
         A1)
@@ -3006,7 +3067,4 @@ toolbox_network() {
             ;;
         *) printf '未知网络操作: %s\n' "$key" >&2; return 2 ;;
     esac
-    printf '%s (%s): 未实现，未执行任何安装或系统修改。\n' "$key" "$description" >&2
-    printf '缺少可验证且不会覆盖已有服务的安全安装路径；请勿使用来源脚本直接执行。\n' >&2
-    return 1
 }

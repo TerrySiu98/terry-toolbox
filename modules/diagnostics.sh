@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Read-only diagnostics; missing utilities are reported rather than installed.
 toolbox_diagnostics() {
-    local cmd
+    local line
     printf '\n=== 系统 ===\n'
     uname -a || true
     if [[ -r /etc/os-release ]]; then

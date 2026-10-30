@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # A1/A2（Alpine + OpenRC）与 B23（systemd-resolved）的隔离测试。
+# shellcheck disable=SC2317,SC2016
+# Mock callbacks are invoked indirectly by the sourced installer.
 #
 # 真实：openssl 生成证书、sha256sum、install/stat、unzip、模块逻辑本身。
 # 桩：rc-service / rc-update / ss / curl / uname 以外的外部命令、apt 二进制与
@@ -7,8 +9,33 @@
 #     /run 或 systemd。
 set -euo pipefail
 ROOT=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-work=$(mktemp -d "${TMPDIR:-/tmp}/toolbox-net-alpine-test.XXXXXXXX")
-trap 'rm -rf -- "$work"' EXIT
+work=$(mktemp -d "${TMPDIR:-/root/.hermes/cache/scratch}/toolbox-net-alpine-test.XXXXXXXX")
+cleanup() {
+    python3 -c '
+import os, signal, time
+marker = ("TOOLBOX_TEST_WORK=" + os.environ["TOOLBOX_TEST_WORK"]).encode()
+skip = {os.getpid(), os.getppid()}
+def owned(pid):
+    try:
+        return marker in open("/proc/%s/environ" % pid, "rb").read().split(b"\0")
+    except (OSError, ProcessLookupError):
+        return False
+pids = [int(p) for p in os.listdir("/proc") if p.isdigit() and int(p) not in skip and owned(p)]
+for pid in pids:
+    try: os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError: pass
+time.sleep(0.05)
+for pid in pids:
+    if owned(pid):
+        try: os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError: pass
+'
+    rm -rf -- "${work:?}"
+}
+trap cleanup EXIT
+export HOME=$work/home TOOLBOX_TEST_WORK=$work
+export TMPDIR=$work
+mkdir -p "$HOME"
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 SD=$work/state
@@ -32,6 +59,10 @@ export TOOLBOX_DNS_DROPIN_DIR=$work/dns/dropin
 export TOOLBOX_DNS_RESOLV_CONF=$work/resolv.conf
 export PATH=$work/bin:$PATH
 unset TOOLBOX_A1_SHA256_ARM64 TOOLBOX_A2_SHA256_ARM64
+for cmd in apk apt apt-get dnf yum sysctl modprobe rmmod dkms depmod; do
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n" forbidden >> "$SD/forbidden.log"\nexit 99\n' > "$work/bin/$cmd"
+    chmod +x "$work/bin/$cmd"
+done
 
 printf 'ID=alpine\nVERSION_ID="3.22"\n' > "$TOOLBOX_NET_OS_RELEASE"
 printf 'ID=debian\n' > "$work/os-debian"
@@ -219,7 +250,9 @@ reset() {
     mkdir -p "$work/etc" "$work/lock"
     find "$work/initd" -mindepth 1 -delete
     find "$work/bin" -mindepth 1 -maxdepth 1 ! -name 'rc-service' ! -name 'rc-update' \
-        ! -name 'ss' ! -name 'curl' ! -name 'systemctl' ! -name 'resolvectl' -delete
+        ! -name 'ss' ! -name 'curl' ! -name 'systemctl' ! -name 'resolvectl' \
+        ! -name 'apk' ! -name 'apt' ! -name 'apt-get' ! -name 'dnf' ! -name 'yum' \
+        ! -name 'sysctl' ! -name 'modprobe' ! -name 'rmmod' ! -name 'dkms' ! -name 'depmod' -delete
     find "$work/run" -mindepth 1 -delete
     rm -f "$SD"/*.log "$SD"/active_* "$SD"/ports.* "$SD"/port "$SD"/status.txt \
         "$SD"/smoke_fail "$SD"/silent "$SD"/probe_fail "$SD"/accept_any "$SD"/download_fail \
@@ -480,8 +513,53 @@ out=$(printf 'YES\n' | TOOLBOX_NET_CAFILE=$work/good.crt \
 grep -q '证书链验证通过' <<< "$out" || fail 'A1 受信任证书未报告验证通过'
 grep -q '&insecure=1' <<< "$out" && fail 'A1 受信任证书的链接仍带 insecure=1'
 grep -q '|0|' "$TOOLBOX_A1_ETC/meta" || fail 'A1 meta 未记录 insecure=0'
+grep -q '其他客户端也需配置同一信任锚' <<< "$out" || fail 'A1 把本机信任误报为所有客户端信任'
 toolbox_network A1 uninstall <<< 'YES' >/dev/null 2>&1 || fail 'A1 受信任证书卸载失败'
 reset
+
+# 独立 CA 必须进入严格探针配置，不只是改变报告里的 insecure 值。
+for ca in "$work/other.crt" "$work/missing.crt" ''; do
+    printf '18443\n' > "$SD/port"
+    if TOOLBOX_NET_CAFILE=$ca toolbox_network A1 install "$work/good.crt" "$work/good.key" "$H" 18443 <<< YES >"$work/ca-refusal.out" 2>&1; then
+        fail 'A1 显式 CA 无效仍降级安装'
+    fi
+    assert_clean 'A1 显式 CA 校验失败'
+    [[ ! -s $SD/rc-service.log && ! -s $SD/hysteria.log ]] || fail 'A1 CA 校验失败仍触碰服务'
+    reset
+done
+[[ -s $work/good.crt ]] || fail 'CA 夹具不存在'
+TOOLBOX_NET_CAFILE=$work/good.crt net_tls_trusted "$work/good.crt" || fail 'A1 CA 信任函数不可用'
+if TOOLBOX_NET_CAFILE=$work/other.crt net_tls_trusted "$work/good.crt"; then fail 'A1 接受错误 CA'; fi
+printf '18443\n' > "$SD/port"
+out=$(printf 'YES\n' | TOOLBOX_NET_CAFILE=$work/good.crt toolbox_network A1 install "$work/good.crt" "$work/good.key" "$H" 18443 2>&1) \
+    || { printf '%s\n' "$out" >&2; fail 'A1 独立 CA 探针安装失败'; }
+grep -qF "$work/good.crt" "$(net_a1_client)/good.yaml" || fail 'A1 探针没有配置独立 CA'
+grep -q 'insecure: true' "$(net_a1_client)/good.yaml" && fail 'A1 独立 CA 探针关闭校验'
+toolbox_network A1 uninstall <<< YES >/dev/null 2>&1 || fail 'A1 独立 CA 卸载失败'
+reset
+
+# 菜单不带参数：缺的证书/私钥/主机名要逐项补问，端口回车用默认
+printf '443\n' > "$SD/port"
+out=$(printf '1\n%s\n%s\n%s\n\nYES\n' "$work/good.crt" "$work/good.key" "$H" | toolbox_network A1 2>&1) \
+    || { printf '%s\n' "$out" >&2; fail 'A1 交互式补全参数后安装失败'; }
+grep -q '^listen: :443$' "$TOOLBOX_A1_ETC/config.yaml" || fail 'A1 交互式安装端口不是默认 443'
+toolbox_network A1 uninstall <<< 'YES' >/dev/null 2>&1 || fail 'A1 交互式安装后卸载失败'
+reset
+# 问到一半就 EOF 也要在写盘前退出
+printf '%s\n' "$work/good.crt" | toolbox_network A1 install >/dev/null 2>&1 && fail 'A1 EOF 被当成安装'
+assert_clean 'A1 交互式 EOF'
+
+# A1 菜单自定义端口与端口处 EOF/非法输入。
+printf '18443\n' > "$SD/port"
+out=$(printf '%s\n%s\n%s\n18443\nYES\n' "$work/good.crt" "$work/good.key" "$H" | toolbox_network A1 install 2>&1) \
+    || { printf '%s\n' "$out" >&2; fail 'A1 交互自定义端口失败'; }
+grep -q '^listen: :18443$' "$(net_a1_etc)/config.yaml" || fail 'A1 自定义端口被忽略'
+toolbox_network A1 uninstall <<< YES >/dev/null 2>&1 || fail 'A1 自定义端口卸载失败'
+reset
+for suffix in '' $'0080\nYES\n'; do
+    printf '%s\n%s\n%s\n%s' "$work/good.crt" "$work/good.key" "$H" "$suffix" | toolbox_network A1 install >/dev/null 2>&1 && fail 'A1 缺端口输入/非法端口仍安装'
+    assert_clean 'A1 端口交互拒绝'
+done
 
 # ================================================================ A2
 # 上游产物名按架构不同：arm64 是 -arm64-v8a，写成 -arm64 会 404。
@@ -703,4 +781,26 @@ if printf '7\nYES\n' | toolbox_network B23 >/dev/null 2>&1; then fail 'B23 无�
 if printf '9\n' | toolbox_network B23 >/dev/null 2>&1; then fail 'B23 非法菜单项被接受'; fi
 if toolbox_network B23 install nope >/dev/null 2>&1; then fail 'B23 install 接受非法地址'; fi
 
+# 条件上下文中缺命令必须显式停止，不能指望 set -e。
+(
+    command() { [[ ${1:-} == -v && ${2:-} == timeout ]] && return 1; builtin command "$@"; }
+    toolbox_network A1 install "$work/good.crt" "$work/good.key" "$H" 18443 <<< YES >"$work/tools-fail.out" 2>&1 \
+        && fail 'A1 缺命令却继续安装'
+    :
+)
+assert_clean 'A1 缺命令'
+[[ ! -s $SD/hysteria.log ]] || fail 'A1 缺命令仍调用服务二进制'
+reset
+(
+    cat() { if (( $# == 0 )); then command cat; return 1; fi; command cat "$@"; }
+    printf '18443\n' > "$SD/port"
+    toolbox_network A1 install "$work/good.crt" "$work/good.key" "$H" 18443 <<< YES >"$work/write-fail.out" 2>&1 \
+        && fail 'A1 条件上下文吞掉配置写入失败'
+    :
+)
+assert_clean 'A1 配置写入失败'
+[[ ! -s $SD/hysteria.log ]] || fail 'A1 写入失败仍启动二进制'
+reset
+
+[[ ! -e $SD/forbidden.log ]] || fail '命中了真实命令兜底拒绝桩'
 printf 'network alpine/dns tests passed\n'

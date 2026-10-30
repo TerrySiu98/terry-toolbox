@@ -60,10 +60,23 @@ _toolbox_system_ours() {
 # Print a file atomically next to its target (same filesystem), mode 0600/0644.
 _toolbox_system_put() {
     local target=$1 mode=$2 tmp
-    tmp="${target}.tmp.$$"
+    tmp=$(mktemp "${target}.tmp.XXXXXX") || return 1
     cat > "$tmp" || { rm -f -- "$tmp"; return 1; }
     chmod "$mode" -- "$tmp" || { rm -f -- "$tmp"; return 1; }
-    mv -f -- "$tmp" "$target"
+    if [[ ${3:-replace} == create ]]; then
+        ln -- "$tmp" "$target" || { rm -f -- "$tmp"; return 1; }
+        rm -f -- "$tmp"
+    else
+        mv -f -- "$tmp" "$target" || { rm -f -- "$tmp"; return 1; }
+    fi
+}
+_toolbox_system_file_stamp() {
+    local file=$1 inode digest
+    if [[ ! -e $file && ! -L $file ]]; then printf 'absent'; return 0; fi
+    [[ -f $file && ! -L $file ]] || return 1
+    inode=$(stat -c '%d:%i' -- "$file") || return 1
+    digest=$(sha256sum -- "$file") || return 1
+    printf '%s:%s' "$inode" "${digest%% *}"
 }
 # Hidden input: value never appears in the terminal echo or in logs.
 _toolbox_system_read_secret() {
@@ -83,16 +96,46 @@ _toolbox_system_read_line() {
 }
 _toolbox_system_positive_int() { [[ $1 =~ ^[1-9][0-9]{0,6}$ ]]; }
 
+# 0=installed, 1=absent, 2=unable to determine. No shell source/eval.
+_toolbox_system_package_installed() {
+    local out rc=0
+    out=$(dpkg-query -W -f='${Status}' -- "$1" 2>/dev/null) || rc=$?
+    (( rc != 1 )) || return 1
+    (( rc == 0 )) || return 2
+    case $out in
+        'install ok installed') return 0;;
+        *' not-installed'|*' config-files') return 1;;
+        *) return 2;;
+    esac
+}
+_toolbox_system_missing_packages() {
+    local pkg status
+    missing_packages=()
+    for pkg in "$@"; do
+        status=0; _toolbox_system_package_installed "$pkg" || status=$?
+        case $status in
+            0) ;;
+            1) missing_packages+=("$pkg");;
+            *) _toolbox_system_error "无法确认包状态：$pkg；未安装。"; return 1;;
+        esac
+    done
+}
 _toolbox_system_deps() {
     local os
+    local -a missing_packages=()
     _toolbox_system_root || return
     os=$(_toolbox_system_os) || return
-    _toolbox_system_confirm "将通过 $os 系统包管理器安装 curl socat wget sudo nano iptables，可能触发依赖升级。" || return
-    case "$os" in
-        alpine) apk add --no-cache curl socat wget sudo nano iptables;;
-        debian) apt-get install -y curl socat wget sudo nano iptables;;
-        *) _toolbox_system_error '不支持的包管理器'; return 1;;
-    esac
+    if [[ $os == debian ]]; then
+        _toolbox_system_need_tools apt-get dpkg-query || return
+        _toolbox_system_missing_packages curl socat wget sudo nano iptables || return
+        if (( ${#missing_packages[@]} == 0 )); then printf '基础依赖包已齐全；未升级或安装。\n'; return 0; fi
+        _toolbox_system_confirm "将先 apt-get update，再仅补缺失包：${missing_packages[*]}（--no-upgrade；依赖仍可能改变）。" || return
+        apt-get update || return
+        apt-get install -y --no-upgrade "${missing_packages[@]}"
+    else
+        _toolbox_system_confirm '将通过 Alpine 安装 curl socat wget sudo nano iptables；依赖可能改变。' || return
+        apk add --no-cache curl socat wget sudo nano iptables
+    fi
 }
 _toolbox_system_bbr() {
     local available current
@@ -107,21 +150,193 @@ _toolbox_system_bbr() {
     [[ $current == bbr ]] || { _toolbox_system_error '设置后验证失败；请检查系统状态。'; return 1; }
     printf 'BBR 已启用（重启后可能失效）。\n'
 }
+readonly _TOOLBOX_DOCKER_GPG_FINGERPRINT='9DC858229FC7DD38854AE2D88D81803C0EBFCD88'
+# Fingerprint source: HTTPS key linked by https://docs.docker.com/engine/install/debian/
+# https://download.docker.com/linux/debian/gpg (same primary key on Ubuntu).
+# Official deb822 repository/keyring layout follows Docker's Debian/Ubuntu docs.
+# No convenience script, apt-key, unsigned mirror or automatic conflict removal.
+_toolbox_system_docker_release() {
+    local key value id='' codename='' ubuntu_codename=''
+    while IFS='=' read -r key value; do
+        value=${value#\"}; value=${value%\"}; value=${value#\'}; value=${value%\'}
+        case $key in ID) id=$value;; VERSION_CODENAME) codename=$value;; UBUNTU_CODENAME) ubuntu_codename=$value;; esac
+    done < "${TOOLBOX_DOCKER_OS_RELEASE:-/etc/os-release}" || return 1
+    if [[ $id == ubuntu && -n $ubuntu_codename ]]; then codename=$ubuntu_codename; fi
+    case "$id:$codename" in
+        debian:bookworm|debian:trixie|ubuntu:jammy|ubuntu:noble|ubuntu:resolute) printf '%s %s\n' "$id" "$codename";;
+        *) _toolbox_system_error 'Docker 官方仓库只支持已验证的 Debian/Ubuntu 发行版；未猜测代号。'; return 1;;
+    esac
+}
+_toolbox_system_docker_verify() {
+    local version
+    _toolbox_system_has docker || { _toolbox_system_error '安装后 docker 命令仍不可用。'; return 1; }
+    version=$(docker version --format '{{.Server.Version}}' 2>/dev/null) || {
+        _toolbox_system_error '无法回读 Docker Engine 版本（服务可能未启动）；不宣称安装成功。'; return 1; }
+    if [[ ! $version =~ ^([0-9]{1,3})\.([0-9]+)\.([0-9]+)(\+[A-Za-z0-9._+-]+)?$ ]] \
+        || (( 10#${BASH_REMATCH[1]} < 28 )); then
+        _toolbox_system_error "Docker Engine 版本 '$version' 不满足应用菜单 ≥28 门槛；未降低安全要求。"; return 1
+    fi
+    printf 'Docker Engine 已安装并回读版本 %s（≥28）；未创建测试容器，应用仍需各自验收。\n' "$version"
+}
+_toolbox_system_docker_repo_cleanup() {
+    local i target now
+    for ((i=0; i<${#repo_paths[@]}; i++)); do
+        [[ -n ${repo_owned[i]:-} ]] || continue
+        target=${repo_paths[i]}
+        now=$(stat -c '%d:%i' -- "$target" 2>/dev/null) || now=''
+        if [[ $now == "${repo_owned[i]}" && ! -L $target ]]; then rm -f -- "$target"
+        else _toolbox_system_error "Docker 仓库文件已变化，未清理：$target"; fi
+    done
+}
+# APT can prefer a repository instance even when given a local .deb of the same
+# version. Refuse any globally indexed vendor candidate instead of trusting that
+# a version pin or local-file argument proves package provenance.
+_toolbox_system_docker_global_candidates_absent() {
+    local pkg policy candidate count line in_table indexed
+    for pkg in docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; do
+        policy=$(LC_ALL=C apt-cache policy "$pkg") || return 1
+        candidate=''; count=0; in_table=0; indexed=0
+        while IFS= read -r line; do
+            if [[ $line =~ ^[[:space:]]*Candidate:[[:space:]]+(.+)$ ]]; then
+                candidate=${BASH_REMATCH[1]}; count=$((count + 1))
+            fi
+            if (( in_table )) && [[ $line == *[![:space:]]* ]]; then indexed=1; fi
+            [[ $line != *'Version table:'* ]] || in_table=1
+        done <<< "$policy"
+        # Unknown packages may produce no stdout; reject pinned-out versions too.
+        if [[ -z $policy ]]; then continue; fi
+        [[ $count == 1 && $candidate == '(none)' && $indexed == 0 ]] || {
+            _toolbox_system_error "全局 APT 已有 $pkg 候选或状态未知；不混用现有包源，请人工处理。"; return 1; }
+    done
+}
 _toolbox_system_docker() {
-    local os
+    local os release distro codename arch pkg status aptroot key source tmp fingerprint gpgout
+    local -a missing_packages=() repo_paths=() repo_owned=()
     _toolbox_system_root || return
     if _toolbox_system_has docker; then
-        _toolbox_system_error 'Docker 已存在；为保护现有服务和数据不进行安装或重配置。'; return 1
+        _toolbox_system_error 'Docker 已存在；为保护现有服务和数据不进行安装或重配置。需要 Engine ≥28。'; return 1
     fi
     os=$(_toolbox_system_os) || return
-    _toolbox_system_confirm '将使用系统仓库安装 Docker；包安装可能启动服务或改变防火墙。不会删除容器和数据。' || return
-    case "$os" in
-        debian) apt-get install -y docker.io;;
-        alpine) apk add --no-cache docker docker-cli-compose;;
-        *) return 1;;
-    esac || return
-    _toolbox_system_has docker || { _toolbox_system_error '安装命令已完成但 docker 不可用；请检查包状态。'; return 1; }
-    printf 'Docker 包已安装；服务状态及网络尚需单独检查。\n'
+    if [[ $os == alpine ]]; then
+        _toolbox_system_confirm '将通过 Alpine 官方仓库安装 Docker；可能启动服务或改变防火墙，安装后必须回读 Engine ≥28。' || return
+        apk update || return
+        apk add --no-cache docker docker-cli-compose || return
+        _toolbox_system_docker_verify
+        return
+    fi
+    _toolbox_system_need_tools apt-get apt-cache dpkg dpkg-query dpkg-deb || return
+    release=$(_toolbox_system_docker_release) || return
+    read -r distro codename <<< "$release"
+    arch=$(dpkg --print-architecture) || return
+    case "$distro:$arch" in
+        debian:amd64|debian:arm64|debian:armhf|debian:ppc64el|ubuntu:amd64|ubuntu:arm64|ubuntu:armhf|ubuntu:s390x|ubuntu:ppc64el) ;;
+        *) _toolbox_system_error "Docker 官方仓库未验证架构 $distro:$arch；未改动。"; return 1;;
+    esac
+    for pkg in docker.io docker-compose docker-compose-v2 docker-doc docker-buildx podman-docker containerd runc \
+               docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; do
+        status=0; _toolbox_system_package_installed "$pkg" || status=$?
+        case $status in
+            1) ;;
+            0) _toolbox_system_error "已有 Docker/冲突包 $pkg；不自动删除、升级或重配置，请人工迁移。"; return 1;;
+            *) _toolbox_system_error "无法确认包状态 $pkg；未改动。"; return 1;;
+        esac
+    done
+    for tmp in "${TOOLBOX_DOCKER_DATA_ROOT:-/var/lib}/docker" "${TOOLBOX_DOCKER_DATA_ROOT:-/var/lib}/containerd"; do
+        [[ ! -e $tmp && ! -L $tmp ]] || { _toolbox_system_error "已有数据路径 $tmp；不覆盖，请人工确认。"; return 1; }
+    done
+    aptroot=${TOOLBOX_DOCKER_APT_ROOT:-/etc/apt}
+    key="$aptroot/keyrings/terry-toolbox-docker.asc"
+    source="$aptroot/sources.list.d/terry-toolbox-docker.sources"
+    for tmp in "$key" "$source" "$aptroot/keyrings/docker.asc" "$aptroot/sources.list.d/docker.sources" "$aptroot/sources.list.d/docker.list"; do
+        [[ ! -e $tmp && ! -L $tmp ]] || { _toolbox_system_error "Docker 仓库目标已存在：$tmp；不覆盖。"; return 1; }
+    done
+    _toolbox_system_missing_packages ca-certificates curl gnupg || return
+    printf '将添加 Docker 官方 stable 仓库 https://download.docker.com/linux/%s（%s/%s）。\n' "$distro" "$codename" "$arch"
+    printf '  GPG: %s（固定主密钥指纹 %s）\n  仓库: %s（Signed-By 专用 keyring）\n' "$key" "$_TOOLBOX_DOCKER_GPG_FINGERPRINT" "$source"
+    printf '  包: docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin；私有索引只从官方源下载，再安装本地包（--no-upgrade）。\n'
+    printf '  若全局 APT 已有上述包的索引则拒绝，避免同版本镜像替换；不装 recommends，普通依赖仍来自现有系统仓库。\n'
+    _toolbox_system_confirm '将先 update，补仓库依赖，再 update/安装 Docker。包安装可能启动服务、改变防火墙；不会删除现有容器数据。确认？' || return
+    apt-get update || return
+    _toolbox_system_docker_global_candidates_absent || return 1
+    if (( ${#missing_packages[@]} > 0 )); then
+        apt-get install -y --no-upgrade "${missing_packages[@]}" || return
+    fi
+    _toolbox_system_need_tools curl gpg || return
+    tmp=$(mktemp -d) || return
+    mkdir -m 0700 "$tmp/gnupg" || { rm -rf -- "$tmp"; return 1; }
+    if ! curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 60 \
+        -o "$tmp/key.asc" "https://download.docker.com/linux/$distro/gpg"; then
+        _toolbox_system_error 'Docker 官方 GPG 密钥下载失败；未添加仓库。'; rm -rf -- "$tmp"; return 1
+    fi
+    if ! gpgout=$(gpg --homedir "$tmp/gnupg" --batch --with-colons --show-keys "$tmp/key.asc" 2>/dev/null); then
+        _toolbox_system_error 'Docker GPG 密钥解析失败；未添加仓库。'; rm -rf -- "$tmp"; return 1
+    fi
+    fingerprint=$(printf '%s\n' "$gpgout" | awk -F: '$1=="pub"{pubs++; primary=1; next} primary && $1=="fpr"{print $10; primary=0} END{if(pubs!=1)exit 1}') || fingerprint=''
+    if [[ $fingerprint != "$_TOOLBOX_DOCKER_GPG_FINGERPRINT" ]]; then
+        _toolbox_system_error 'Docker GPG 主密钥指纹不匹配；未添加仓库。'; rm -rf -- "$tmp"; return 1
+    fi
+    chmod 0644 "$tmp/key.asc" || { rm -rf -- "$tmp"; return 1; }
+    {
+        printf '# terry-toolbox B1 Docker official repository\nTypes: deb\nURIs: https://download.docker.com/linux/%s\n' "$distro"
+        printf 'Suites: %s\nComponents: stable\nArchitectures: %s\nSigned-By: %s\n' "$codename" "$arch" "$key"
+    } > "$tmp/docker.sources" || { rm -rf -- "$tmp"; return 1; }
+    chmod 0644 "$tmp/docker.sources" || { rm -rf -- "$tmp"; return 1; }
+    install -d -m 0755 "$aptroot/keyrings" "$aptroot/sources.list.d" || { rm -rf -- "$tmp"; return 1; }
+    repo_paths=("$key" "$source")
+    local i staged
+    for ((i=0; i<2; i++)); do
+        if (( i == 0 )); then pkg="$tmp/key.asc"; else pkg="$tmp/docker.sources"; fi
+        staged=$(mktemp "${repo_paths[i]}.tmp.XXXXXX") || { _toolbox_system_docker_repo_cleanup; rm -rf -- "$tmp"; return 1; }
+        if ! cp -p -- "$pkg" "$staged"; then
+            rm -f -- "$staged"; _toolbox_system_docker_repo_cleanup; rm -rf -- "$tmp"; return 1
+        fi
+        repo_owned[i]=$(stat -c '%d:%i' -- "$staged") || { rm -f -- "$staged"; _toolbox_system_docker_repo_cleanup; rm -rf -- "$tmp"; return 1; }
+        ln -- "$staged" "${repo_paths[i]}" || { repo_owned[i]=''; rm -f -- "$staged"; _toolbox_system_docker_repo_cleanup; rm -rf -- "$tmp"; return 1; }
+        rm -f -- "$staged" || { _toolbox_system_docker_repo_cleanup; rm -rf -- "$tmp"; return 1; }
+    done
+    # A key on one source does not constrain global APT resolution. Download the
+    # five vendor packages with ONLY our source and a fresh, private index/cache;
+    # then install those exact local archives, resolving ordinary dependencies
+    # through the host's repositories. Never select vendor packages globally.
+    local -a vendor_packages=(docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin)
+    local -a vendor_debs=() private_apt=()
+    local deb metadata name version package_arch found
+    mkdir -p "$tmp/lists/partial" "$tmp/archives/partial" "$tmp/debs" || { rm -rf -- "$tmp"; return 1; }
+    private_apt=(-o "Dir::Etc::sourcelist=$source" -o 'Dir::Etc::sourceparts=-'
+        -o "Dir::State::lists=$tmp/lists" -o "Dir::Cache::archives=$tmp/archives"
+        -o 'Dir::Cache::pkgcache=' -o 'Dir::Cache::srcpkgcache='
+        -o 'Dir::Etc::preferences=-' -o 'Dir::Etc::preferencesparts=-'
+        -o 'APT::Get::AllowUnauthenticated=false' -o 'Acquire::AllowInsecureRepositories=false')
+    if ! apt-get "${private_apt[@]}" update; then
+        _toolbox_system_error 'Docker 专用仓库 update 失败；只移除本轮创建的仓库文件。'
+        _toolbox_system_docker_repo_cleanup; rm -rf -- "$tmp"; return 1
+    fi
+    if ! ( cd -- "$tmp/debs" && apt-get "${private_apt[@]}" download "${vendor_packages[@]}" ); then
+        _toolbox_system_error 'Docker 官方包下载失败；未安装 Docker，保留仓库供修复。'
+        rm -rf -- "$tmp"; return 1
+    fi
+    for pkg in "${vendor_packages[@]}"; do
+        found=0
+        for deb in "$tmp/debs/"*.deb; do
+            [[ -f $deb && ! -L $deb ]] || continue
+            metadata=$(dpkg-deb --show --showformat='${Package} ${Version} ${Architecture}' "$deb") || { rm -rf -- "$tmp"; return 1; }
+            read -r name version package_arch <<< "$metadata"
+            [[ $name == "$pkg" ]] || continue
+            [[ $package_arch == "$arch" && -n $version ]] || { _toolbox_system_error 'Docker 包架构/版本不符，未安装。'; rm -rf -- "$tmp"; return 1; }
+            vendor_debs+=("$deb"); found=$((found + 1))
+        done
+        (( found == 1 )) || { _toolbox_system_error "Docker 官方包缺失或重复：$pkg；未安装。"; rm -rf -- "$tmp"; return 1; }
+    done
+    if ! _toolbox_system_docker_global_candidates_absent; then
+        rm -rf -- "$tmp"; return 1
+    fi
+    if ! apt-get install -y --no-upgrade --no-install-recommends "${vendor_debs[@]}"; then
+        _toolbox_system_error "Docker 安装失败，包可能部分安装；保留官方仓库供修复：$source。未自动卸载。"
+        rm -rf -- "$tmp"; return 1
+    fi
+    rm -rf -- "$tmp"
+    _toolbox_system_docker_verify || {
+        _toolbox_system_error '包安装/仓库保留，但未通过 Engine 验收；请人工检查服务和包状态。'; return 1; }
 }
 _toolbox_system_password() {
     _toolbox_system_root || return
@@ -236,27 +451,152 @@ _toolbox_system_vnstat_json_ok() {
     [[ $out == *'"interfaces"'* ]]
 }
 
-# 可选参数是旧配置的备份：失败时恢复旧配置，而不是让重设变成“没有配置”。
-_toolbox_system_traffic_cleanup() {
-    local unit_dir bin etc
-    unit_dir=$(_toolbox_system_unit_dir); bin=$(_toolbox_system_bin_dir); etc=$(_toolbox_system_etc)
-    systemctl disable --now "$_TOOLBOX_TRAFFIC_TIMER" >/dev/null 2>&1 || true
-    rm -f -- "$unit_dir/$_TOOLBOX_TRAFFIC_TIMER" "$unit_dir/$_TOOLBOX_TRAFFIC_SERVICE"
-    rm -f -- "$bin/$_TOOLBOX_TRAFFIC_CHECK"
-    if [[ -n ${1-} && -f $1 ]]; then
-        mv -f -- "$1" "$etc/traffic.conf" \
-            && printf '已恢复此前的阈值配置，但定时器已停用；请重跑 B7 重新启用。\n' >&2
-    else
-        rm -f -- "$etc/traffic.conf"
+# Shared B7/B15 transaction: preflight every target, keep backups of ALL existing
+# artifacts, publish only if identity/content still match, rollback only our writes.
+_toolbox_system_unit_guard() {
+    local target=$1 name=${1##*/} fragment drops
+    fragment=$(systemctl show -p FragmentPath --value "$name" 2>/dev/null) || {
+        _toolbox_system_error "无法确认单元来源：$name；未改动。"; return 1; }
+    drops=$(systemctl show -p DropInPaths --value "$name" 2>/dev/null) || {
+        _toolbox_system_error "无法确认单元 drop-in：$name；未改动。"; return 1; }
+    if [[ -n $fragment && $fragment != "$target" ]] || [[ -n ${drops//[[:space:]]/} ]] \
+        || [[ -e $target.d || -L $target.d ]]; then
+        _toolbox_system_error "同名单元来源或 drop-in 不受本工具管理：$name；未改动。"; return 1
     fi
-    systemctl daemon-reload >/dev/null 2>&1 || true
 }
+_toolbox_system_unit_stopped() {
+    local state
+    state=$(systemctl show -p ActiveState --value "$1" 2>/dev/null) || return 1
+    case $state in inactive|failed) return 0;; *) return 1;; esac
+}
+_toolbox_system_timer_preflight() {
+    local marker=$1 target
+    shift
+    for target in "$@"; do
+        if [[ -e $target || -L $target ]] && { [[ -L $target ]] || ! _toolbox_system_ours "$target" "$marker"; }; then
+            _toolbox_system_error "$target 已存在但不是本工具生成的，未覆盖；请人工确认归属。"
+            return 1
+        fi
+    done
+    for target in "$@"; do
+        case $target in *.service|*.timer) _toolbox_system_unit_guard "$target" || return 1;; esac
+    done
+}
+_toolbox_system_timer_begin() {
+    local i target active enabled
+    _toolbox_system_timer_preflight "$txn_marker" "${txn_paths[@]}" || return 1
+    txn_dir=$(mktemp -d "$(_toolbox_system_state)/timer-txn.XXXXXX") || return 1
+    for ((i=0; i<${#txn_paths[@]}; i++)); do
+        target=${txn_paths[i]}; txn_before[i]=''; txn_written[i]=''
+        if [[ -e $target ]]; then
+            cp -p -- "$target" "$txn_dir/old.$i" || return 1
+            txn_before[i]=$(stat -c '%d:%i' -- "$target") || return 1
+            txn_hash[i]=$(sha256sum -- "$target") || return 1
+        fi
+    done
+    active=$(systemctl show -p ActiveState --value "$txn_timer" 2>/dev/null) || return 1
+    case $active in active) txn_active=1;; inactive|failed) ;; *) _toolbox_system_error '无法确定此前定时器活动状态，未写入。'; return 1;; esac
+    if [[ -n ${txn_before[3]} ]]; then
+        enabled=$(systemctl show -p UnitFileState --value "$txn_timer" 2>/dev/null) || return 1
+        case $enabled in enabled) txn_enabled=1;; disabled) ;; *) _toolbox_system_error '无法确定此前定时器启用状态，未写入。'; return 1;; esac
+    else
+        enabled=$(systemctl show -p UnitFileState --value "$txn_timer" 2>/dev/null) || return 1
+        case $enabled in ''|disabled|not-found) ;; *) _toolbox_system_error '无受管文件但定时器已存在，未写入。'; return 1;; esac
+    fi
+    return 0
+}
+_toolbox_system_timer_commit() {
+    local i target now digest
+    # Re-check ALL paths before the first write, including changes during confirmation.
+    _toolbox_system_timer_preflight "$txn_marker" "${txn_paths[@]}" || return 1
+    for ((i=0; i<${#txn_paths[@]}; i++)); do
+        target=${txn_paths[i]}
+        if [[ -n ${txn_before[i]} ]]; then
+            now=$(stat -c '%d:%i' -- "$target") || return 1
+            [[ $now == "${txn_before[i]}" && $(sha256sum -- "$target") == "${txn_hash[i]}" ]] \
+                || { _toolbox_system_error "确认后文件已变化：$target；未覆盖。"; return 1; }
+        elif [[ -e $target || -L $target ]]; then
+            _toolbox_system_error "目标已被其他操作创建：$target；未覆盖。"; return 1
+        fi
+    done
+    local staged identity
+    for ((i=0; i<${#txn_paths[@]}; i++)); do
+        target=${txn_paths[i]}
+        staged=$(mktemp "${target}.tmp.XXXXXX") || return 1
+        if ! cp -p -- "$txn_dir/new.$i" "$staged"; then rm -f -- "$staged"; return 1; fi
+        identity=$(stat -c '%d:%i' -- "$staged") || { rm -f -- "$staged"; return 1; }
+        digest=$(sha256sum -- "$staged") || { rm -f -- "$staged"; return 1; }
+        if [[ -z ${txn_before[i]} ]]; then
+            # Adjacent hardlink is atomic and no-clobber even on separate /etc & /var.
+            ln -- "$staged" "$target" || { rm -f -- "$staged"; return 1; }
+            txn_written[i]=$identity
+            txn_written_hash[i]=${digest%% *}
+            rm -f -- "$staged" || return 1
+        else
+            now=$(stat -c '%d:%i' -- "$target") || { rm -f -- "$staged"; return 1; }
+            if [[ -L $target || $now != "${txn_before[i]}" || $(sha256sum -- "$target") != "${txn_hash[i]}" ]]; then
+                rm -f -- "$staged"; _toolbox_system_error "目标在发布期间变化，未覆盖：$target"; return 1
+            fi
+            mv -f -- "$staged" "$target" || { rm -f -- "$staged"; return 1; }
+            txn_written[i]=$identity
+            txn_written_hash[i]=${digest%% *}
+        fi
+    done
+}
+_toolbox_system_timer_cleanup() {
+    local i target now digest changed=0
+    [[ -n $txn_dir && -d $txn_dir ]] || return 0
+    for now in "${txn_written[@]}"; do [[ -z $now ]] || changed=1; done
+    if (( changed == 1 )); then
+        # Check ALL artifacts before touching any: inode alone misses in-place edits.
+        for ((i=0; i<${#txn_paths[@]}; i++)); do
+            [[ -n ${txn_written[i]} ]] || continue
+            target=${txn_paths[i]}
+            now=$(stat -c '%d:%i' -- "$target" 2>/dev/null) || return 1
+            digest=$(sha256sum -- "$target" 2>/dev/null) || return 1
+            [[ $now == "${txn_written[i]}" && ! -L $target && ${digest%% *} == "${txn_written_hash[i]}" ]] \
+                || { _toolbox_system_error "文件已变化，未清理任何文件；备份：$txn_dir"; return 1; }
+        done
+        for target in "${txn_paths[@]}"; do
+            case $target in *.service|*.timer) _toolbox_system_unit_guard "$target" || return 1;; esac
+        done
+        if ! systemctl disable --now "$txn_timer" >/dev/null 2>&1 \
+            || ! _toolbox_system_unit_stopped "$txn_timer" \
+            || ! systemctl stop "$txn_service" >/dev/null 2>&1 \
+            || ! _toolbox_system_unit_stopped "$txn_service"; then
+            _toolbox_system_error "定时器停用未确认；保留全部文件和备份：$txn_dir"; return 1
+        fi
+        for ((i=0; i<${#txn_paths[@]}; i++)); do
+            [[ -n ${txn_written[i]} ]] || continue
+            target=${txn_paths[i]}
+            now=$(stat -c '%d:%i' -- "$target" 2>/dev/null) || now=''
+            digest=$(sha256sum -- "$target" 2>/dev/null) || return 1
+            [[ $now == "${txn_written[i]}" && ! -L $target && ${digest%% *} == "${txn_written_hash[i]}" ]] \
+                || { _toolbox_system_error "文件已变化，未清理：$target；备份：$txn_dir"; return 1; }
+            if [[ -f $txn_dir/old.$i ]]; then
+                mv -f -- "$txn_dir/old.$i" "$target" || return 1
+            else
+                rm -f -- "$target" || return 1
+            fi
+        done
+        systemctl daemon-reload >/dev/null 2>&1 || return 1
+        if (( txn_active == 1 )); then
+            systemctl enable --now "$txn_timer" >/dev/null 2>&1 || return 1
+            systemctl is-active --quiet "$txn_timer" || return 1
+        elif (( txn_enabled == 1 )); then
+            systemctl enable "$txn_timer" >/dev/null 2>&1 || return 1
+        fi
+    fi
+    rm -rf -- "$txn_dir"
+}
+_toolbox_system_traffic_cleanup() { _toolbox_system_timer_cleanup; }
 
 _toolbox_system_write_traffic_check() {
     local target=$1 etc state
     etc=$(_toolbox_system_etc); state=$(_toolbox_system_state)
-    cat > "$target" <<EOF
+    cat > "$target" <<EOF || return 1
 #!/usr/bin/env bash
+$_TOOLBOX_SYS_MARK_B7
 # terry-toolbox B7 流量阈值检查（由 systemd timer 调用）。只告警，不阻断流量。
 set -u
 CONF=\${TOOLBOX_TRAFFIC_CONF:-$etc/traffic.conf}
@@ -285,7 +625,6 @@ mkdir -p "\$STATE" 2>/dev/null || exit 0
 marker="\$STATE/traffic-\$(date +%Y%m).state"
 today=\$(date +%F)
 if [[ -r \$marker && \$(<"\$marker") == "\$today" ]]; then exit 0; fi
-printf '%s\n' "\$today" > "\$marker" || exit 0
 msg="\$(hostname) 本月流量已用 \${used} GiB，达到阈值 \${limit} GiB（仅告警，未阻断）。"
 log "\$msg"
 [[ -r \$TG_CONF ]] || exit 0
@@ -294,17 +633,23 @@ while IFS='=' read -r key value; do
     case \$key in TOKEN) token=\$value;; CHAT_ID) chat=\$value;; esac
 done < "\$TG_CONF"
 [[ -n \$token && -n \$chat ]] || exit 0
-curl -fsS --proto '=https' --tlsv1.2 --connect-timeout 10 --max-time 20 \\
+response=\$(curl -fsS --proto '=https' --tlsv1.2 --connect-timeout 10 --max-time 20 \\
     --data-urlencode "chat_id=\$chat" --data-urlencode "text=\$msg" \\
-    -o /dev/null "https://api.telegram.org/bot\$token/sendMessage" \\
-    || log 'Telegram 发送失败'
+    "https://api.telegram.org/bot\$token/sendMessage") \\
+    || { log 'Telegram 发送失败，未记录今日告警，稍后重试'; exit 1; }
+printf '%s' "\$response" | jq -e '.ok == true' >/dev/null 2>&1 \\
+    || { log 'Telegram 未确认成功，未记录今日告警，稍后重试'; exit 1; }
+[[ ! -L \$marker ]] || { log '告警标记是符号链接，未写入'; exit 1; }
+printf '%s\n' "\$today" > "\$marker" || { log '告警已送达但标记写入失败'; exit 1; }
 exit 0
 EOF
     chmod 0755 -- "$target"
 }
 
 _toolbox_system_traffic() {
-    local os etc state bin unit_dir conf limit installed=0 ready=0 i backup=''
+    local os etc state bin unit_dir conf limit installed=0 ready=0 i
+    local txn_dir='' txn_marker=$_TOOLBOX_SYS_MARK_B7 txn_timer=$_TOOLBOX_TRAFFIC_TIMER txn_service=$_TOOLBOX_TRAFFIC_SERVICE txn_active=0 txn_enabled=0
+    local -a txn_paths=() txn_before=() txn_hash=() txn_written=() txn_written_hash=()
     _toolbox_system_root || return
     os=$(_toolbox_system_os) || return
     [[ $os == debian ]] || { _toolbox_system_error '流量统计目前只支持 Debian/Ubuntu 的 vnstat 包；Alpine 未验证。'; return 1; }
@@ -314,10 +659,8 @@ _toolbox_system_traffic() {
     bin=$(_toolbox_system_bin_dir); unit_dir=$(_toolbox_system_unit_dir)
     conf="$etc/traffic.conf"
 
-    if [[ -e $conf ]] && ! _toolbox_system_ours "$conf" "$_TOOLBOX_SYS_MARK_B7"; then
-        _toolbox_system_error "$conf 已存在但不是本工具生成的，未覆盖；请人工确认归属。"
-        return 1
-    fi
+    txn_paths=("$conf" "$bin/$_TOOLBOX_TRAFFIC_CHECK" "$unit_dir/$_TOOLBOX_TRAFFIC_SERVICE" "$unit_dir/$_TOOLBOX_TRAFFIC_TIMER")
+    _toolbox_system_timer_preflight "$txn_marker" "${txn_paths[@]}" || return 1
     _toolbox_system_has vnstat && installed=1
 
     _toolbox_system_read_line limit '每月告警阈值（GiB，整数；0 表示只统计不告警）' || return
@@ -338,23 +681,21 @@ _toolbox_system_traffic() {
     printf '  阻断    : 不阻断流量，超额后网络照常\n'
     _toolbox_system_confirm 'vnstat 会持续写入本机统计库；统计值来自内核计数，只统计不改变网络配置。确认继续？' || return
 
-    # 目录和旧配置备份要在安装/就绪检查之前建好：任何后续失败都能原样恢复。
-    install -d -m 0755 "$etc" "$state" || return 1
-    if [[ -f $conf ]]; then backup="$conf.bak.$$"; cp -p -- "$conf" "$backup" || backup=''; fi
+    install -d -m 0755 "$etc" "$state" "$bin" "$unit_dir" || return 1
 
     if (( installed == 0 )); then
         apt-get install -y vnstat jq || {
-            _toolbox_system_error 'vnstat/jq 安装失败；未写入配置。'; rm -f -- "$backup"; return 1
+            _toolbox_system_error 'vnstat/jq 安装失败；未写入配置。'; return 1
         }
         _toolbox_system_has jq || {
-            _toolbox_system_error 'jq 仍不可用；未写入配置。'; rm -f -- "$backup"; return 1
+            _toolbox_system_error 'jq 仍不可用；未写入配置。'; return 1
         }
         systemctl enable --now vnstat >/dev/null 2>&1 || {
-            _toolbox_system_error 'vnstat 服务启用失败；未写入配置。'; rm -f -- "$backup"; return 1
+            _toolbox_system_error 'vnstat 服务启用失败；未写入配置。'; return 1
         }
     else
         _toolbox_system_has jq \
-            || { _toolbox_system_error '已装 vnstat 但缺少 jq（检查脚本用它解析 JSON）。'; rm -f -- "$backup"; return 1; }
+            || { _toolbox_system_error '已装 vnstat 但缺少 jq（检查脚本用它解析 JSON）。'; return 1; }
         systemctl enable --now vnstat >/dev/null 2>&1 || _toolbox_system_error '提示：vnstat 服务启用失败，统计可能不更新。'
     fi
     for ((i = 0; i < 30; i++)); do
@@ -363,21 +704,23 @@ _toolbox_system_traffic() {
     done
     if (( ready == 0 )); then
         _toolbox_system_error 'vnstat 在 30 秒内未产生可用统计（数据库未就绪）；包已安装，配置未写入。'
-        _toolbox_system_traffic_cleanup "$backup"
+        _toolbox_system_traffic_cleanup
         return 1
     fi
 
+    _toolbox_system_timer_begin || { _toolbox_system_traffic_cleanup; return 1; }
     {
         printf '%s\n' "$_TOOLBOX_SYS_MARK_B7"
         printf '# 由 Terry Toolbox B7 管理；值来自本工具询问。\n'
         printf 'LIMIT_GIB=%s\n' "$limit"
-    } | _toolbox_system_put "$conf" 0600 || { _toolbox_system_error '写入阈值配置失败。'; [[ -n $backup ]] && mv -f -- "$backup" "$conf"; return 1; }
-    if ! _toolbox_system_write_traffic_check "$bin/$_TOOLBOX_TRAFFIC_CHECK"; then
+    } | _toolbox_system_put "$txn_dir/new.0" 0600 || { _toolbox_system_error '写入阈值配置失败。'; _toolbox_system_traffic_cleanup; return 1; }
+    if ! _toolbox_system_write_traffic_check "$txn_dir/new.1"; then
         _toolbox_system_error '写入检查脚本失败。'
-        _toolbox_system_traffic_cleanup "$backup"
+        _toolbox_system_traffic_cleanup
         return 1
     fi
-    cat > "$unit_dir/$_TOOLBOX_TRAFFIC_SERVICE" <<EOF || { _toolbox_system_traffic_cleanup "$backup"; return 1; }
+    cat > "$txn_dir/new.2" <<EOF || { _toolbox_system_traffic_cleanup; return 1; }
+$_TOOLBOX_SYS_MARK_B7
 [Unit]
 Description=Terry Toolbox traffic threshold check
 Documentation=https://humdi.net/vnstat/
@@ -388,7 +731,8 @@ Wants=network-online.target
 Type=oneshot
 ExecStart=$bin/$_TOOLBOX_TRAFFIC_CHECK
 EOF
-    cat > "$unit_dir/$_TOOLBOX_TRAFFIC_TIMER" <<EOF || { _toolbox_system_traffic_cleanup "$backup"; return 1; }
+    cat > "$txn_dir/new.3" <<EOF || { _toolbox_system_traffic_cleanup; return 1; }
+$_TOOLBOX_SYS_MARK_B7
 [Unit]
 Description=Terry Toolbox hourly traffic threshold check
 
@@ -401,18 +745,19 @@ Unit=$_TOOLBOX_TRAFFIC_SERVICE
 [Install]
 WantedBy=timers.target
 EOF
-    chmod 0644 "$unit_dir/$_TOOLBOX_TRAFFIC_SERVICE" "$unit_dir/$_TOOLBOX_TRAFFIC_TIMER"
+    chmod 0644 "$txn_dir/new.2" "$txn_dir/new.3" || { _toolbox_system_traffic_cleanup; return 1; }
+    _toolbox_system_timer_commit || { _toolbox_system_traffic_cleanup; return 1; }
     if ! systemctl daemon-reload || ! systemctl enable --now "$_TOOLBOX_TRAFFIC_TIMER" >/dev/null 2>&1; then
-        _toolbox_system_error '定时器启用失败，已撤销本次写入。'
-        _toolbox_system_traffic_cleanup "$backup"
+        _toolbox_system_error '定时器启用失败，尝试回滚本次写入。'
+        _toolbox_system_traffic_cleanup
         return 1
     fi
     if ! systemctl is-active --quiet "$_TOOLBOX_TRAFFIC_TIMER"; then
-        _toolbox_system_error '定时器未进入 active 状态，已撤销本次写入。'
-        _toolbox_system_traffic_cleanup "$backup"
+        _toolbox_system_error '定时器未进入 active 状态，尝试回滚本次写入。'
+        _toolbox_system_traffic_cleanup
         return 1
     fi
-    rm -f -- "$backup"
+    rm -rf -- "$txn_dir" || return 1
     if (( limit == 0 )); then
         printf '\n流量统计已就绪：只记录，不告警（阈值为 0）。\n'
     else
@@ -434,8 +779,9 @@ _toolbox_system_tg_valid_chat() { [[ $1 =~ ^(-?[0-9]{4,}|@[A-Za-z0-9_]{4,32})$ ]
 _toolbox_system_write_tg_report() {
     local target=$1 etc
     etc=$(_toolbox_system_etc)
-    cat > "$target" <<EOF
+    cat > "$target" <<EOF || return 1
 #!/usr/bin/env bash
+$_TOOLBOX_SYS_MARK_B15
 # terry-toolbox B15 流量日报。发送失败返回非 0，便于 systemctl 查看，不影响下次调度。
 set -u
 CONF=\${TOOLBOX_TG_CONF:-$etc/telegram.conf}
@@ -463,31 +809,20 @@ else
     gi() { awk -v b="\$1" 'BEGIN { printf "%.2f", b / 1073741824 }'; }
     text="\$(hostname) 流量日报 \$(date +%F)：今日下行+上行 \$(gi "\${day:-0}") GiB，本月累计 \$(gi "\${month:-0}") GiB。vnstat 口径，仅供估算。"
 fi
-curl -fsS --proto '=https' --tlsv1.2 --connect-timeout 10 --max-time 20 \\
+response=\$(curl -fsS --proto '=https' --tlsv1.2 --connect-timeout 10 --max-time 20 \\
     --data-urlencode "chat_id=\$chat" --data-urlencode "text=\$text" \\
-    -o /dev/null "https://api.telegram.org/bot\$token/sendMessage"
+    "https://api.telegram.org/bot\$token/sendMessage") || exit 1
+printf '%s' "\$response" | jq -e '.ok == true' >/dev/null 2>&1
 EOF
     chmod 0755 -- "$target"
 }
 
-# 可选参数是旧凭据备份：失败时恢复旧配置。
-_toolbox_system_tg_cleanup() {
-    local unit_dir bin etc
-    unit_dir=$(_toolbox_system_unit_dir); bin=$(_toolbox_system_bin_dir); etc=$(_toolbox_system_etc)
-    systemctl disable --now "$_TOOLBOX_TG_TIMER" >/dev/null 2>&1 || true
-    rm -f -- "$unit_dir/$_TOOLBOX_TG_TIMER" "$unit_dir/$_TOOLBOX_TG_SERVICE"
-    rm -f -- "$bin/$_TOOLBOX_TG_REPORT"
-    if [[ -n ${1-} && -f $1 ]]; then
-        mv -f -- "$1" "$etc/telegram.conf" \
-            && printf '已恢复此前的凭据配置，但定时器已停用；请重跑 B15 重新启用。\n' >&2
-    else
-        rm -f -- "$etc/telegram.conf"
-    fi
-    systemctl daemon-reload >/dev/null 2>&1 || true
-}
+_toolbox_system_tg_cleanup() { _toolbox_system_timer_cleanup; }
 
 _toolbox_system_tg() {
-    local etc bin unit_dir conf token chat out backup=''
+    local etc bin unit_dir conf token chat out
+    local txn_dir='' txn_marker=$_TOOLBOX_SYS_MARK_B15 txn_timer=$_TOOLBOX_TG_TIMER txn_service=$_TOOLBOX_TG_SERVICE txn_active=0 txn_enabled=0
+    local -a txn_paths=() txn_before=() txn_hash=() txn_written=() txn_written_hash=()
     _toolbox_system_root || return
     _toolbox_system_os >/dev/null || return
     _toolbox_system_systemd || return
@@ -496,10 +831,8 @@ _toolbox_system_tg() {
     _toolbox_system_has jq || { _toolbox_system_error '缺少 jq；请先执行 B7（会一并安装）。'; return 1; }
     etc=$(_toolbox_system_etc); bin=$(_toolbox_system_bin_dir); unit_dir=$(_toolbox_system_unit_dir)
     conf="$etc/telegram.conf"
-    if [[ -e $conf ]] && ! _toolbox_system_ours "$conf" "$_TOOLBOX_SYS_MARK_B15"; then
-        _toolbox_system_error "$conf 已存在但不是本工具生成的，未覆盖；请人工确认归属。"
-        return 1
-    fi
+    txn_paths=("$conf" "$bin/$_TOOLBOX_TG_REPORT" "$unit_dir/$_TOOLBOX_TG_SERVICE" "$unit_dir/$_TOOLBOX_TG_TIMER")
+    _toolbox_system_timer_preflight "$txn_marker" "${txn_paths[@]}" || return 1
 
     printf 'Token 和 Chat ID 从 @BotFather / 与机器人的会话获取；输入时不回显。\n' >&2
     _toolbox_system_read_secret token 'Bot Token（形如 123456789:AA...）' || return
@@ -512,17 +845,18 @@ _toolbox_system_tg() {
     printf 'Token 会出现在 systemd 以外的 curl 命令行参数中；不写入日志。\n'
     _toolbox_system_confirm '确认保存凭据并启用定时器？' || return
 
-    install -d -m 0755 "$etc" || return 1
-    if [[ -f $conf ]]; then backup="$conf.bak.$$"; cp -p -- "$conf" "$backup" || backup=''; fi
+    install -d -m 0755 "$etc" "$(_toolbox_system_state)" "$bin" "$unit_dir" || return 1
+    _toolbox_system_timer_begin || { _toolbox_system_tg_cleanup; return 1; }
     {
         printf '%s\n' "$_TOOLBOX_SYS_MARK_B15"
         printf 'TOKEN=%s\n' "$token"
         printf 'CHAT_ID=%s\n' "$chat"
-    } | _toolbox_system_put "$conf" 0600 || { _toolbox_system_error '写入凭据失败。'; [[ -n $backup ]] && mv -f -- "$backup" "$conf"; return 1; }
+    } | _toolbox_system_put "$txn_dir/new.0" 0600 || { _toolbox_system_error '写入凭据失败。'; _toolbox_system_tg_cleanup; return 1; }
 
-    _toolbox_system_write_tg_report "$bin/$_TOOLBOX_TG_REPORT" \
-        || { _toolbox_system_error '写入发送脚本失败。'; _toolbox_system_tg_cleanup "$backup"; return 1; }
-    cat > "$unit_dir/$_TOOLBOX_TG_SERVICE" <<EOF || { _toolbox_system_tg_cleanup "$backup"; return 1; }
+    _toolbox_system_write_tg_report "$txn_dir/new.1" \
+        || { _toolbox_system_error '写入发送脚本失败。'; _toolbox_system_tg_cleanup; return 1; }
+    cat > "$txn_dir/new.2" <<EOF || { _toolbox_system_tg_cleanup; return 1; }
+$_TOOLBOX_SYS_MARK_B15
 [Unit]
 Description=Terry Toolbox daily traffic report to Telegram
 Documentation=https://core.telegram.org/bots/api
@@ -533,7 +867,8 @@ Wants=network-online.target
 Type=oneshot
 ExecStart=$bin/$_TOOLBOX_TG_REPORT
 EOF
-    cat > "$unit_dir/$_TOOLBOX_TG_TIMER" <<EOF || { _toolbox_system_tg_cleanup "$backup"; return 1; }
+    cat > "$txn_dir/new.3" <<EOF || { _toolbox_system_tg_cleanup; return 1; }
+$_TOOLBOX_SYS_MARK_B15
 [Unit]
 Description=Terry Toolbox daily traffic report
 
@@ -546,23 +881,28 @@ Unit=$_TOOLBOX_TG_SERVICE
 [Install]
 WantedBy=timers.target
 EOF
-    chmod 0644 "$unit_dir/$_TOOLBOX_TG_SERVICE" "$unit_dir/$_TOOLBOX_TG_TIMER"
+    chmod 0644 "$txn_dir/new.2" "$txn_dir/new.3" || { _toolbox_system_tg_cleanup; return 1; }
 
     # 真实发送测试消息：无法送达的凭据不应悄悄留着定时器。
-    if ! out=$(TOOLBOX_TG_CONF="$conf" "$bin/$_TOOLBOX_TG_REPORT" --test 2>&1); then
+    if ! out=$(TOOLBOX_TG_CONF="$txn_dir/new.0" "$txn_dir/new.1" --test 2>&1); then
         _toolbox_system_error "测试消息发送失败，响应：${out:0:300}"
         _toolbox_system_error '已回滚本次写入（凭据、脚本、定时器）。请核对 token、chat_id 及到 api.telegram.org 的连通性。'
-        _toolbox_system_tg_cleanup "$backup"
+        _toolbox_system_tg_cleanup
         return 1
     fi
 
+    _toolbox_system_timer_commit || { _toolbox_system_tg_cleanup; return 1; }
     if ! systemctl daemon-reload || ! systemctl enable --now "$_TOOLBOX_TG_TIMER" >/dev/null 2>&1; then
-        _toolbox_system_error '定时器启用失败，已回滚本次写入。'
-        _toolbox_system_tg_cleanup "$backup"
+        _toolbox_system_error '定时器启用失败，尝试回滚本次写入。'
+        _toolbox_system_tg_cleanup
         return 1
     fi
-    rm -f -- "$backup"
-    printf '\nTelegram 流量通知已启用：每天 09:17 左右发送前一自然日数量与本自然月累计。\n'
+    if ! systemctl is-active --quiet "$_TOOLBOX_TG_TIMER"; then
+        _toolbox_system_error '定时器未进入 active 状态，尝试回滚本次写入。'
+        _toolbox_system_tg_cleanup; return 1
+    fi
+    rm -rf -- "$txn_dir" || return 1
+    printf '\nTelegram 流量通知已启用：每天 09:17 左右发送今日已统计数量与本自然月累计。\n'
     printf '立即测试：%s（不带参数即发日报）；停用见帮助文档。\n' "$bin/$_TOOLBOX_TG_REPORT"
     printf '凭据以明文存放在 %s（600）：可被 root 读取，注意备份与轮换。\n' "$conf"
 }
@@ -598,8 +938,46 @@ _TOOLBOX_NETOPT_VALUES=(
 _toolbox_system_netopt_file() { printf '%s/99-terry-toolbox.conf\n' "$(_toolbox_system_sysctl_dir)"; }
 _toolbox_system_netopt_state() { printf '%s/net-opt.previous\n' "$(_toolbox_system_state)"; }
 
+# sysctl emits multi-value keys with tabs; compare fields, not whitespace spelling.
+_toolbox_system_sysctl_normalize() {
+    local -a fields=()
+    IFS=$' \t' read -r -a fields <<< "$1"
+    printf '%s' "${fields[*]}"
+}
+_toolbox_system_sysctl_restore() {
+    local key=$1 value=$2 now
+    sysctl -w "$key=$value" >/dev/null 2>&1 || return 1
+    now=$(sysctl -n "$key" 2>/dev/null) || return 1
+    [[ $(_toolbox_system_sysctl_normalize "$now") == "$(_toolbox_system_sysctl_normalize "$value")" ]]
+}
+_toolbox_system_netopt_state_valid() {
+    local state=$1 key value seen=' ' count=0
+    [[ ! -L $state ]] && _toolbox_system_ours "$state" "$_TOOLBOX_SYS_MARK_B16" || return 1
+    while IFS='=' read -r key value; do
+        [[ $key == '#'* || -z $key ]] && continue
+        [[ -n $value && $seen != *" $key "* ]] || return 1
+        case " ${_TOOLBOX_NETOPT_KEYS[*]} " in *" $key "*) ;; *) return 1;; esac
+        seen+="$key "; count=$((count + 1))
+    done < "$state"
+    (( count > 0 ))
+}
+# Refuse expansion of an existing plan until it is rolled back: every changed key
+# must already have its original value recorded, including later-readable keys.
+_toolbox_system_netopt_state_covers() {
+    local state=$1 key value seen=' '
+    shift
+    while IFS='=' read -r key value; do
+        [[ $key == '#'* || -z $key ]] && continue
+        seen+="$key "
+    done < "$state"
+    for key in "$@"; do
+        [[ $seen == *" $key "* ]] || {
+            _toolbox_system_error "回滚记录缺少 $key；先用 B16 → 2 恢复旧方案，未应用新参数。"; return 1; }
+    done
+}
 _toolbox_system_netopt_apply() {
-    local file state applied=0 i key
+    local file state apply_output='' verify_failed=0 i key state_created=0 file_existed=0 old_file=''
+    local reapply=0 file_stamp state_stamp written_stamp file_mode=replace
     local keys=() values=() previous=()
     file=$(_toolbox_system_netopt_file); state=$(_toolbox_system_netopt_state)
     _toolbox_system_root || return
@@ -611,10 +989,19 @@ _toolbox_system_netopt_apply() {
         *' bbr '*) ;;
         *) _toolbox_system_error '内核未提供 BBR，本轮不改动；先确认内核版本与模块。'; return 1;;
     esac
-    if [[ -e $file ]] && ! _toolbox_system_ours "$file" "$_TOOLBOX_SYS_MARK_B16"; then
+    if [[ -e $state || -L $state ]] && { [[ -L $state ]] || ! _toolbox_system_ours "$state" "$_TOOLBOX_SYS_MARK_B16"; }; then
+        _toolbox_system_error "$state 归属不明，未覆盖回滚记录。"; return 1
+    fi
+    if [[ -e $file || -L $file ]] && { [[ -L $file ]] || ! _toolbox_system_ours "$file" "$_TOOLBOX_SYS_MARK_B16"; }; then
         _toolbox_system_error "$file 已存在但不是本工具生成的，未覆盖；请人工合并或改名。"
         return 1
     fi
+
+    if [[ -e $state ]] && ! _toolbox_system_netopt_state_valid "$state"; then
+        _toolbox_system_error '回滚记录不完整或键不受管理；未改动。'; return 1
+    fi
+    file_stamp=$(_toolbox_system_file_stamp "$file") || return 1
+    state_stamp=$(_toolbox_system_file_stamp "$state") || return 1
 
     # 只保留内核接受的键；读不到的值不能用来回滚，直接跳过。
     for ((i = 0; i < ${#_TOOLBOX_NETOPT_KEYS[@]}; i++)); do
@@ -624,18 +1011,31 @@ _toolbox_system_netopt_apply() {
         keys+=("$key"); values+=("${_TOOLBOX_NETOPT_VALUES[i]}"); previous+=("$old")
     done
     (( ${#keys[@]} > 0 )) || { _toolbox_system_error '没有任何键被内核接受；未改动。'; return 1; }
+    if [[ -e $state ]]; then
+        _toolbox_system_netopt_state_covers "$state" "${keys[@]}" || return 1
+    fi
 
     local want existing=''
     want=$(printf '%s\n' "$_TOOLBOX_SYS_MARK_B16" \
         '# 由 Terry Toolbox B16 管理；回滚请用菜单。不要手工混入其他键。'
         for ((i = 0; i < ${#keys[@]}; i++)); do printf '%s = %s\n' "${keys[i]}" "${values[i]}"; done)
     if [[ -r $file ]]; then
-        existing=$(<"$file")
+        existing=$(<"$file"); file_existed=1; old_file=$existing
         if [[ $existing == "$want" ]]; then
-            printf '优化项已全部应用且内容一致；未修改任何配置。\n'
-            return 0
+            for ((i = 0; i < ${#keys[@]}; i++)); do
+                if [[ $(_toolbox_system_sysctl_normalize "${previous[i]}") != "$(_toolbox_system_sysctl_normalize "${values[i]}")" ]]; then
+                    reapply=1
+                    _toolbox_system_error "运行期漂移：${keys[i]} = '${previous[i]}'（期望 '${values[i]}'）。"
+                fi
+            done
+            if (( reapply == 0 )); then
+                printf '优化项已全部应用且内容一致；运行期回读一致，未修改任何配置。\n'
+                return 0
+            fi
+            printf '文件内容一致但运行期漂移；必须重新确认才应用，保留首次回滚值。\n'
+        else
+            printf '同名文件已存在（本工具生成）但内容不同：将覆盖为当前内核可接受的键。\n'
         fi
-        printf '同名文件已存在（本工具生成）但内容不同：将覆盖为当前内核可接受的键。\n'
     fi
     printf '将写入 %s：\n' "$file"
     for ((i = 0; i < ${#keys[@]}; i++)); do
@@ -647,26 +1047,43 @@ _toolbox_system_netopt_apply() {
     _toolbox_system_confirm '这些参数会立即生效并写入持久配置（重启后仍生效）。确认应用？' || return
 
     install -d -m 0755 "$(_toolbox_system_sysctl_dir)" "$(_toolbox_system_state)" || return 1
-    {
-        printf '%s\n' "$_TOOLBOX_SYS_MARK_B16"
-        for ((i = 0; i < ${#keys[@]}; i++)); do printf '%s=%s\n' "${keys[i]}" "${previous[i]}"; done
-    } | _toolbox_system_put "$state" 0600 || { _toolbox_system_error '保存回滚值失败；未改动。'; return 1; }
+    [[ $(_toolbox_system_file_stamp "$file") == "$file_stamp" && $(_toolbox_system_file_stamp "$state") == "$state_stamp" ]] \
+        || { _toolbox_system_error '确认后 drop-in/回滚记录变化，未覆盖。'; return 1; }
+    if [[ ! -e $state ]]; then
+        {
+            printf '%s\n' "$_TOOLBOX_SYS_MARK_B16"
+            for ((i = 0; i < ${#keys[@]}; i++)); do printf '%s=%s\n' "${keys[i]}" "${previous[i]}"; done
+        } | _toolbox_system_put "$state" 0600 create || { _toolbox_system_error '保存回滚值失败；未改动。'; return 1; }
+        state_created=1
+    fi
 
-    printf '%s\n' "$want" | _toolbox_system_put "$file" 0644 \
-        || { _toolbox_system_error '写入 drop-in 失败；未改动运行期参数。'; rm -f -- "$state"; return 1; }
+    state_stamp=$(_toolbox_system_file_stamp "$state") || return 1
+    [[ $file_stamp != absent ]] || file_mode=create
+    if ! printf '%s\n' "$want" | _toolbox_system_put "$file" 0644 "$file_mode"; then
+        _toolbox_system_error '写入 drop-in 失败；未改动运行期参数。'
+        (( state_created == 0 )) || rm -f -- "$state"
+        return 1
+    fi
 
-    if ! applied=$(sysctl -p "$file" 2>&1); then
-        _toolbox_system_error 'sysctl 应用失败，正在恢复运行期旧值并删除 drop-in。原因：'
-        printf '%s\n' "$applied" | head -n 3 >&2
+    written_stamp=$(_toolbox_system_file_stamp "$file") || return 1
+    if ! apply_output=$(sysctl -p "$file" 2>&1); then
+        _toolbox_system_error 'sysctl 应用失败，正在恢复本轮之前的运行期值和 drop-in。原因：'
+        printf '%s\n' "${apply_output:0:500}" >&2
         local restore_failed=0
-        rm -f -- "$file"
+        [[ $(_toolbox_system_file_stamp "$file") == "$written_stamp" && $(_toolbox_system_file_stamp "$state") == "$state_stamp" ]] \
+            || { _toolbox_system_error '文件归属已变化，保留现场与回滚记录；未清理。'; return 1; }
+        if (( file_existed == 1 )); then
+            printf '%s\n' "$old_file" | _toolbox_system_put "$file" 0644 || restore_failed=1
+        else
+            rm -f -- "$file" || restore_failed=1
+        fi
         for ((i = 0; i < ${#keys[@]}; i++)); do
-            sysctl -w "${keys[i]}=${previous[i]}" >/dev/null 2>&1 \
+            _toolbox_system_sysctl_restore "${keys[i]}" "${previous[i]}" \
                 || { _toolbox_system_error "  恢复失败：${keys[i]}=${previous[i]}"; restore_failed=1; }
         done
         if (( restore_failed == 1 )); then
             _toolbox_system_error "部分运行期值未能恢复，回滚记录保留在 $state。"
-        else
+        elif (( state_created == 1 )); then
             rm -f -- "$state"
         fi
         return 1
@@ -675,12 +1092,12 @@ _toolbox_system_netopt_apply() {
     for ((i = 0; i < ${#keys[@]}; i++)); do
         local now
         now=$(sysctl -n "${keys[i]}" 2>/dev/null) || now=''
-        if [[ $now != "${values[i]}" ]]; then
+        if [[ $(_toolbox_system_sysctl_normalize "$now") != "$(_toolbox_system_sysctl_normalize "${values[i]}")" ]]; then
             _toolbox_system_error "回读不一致：${keys[i]} = '$now'（期望 '${values[i]}'）。可能有其他 sysctl 文件后加载并覆盖。"
-            applied=1
+            verify_failed=1
         fi
     done
-    if (( applied == 1 )); then
+    if (( verify_failed == 1 )); then
         _toolbox_system_error 'drop-in 已写入但未全部生效；可先用 B16 → 2 回滚，再检查冲突的 sysctl 文件。'
         return 1
     fi
@@ -689,30 +1106,47 @@ _toolbox_system_netopt_apply() {
 }
 
 _toolbox_system_netopt_rollback() {
-    local file state key value
+    local file state key value file_stamp state_stamp failed=0
+    local -a file_keys=()
     file=$(_toolbox_system_netopt_file); state=$(_toolbox_system_netopt_state)
     _toolbox_system_root || return
     if [[ ! -r $state ]]; then
         _toolbox_system_error "没有回滚记录（$state）；可能从未应用，或记录已被删除。"
         return 1
     fi
-    if [[ -e $file ]] && ! _toolbox_system_ours "$file" "$_TOOLBOX_SYS_MARK_B16"; then
+    _toolbox_system_netopt_state_valid "$state" || { _toolbox_system_error '回滚记录归属或内容不合法，未改动。'; return 1; }
+    if [[ -e $file || -L $file ]] && { [[ -L $file ]] || ! _toolbox_system_ours "$file" "$_TOOLBOX_SYS_MARK_B16"; }; then
         _toolbox_system_error "$file 已不是本工具生成的，未删除；请人工处理后再回滚。"
         return 1
     fi
+    if [[ -r $file ]]; then
+        while IFS='=' read -r key value; do
+            key=${key//[[:space:]]/}
+            [[ $key == '#'* || -z $key ]] && continue
+            case " ${_TOOLBOX_NETOPT_KEYS[*]} " in
+                *" $key "*) file_keys+=("$key");;
+                *) _toolbox_system_error 'drop-in 含不受管理的键，保留现场；未回滚。'; return 1;;
+            esac
+        done < "$file"
+        _toolbox_system_netopt_state_covers "$state" "${file_keys[@]}" || return 1
+    fi
+    file_stamp=$(_toolbox_system_file_stamp "$file") || return 1
+    state_stamp=$(_toolbox_system_file_stamp "$state") || return 1
     _toolbox_system_confirm "将删除 $file 并按保存值恢复运行期参数，然后删除回滚记录。确认？" || return
+    [[ $(_toolbox_system_file_stamp "$file") == "$file_stamp" && $(_toolbox_system_file_stamp "$state") == "$state_stamp" ]] \
+        || { _toolbox_system_error '确认后文件变化，未回滚或删除。'; return 1; }
     rm -f -- "$file" || return 1
-    local failed=0
     while IFS='=' read -r key value; do
         [[ $key == '#'* || -z $key ]] && continue
-        sysctl -w "$key=$value" >/dev/null 2>&1 || { _toolbox_system_error "恢复失败：$key=$value"; failed=1; }
+        _toolbox_system_sysctl_restore "$key" "$value" || { _toolbox_system_error "恢复失败或回读不一致：$key=$value"; failed=1; }
     done < "$state"
     if (( failed == 1 )); then
         _toolbox_system_error "部分值恢复失败，回滚记录保留在 $state；可修正后重试或按记录手工 sysctl -w。"
         return 1
     fi
-    rm -f -- "$state"
-    printf '已删除 drop-in 并恢复保存的旧值；重启后回到这些值。\n'
+    [[ $(_toolbox_system_file_stamp "$state") == "$state_stamp" ]] || return 1
+    rm -f -- "$state" || return 1
+    printf '已删除 drop-in 并回读确认保存的旧值；重启后取决于其他 sysctl 配置。\n'
     printf '提示：运行期值已恢复，但仍请确认其他 sysctl 文件没有同时改动同一键。\n'
 }
 
@@ -823,7 +1257,7 @@ _toolbox_system_alpine_webtop() {
         _toolbox_system_error "容器 $_TOOLBOX_WEBTOP_NAME 已存在；不删除、不重建。查看：docker logs $_TOOLBOX_WEBTOP_NAME"
         return 1
     fi
-    dir=/opt/terry-toolbox-webtop
+    dir=${TOOLBOX_WEBTOP_ROOT:-/opt/terry-toolbox-webtop}
     printf '将运行 Webtop 桌面容器：\n'
     printf '  镜像   : %s（latest，不固定摘要）\n' "$_TOOLBOX_WEBTOP_IMAGE"
     printf '  端口   : 127.0.0.1:3000 -> 容器 3000（仅本机；对外需反代或改绑定）\n'
@@ -1034,7 +1468,7 @@ _toolbox_system_swap_listed() {
 }
 _toolbox_system_swap_member() {
     local list
-    list=$(_toolbox_system_swap_snapshot) || return 1
+    list=$(_toolbox_system_swap_snapshot) || return 2
     _toolbox_system_swap_listed "$list" "$1"
 }
 
@@ -1087,17 +1521,19 @@ _toolbox_system_swap_preflight() {
     esac
 
     # systemd 实际生效的单元可能来自 /usr/lib、/run 或生成器，不止单元目录。
-    frag=$(systemctl show -p FragmentPath --value "$_TOOLBOX_SWAP_UNIT" 2>/dev/null) || frag=''
+    frag=$(systemctl show -p FragmentPath --value "$_TOOLBOX_SWAP_UNIT" 2>/dev/null) || {
+        _toolbox_system_error '无法确认 swap 单元来源，未改动。'; return 1; }
     if [[ -n $frag && $frag != "$unit" ]]; then
         _toolbox_system_error "systemd 中已有同名单元来自 $frag（不是 $unit）；未改动。"
         return 1
     fi
-    drops=$(systemctl show -p DropInPaths --value "$_TOOLBOX_SWAP_UNIT" 2>/dev/null) || drops=''
+    drops=$(systemctl show -p DropInPaths --value "$_TOOLBOX_SWAP_UNIT" 2>/dev/null) || {
+        _toolbox_system_error '无法确认 swap drop-in，未改动。'; return 1; }
     if [[ -n ${drops// /} ]]; then
         _toolbox_system_error "同名单元已带 drop-in（$drops），可能覆盖 What=；未改动。"
         return 1
     fi
-    if [[ -e $unit ]] && ! _toolbox_system_ours "$unit" "$_TOOLBOX_SYS_MARK_B6"; then
+    if [[ -e $unit || -L $unit ]] && { [[ -L $unit ]] || ! _toolbox_system_ours "$unit" "$_TOOLBOX_SYS_MARK_B6"; }; then
         _toolbox_system_error "$unit 已存在但不是本工具生成的；未改动。"
         return 1
     fi
@@ -1139,36 +1575,92 @@ _toolbox_system_swap_preflight() {
 _toolbox_system_swap_rollback() {
     ( set +e; _toolbox_system_swap_rollback_body "$1" "$2" "${3-}" )
 }
+# Kernel membership is not a systemd job-state check. No pending activation may
+# survive a rollback, even when the swap has not reached /proc/swaps yet.
+_toolbox_system_swap_unit_quiet() {
+    local active job
+    active=$(systemctl show -p ActiveState --value "$_TOOLBOX_SWAP_UNIT" 2>/dev/null) || return 1
+    job=$(systemctl show -p Job --value "$_TOOLBOX_SWAP_UNIT" 2>/dev/null) || return 1
+    case $active in inactive|failed) ;; *) return 1;; esac
+    case $job in ''|0) return 0;; *) return 1;; esac
+}
 _toolbox_system_swap_rollback_body() {
-    local file=$1 unit=$2 ino=${3-} i now=''
-    if _toolbox_system_swap_member "$file"; then
-        systemctl disable --now "$_TOOLBOX_SWAP_UNIT" >/dev/null 2>&1
+    local file=$1 unit=$2 ino=${3-} i now='' status unit_stamp load_state
+    [[ $file == "$(_toolbox_system_swap_file)" && $unit == "$(_toolbox_system_swap_unit)" ]] \
+        || { _toolbox_system_error '事务路径不属于本工具配置，未回滚。'; return 1; }
+    if [[ -e $unit || -L $unit ]]; then
+        [[ ! -L $unit ]] && _toolbox_system_ours "$unit" "$_TOOLBOX_SYS_MARK_B6" \
+            && grep -qxF -- "What=$file" "$unit" \
+            || { _toolbox_system_error 'swap 单元归属或 What= 不符，保留所有文件和事务日志。'; return 1; }
+    fi
+    _toolbox_system_unit_guard "$unit" || return 1
+    unit_stamp=$(_toolbox_system_file_stamp "$unit") || return 1
+    if [[ -e $file || -L $file ]]; then
+        now=$(stat -c '%d:%i' -- "$file" 2>/dev/null) || return 1
+        [[ -n $ino && $now == "$ino" && -f $file && ! -L $file ]] \
+            || { _toolbox_system_error 'swap 文件归属无法确认，保留文件、单元与事务日志。'; return 1; }
+    fi
+    # 0=active, 1=definitely absent, 2=unreadable. Never treat unknown as off.
+    _toolbox_system_swap_member "$file"; status=$?
+    if (( status == 2 )); then
+        _toolbox_system_error "swapon 读取失败，活动状态未知；保留 swap 文件、单元与事务日志：$file"; return 1
+    fi
+    if [[ -e $unit ]]; then
+        # Always cancel/stop an owned unit, not only one already active in the kernel.
+        systemctl disable --now "$_TOOLBOX_SWAP_UNIT" >/dev/null 2>&1 || {
+            _toolbox_system_error 'swap 单元停用失败，保留文件、单元与事务日志。'; return 1; }
+    else
+        load_state=$(systemctl show -p LoadState --value "$_TOOLBOX_SWAP_UNIT" 2>/dev/null) || return 1
+        [[ $load_state == not-found ]] || {
+            _toolbox_system_error '没有受管单元文件，但 systemd 仍有同名单元；保留现场。'; return 1; }
+    fi
+    _toolbox_system_swap_unit_quiet || {
+        _toolbox_system_error 'swap 单元仍活动、启动任务待执行或状态未知；保留文件、单元与事务日志。'; return 1; }
+    if (( status == 0 )); then
         for ((i = 0; i < 20; i++)); do
-            _toolbox_system_swap_member "$file" || break
+            _toolbox_system_swap_member "$file"; status=$?
+            if (( status == 2 )); then
+                _toolbox_system_error 'swapon 读取失败；停用是否完成未知，保留文件、单元与事务日志。'; return 1
+            fi
+            (( status == 0 )) || break
             sleep 0.5
         done
-        if _toolbox_system_swap_member "$file"; then
+        if (( status == 0 )); then
             swapoff -- "$file" >/dev/null 2>&1
+            _toolbox_system_swap_member "$file"; status=$?
         fi
-        if _toolbox_system_swap_member "$file"; then
-            _toolbox_system_error "swapoff 未完成（$file 仍是活动 swap），单元保留在 $unit；请手工处理后重试。"
+        if (( status != 1 )); then
+            _toolbox_system_error "swapoff 未完成或 swapon 读取失败，单元保留在 $unit；请手工处理后重试。"
             return 1
         fi
     fi
-    if [[ -e $unit ]]; then
-        rm -f -- "$unit" && systemctl daemon-reload >/dev/null 2>&1
+    # Last read occurs before deleting ANY artifact, including the unit/journal.
+    _toolbox_system_swap_member "$file"; status=$?
+    if (( status != 1 )); then
+        _toolbox_system_error '活动 swap 状态未确认关闭，保留文件、单元与事务日志。'; return 1
     fi
     if [[ -e $file || -L $file ]]; then
         now=$(stat -c '%d:%i' -- "$file" 2>/dev/null) || now=''
         if [[ -n $ino && $now != "$ino" ]]; then
             _toolbox_system_error "文件已不是本次创建的那个（inode ${now:-读不到} ≠ $ino），保留：$file"
-        elif _toolbox_system_swap_member "$file"; then
-            _toolbox_system_error "文件仍是活动 swap，保留：$file"
-        else
-            rm -f -- "$file" && _toolbox_system_error "已删除本次创建的 swap 文件：$file"
+            return 1
         fi
     fi
-    rm -f -- "$(_toolbox_system_swap_journal)"
+    _toolbox_system_swap_unit_quiet || {
+        _toolbox_system_error '删除前单元/Job 状态变化，保留现场。'; return 1; }
+    _toolbox_system_swap_member "$file"; status=$?
+    (( status == 1 )) || {
+        _toolbox_system_error '删除前 swap 仍活动或读取失败；保留文件、单元与事务日志。'; return 1; }
+    [[ $(_toolbox_system_file_stamp "$unit") == "$unit_stamp" ]] \
+        || { _toolbox_system_error 'swap 单元在回滚期间变化，保留现场。'; return 1; }
+    if [[ -e $unit ]]; then
+        rm -f -- "$unit" && systemctl daemon-reload >/dev/null 2>&1 || return 1
+    fi
+    if [[ -e $file || -L $file ]]; then
+        rm -f -- "$file" || return 1
+        _toolbox_system_error "已删除本次创建的 swap 文件：$file"
+    fi
+    rm -f -- "$(_toolbox_system_swap_journal)" || return 1
     return 0
 }
 
@@ -1180,10 +1672,12 @@ _toolbox_system_swap_abort() {
     printf '\n' >&2
     [[ -n $msg ]] && _toolbox_system_error "$msg"
     _toolbox_system_error "开始回滚本次写入（$sig）。"
-    _toolbox_system_swap_rollback "$_TOOLBOX_SWAP_TXN_FILE" "$_TOOLBOX_SWAP_TXN_UNIT" "$_TOOLBOX_SWAP_TXN_INODE" \
-        || _toolbox_system_error '回滚未完成，见上面的残留说明。'
+    if _toolbox_system_swap_rollback "$_TOOLBOX_SWAP_TXN_FILE" "$_TOOLBOX_SWAP_TXN_UNIT" "$_TOOLBOX_SWAP_TXN_INODE"; then
+        _toolbox_system_error '已回滚；本次未启用 swap。'
+    else
+        _toolbox_system_error '回滚未完成，状态未知；保留残留，见上面的说明。'
+    fi
     _toolbox_system_swap_lock_release
-    _toolbox_system_error '已回滚；本次未启用 swap。'
     exit "$rc"
 }
 
@@ -1191,9 +1685,12 @@ _toolbox_system_swap_abort() {
 _toolbox_system_swap_recover() {
     local journal path='' unit='' ino='' phase='' key value
     journal=$(_toolbox_system_swap_journal)
+    [[ -f $journal && ! -L $journal ]] || { _toolbox_system_error '事务日志不是普通文件，未回滚。'; return 1; }
     while IFS='=' read -r key value; do
         case $key in PHASE) phase=$value;; PATH) path=$value;; UNIT) unit=$value;; INODE) ino=$value;; esac
     done < "$journal"
+    [[ $path == "$(_toolbox_system_swap_file)" && $unit == "$(_toolbox_system_swap_unit)" ]] \
+        || { _toolbox_system_error '事务日志路径不匹配，未回滚。'; return 1; }
     if [[ -z $path || -z $unit ]]; then
         _toolbox_system_error "事务日志 $journal 不完整（缺少 PATH/UNIT）；未改动。"
         return 1
@@ -1235,7 +1732,8 @@ _toolbox_system_swap() {
 
     if [[ $mode_before == idempotent ]]; then
         # 已启用：只补一次 daemon-reload 并复核，不动文件、不动单元。
-        systemctl daemon-reload >/dev/null 2>&1 || true
+        systemctl daemon-reload >/dev/null 2>&1 || {
+            _toolbox_system_error 'swap daemon-reload 失败，未宣称已启用。'; _toolbox_system_swap_lock_release; return 1; }
         _toolbox_system_swap_member "$file" && systemctl is-active --quiet "$_TOOLBOX_SWAP_UNIT" \
             || { _toolbox_system_error '状态复核不一致（活动 swap 或单元）；未改动，请人工检查。'
                  _toolbox_system_swap_lock_release; return 1; }
@@ -1290,6 +1788,13 @@ _toolbox_system_swap() {
     if [[ $mode_before == create ]]; then
         _toolbox_system_swap_journal_write create "$file" "$unit" '' \
             || _toolbox_system_swap_abort FAIL '写事务日志失败；未创建文件。'
+        # Own the inode BEFORE dd; interruption cannot authorize deleting an unknown file.
+        _toolbox_system_put "$file" 0600 create </dev/null \
+            || _toolbox_system_swap_abort FAIL '独占创建 swap 文件失败。'
+        _TOOLBOX_SWAP_TXN_INODE=$(stat -c '%d:%i' -- "$file") \
+            || _toolbox_system_swap_abort FAIL '无法记录创建文件的 inode。'
+        _toolbox_system_swap_journal_write file "$file" "$unit" "$_TOOLBOX_SWAP_TXN_INODE" \
+            || _toolbox_system_swap_abort FAIL '更新事务日志失败。'
         dd if=/dev/zero of="$file" bs=1M count="$size" conv=fsync status=none \
             || _toolbox_system_swap_abort FAIL '创建 swap 文件失败。'
         # 写完再认一次：路径可能在 dd 期间被换成链接（如 /var 挂载变化）。
@@ -1297,6 +1802,7 @@ _toolbox_system_swap() {
             || _toolbox_system_swap_abort FAIL "$file 创建后不是普通文件（可能被同时替换）。"
         ino=$(stat -c '%d:%i' -- "$file" 2>/dev/null) \
             || _toolbox_system_swap_abort FAIL "无法读取 $file 的 inode。"
+        [[ $ino == "$_TOOLBOX_SWAP_TXN_INODE" ]] || _toolbox_system_swap_abort FAIL '创建期间 inode 已变化。'
         _TOOLBOX_SWAP_TXN_INODE=$ino
         _toolbox_system_swap_journal_write file "$file" "$unit" "$ino" \
             || _toolbox_system_swap_abort FAIL '更新事务日志失败。'
@@ -1310,7 +1816,7 @@ _toolbox_system_swap() {
             printf '[Unit]\nDescription=Terry Toolbox swap file\n\n'
             printf '[Swap]\nWhat=%s\n\n' "$file"
             printf '[Install]\nWantedBy=swap.target\n'
-        } | _toolbox_system_put "$unit" 0644 || _toolbox_system_swap_abort FAIL '写入 systemd 单元失败。'
+        } | _toolbox_system_put "$unit" 0644 create || _toolbox_system_swap_abort FAIL '写入 systemd 单元失败。'
         _toolbox_system_swap_journal_write unit "$file" "$unit" "$ino" \
             || _toolbox_system_swap_abort FAIL '更新事务日志失败。'
     fi
@@ -1323,7 +1829,7 @@ _toolbox_system_swap() {
     _toolbox_system_swap_member "$file" \
         || _toolbox_system_swap_abort FAIL '单元为 active，但 swapon 活动列表里没有该文件。'
 
-    rm -f -- "$(_toolbox_system_swap_journal)"
+    rm -f -- "$(_toolbox_system_swap_journal)" || _toolbox_system_swap_abort FAIL '事务日志清理失败。'
     eval "${old_int:-trap - INT}"
     eval "${old_term:-trap - TERM}"
     eval "${old_exit:-trap - EXIT}"

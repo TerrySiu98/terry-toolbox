@@ -44,7 +44,7 @@ hy2_require_root() {
 # 只接受 ID=debian。衍生版（如 kali、raspbian）的包和 systemd 行为有差异，不冒险。
 hy2_require_debian() {
     local file=${TOOLBOX_HY2_OS_RELEASE:-/etc/os-release} id=''
-    [[ -r $file ]] || hy2_die "无法读取 $file，不能确认发行版。"
+    [[ -r $file ]] || { hy2_die "无法读取 $file，不能确认发行版。"; return 1; }
     id=$(sed -n 's/^ID=//p' "$file" | head -n1)
     id=${id%\"}; id=${id#\"}; id=${id%\'}; id=${id#\'}
     [[ ${id,,} == debian ]] || hy2_die "仅支持 Debian（当前 ID=${id:-未知}）；不支持 Alpine/Ubuntu/衍生版。"
@@ -52,13 +52,13 @@ hy2_require_debian() {
 
 hy2_require_systemd() {
     local run_dir=${TOOLBOX_HY2_SYSTEMD_RUN:-/run/systemd/system}
-    command -v systemctl >/dev/null 2>&1 || hy2_die '未找到 systemctl，本机不是 systemd 系统。'
+    command -v systemctl >/dev/null 2>&1 || { hy2_die '未找到 systemctl，本机不是 systemd 系统。'; return 1; }
     [[ -d $run_dir ]] || hy2_die 'systemd 未作为 init 运行（缺少 /run/systemd/system）。'
 }
 
 hy2_require_tools() {
     local missing=() c
-    for c in openssl sha256sum curl flock ss awk sed mktemp; do
+    for c in openssl sha256sum curl flock ss awk sed mktemp stat install ln timeout; do
         command -v "$c" >/dev/null 2>&1 || missing+=("$c")
     done
     (( ${#missing[@]} == 0 )) || hy2_die "缺少必需命令：${missing[*]}"
@@ -109,8 +109,12 @@ hy2_udp_port_busy() {
 hy2_unit_state() {
     local unit_file
     unit_file=$(hy2_unit)
-    [[ -e $unit_file ]] || { printf 'absent\n'; return 0; }
-    if grep -qF "ExecStart=$(hy2_bin)" "$unit_file" 2>/dev/null; then
+    [[ -e $unit_file || -L $unit_file ]] || { printf 'absent\n'; return 0; }
+    if [[ -f $unit_file && ! -L $unit_file ]] \
+        && grep -qxF 'Description=Terry Toolbox Hysteria 2 server' "$unit_file" \
+        && grep -qxF "WorkingDirectory=$(hy2_etc)" "$unit_file" \
+        && grep -qxF "ExecStart=$(hy2_bin) server -c $(hy2_etc)/config.yaml --disable-update-check" "$unit_file" \
+        && [[ $(grep -c '^ExecStart=' "$unit_file") == 1 ]]; then
         printf 'ours\n'
     else
         printf 'foreign\n'
@@ -185,14 +189,24 @@ hy2_check_cert() {
 
 # 证书链是否能被本机信任库验证（决定验证客户端要不要加 insecure）。
 hy2_tls_trusted() {
-    local cert=$1
-    if [[ -r /etc/ssl/certs/ca-certificates.crt ]]; then
-        openssl verify -CAfile /etc/ssl/certs/ca-certificates.crt "$cert" >/dev/null 2>&1
-    elif [[ -d /etc/ssl/certs ]]; then
-        openssl verify -CApath /etc/ssl/certs "$cert" >/dev/null 2>&1
-    else
-        return 1
+    local cert=$1 cafile=${TOOLBOX_HY2_CAFILE-/etc/ssl/certs/ca-certificates.crt}
+    local capath=${TOOLBOX_HY2_CAPATH-/etc/ssl/certs}
+    [[ ! ${TOOLBOX_HY2_CAFILE+x} || -n $cafile ]] || return 1
+    if [[ ! ${TOOLBOX_HY2_CAFILE+x} && ! -r $cafile ]]; then cafile=''; fi
+    # 主入口已加载 network 时复用公共实现；本模块独立执行也须有同样判据。
+    if declare -F net_tls_verify >/dev/null; then
+        net_tls_verify "$cert" "$cafile" "$capath"
+        return
     fi
+    local -a trust=()
+    if [[ -n $cafile ]]; then
+        [[ -f $cafile && -r $cafile && -s $cafile ]] || return 1
+        trust=(-CAfile "$cafile" -no-CApath)
+    else
+        [[ -n $capath && -d $capath ]] || return 1
+        trust=(-CApath "$capath" -no-CAfile)
+    fi
+    openssl verify "${trust[@]}" -no-CAstore -purpose sslserver -untrusted "$cert" "$cert" >/dev/null 2>&1
 }
 
 # ---------------------------------------------------------------- 下载
@@ -221,24 +235,76 @@ hy2_fetch() {
 
 # ---------------------------------------------------------------- 状态写入与回滚
 
+# 写后哈希与独占落位清单仅属于本次安装，不以同名文件推断所有权。
+hy2_created_files=()
+hy2_etc_created=0
+hy2_client_created=0
+hy2_service_touched=0
+
+hy2_place() { # mode src dest
+    local mode=$1 src=$2 dest=$3 stage sum
+    stage=$(mktemp "${dest}.XXXXXXXX") || return 1
+    if ! install -m "$mode" -- "$src" "$stage"; then rm -f -- "$stage"; return 1; fi
+    sum=$(sha256sum -- "$stage" | cut -d' ' -f1) || { rm -f -- "$stage"; return 1; }
+    # ln 不覆盖现有目标（包括断链）；临时文件与目标位于同一文件系统。
+    if ! ln -T -- "$stage" "$dest"; then rm -f -- "$stage"; hy2_die "目标已存在，未覆盖：$dest"; return 1; fi
+    hy2_created_files+=("$dest|$sum")
+    rm -f -- "$stage"
+}
+
+hy2_stop_owned() {
+    local rc=0
+    [[ $(hy2_unit_state) == ours ]] || { hy2_die '单元归属改变，未停止或删除；请人工确认。'; return 1; }
+    if ! systemctl disable --now "$HY2_UNIT_NAME" >/dev/null 2>&1; then
+        hy2_die '停止/禁用服务失败，保留单元、二进制和配置供人工处理。'
+        return 1
+    fi
+    systemctl is-active --quiet "$HY2_UNIT_NAME" 2>/dev/null || rc=$?
+    if [[ $rc != 3 ]]; then
+        hy2_die '服务仍在运行或无法确认已停止，保留全部文件供人工处理。'
+        return 1
+    fi
+}
+
 hy2_rollback() {
-    local unit bin etc
-    unit=$(hy2_unit); bin=$(hy2_bin); etc=$(hy2_etc)
+    local entry path want now unit i rc=0 unit_owned=0 unit_sum=''
+    unit=$(hy2_unit) || return 1
     hy2_err '--- 开始回滚 ---'
-    if [[ -e $unit ]]; then
-        systemctl disable --now "$HY2_UNIT_NAME" >/dev/null 2>&1 || true
-        rm -f -- "$unit"
-        systemctl daemon-reload >/dev/null 2>&1 || true
+    for entry in "${hy2_created_files[@]}"; do
+        if [[ ${entry%%|*} == "$unit" ]]; then unit_owned=1; unit_sum=${entry##*|}; fi
+    done
+    if (( unit_owned )); then
+        now=$(sha256sum -- "$unit" 2>/dev/null | cut -d' ' -f1) || now=''
+        if [[ $(hy2_unit_state) != ours || $now != "$unit_sum" ]]; then
+            hy2_die '单元内容已改变，保留全部文件；未停止来源不明的服务。'
+            return 1
+        fi
+        if (( hy2_service_touched )); then hy2_stop_owned || return 1; fi
+    fi
+    for (( i=${#hy2_created_files[@]}-1; i>=0; i-- )); do
+        entry=${hy2_created_files[i]}; path=${entry%%|*}; want=${entry##*|}
+        [[ -e $path || -L $path ]] || continue
+        now=$(sha256sum -- "$path" 2>/dev/null | cut -d' ' -f1) || now=''
+        if [[ -L $path || ! -f $path || $now != "$want" ]]; then
+            hy2_err "保留 $path：内容或类型已改变，不按本次创建文件删除。"
+            rc=1
+            continue
+        fi
+        rm -f -- "$path" || rc=1
+    done
+    if (( unit_owned )); then
+        systemctl daemon-reload >/dev/null 2>&1 || rc=1
         systemctl reset-failed "$HY2_UNIT_NAME" >/dev/null 2>&1 || true
     fi
-    rm -f -- "$bin"
-    if [[ -d $etc ]]; then rm -rf -- "$etc"; fi
-    rm -rf -- "$(hy2_client_dir)"
-    # 只认我们自己的单元名，不碰同名以外的东西。
-    if systemctl is-active --quiet "$HY2_UNIT_NAME" 2>/dev/null; then
-        hy2_err "警告：回滚后 $HY2_UNIT_NAME 仍在运行，请人工确认。"
+    if (( hy2_etc_created )) && [[ ! -L $(hy2_etc) ]]; then
+        rmdir -- "$(hy2_etc)" 2>/dev/null || rc=1
     fi
-    hy2_err '已恢复到安装前状态（新增的单元、二进制、/etc 目录已删除）。'
+    if (( hy2_client_created )) && [[ ! -L $(hy2_client_dir) ]]; then
+        rmdir -- "$(hy2_client_dir)" 2>/dev/null || rc=1
+    fi
+    if (( rc )); then hy2_err '回滚不完整：已保留未确认归属/被改动的文件，请人工处理。'
+    else hy2_err '已按本次创建清单回滚。'; fi
+    return "$rc"
 }
 
 # ---------------------------------------------------------------- 启动与验证
@@ -275,19 +341,30 @@ hy2_smoke() {
 # quiet=1 时只在失败时输出（用于预期失败的负向探测）。
 hy2_probe() {
     local bin=$1 host=$2 port=$3 pass=$4 insecure=$5 label=$6 quiet=${7:-0}
-    local dir sock out out_dc i
+    local dir sock out out_dc i config
+    [[ $label == good || $label == bad ]] || return 1
     dir=$(hy2_client_dir); mkdir -p "$dir" || return 1
     sock=$(( 39000 + RANDOM % 2000 ))
     while hy2_udp_port_busy "$sock" || ss -ltnH 2>/dev/null | grep -q ":$sock "; do (( sock++ )); done
     out="$dir/$label.log"
+    config=$(mktemp) || return 1
 
     {
         printf 'server: 127.0.0.1:%s\n' "$port"
         printf 'auth: %s\n' "$pass"
         printf 'tls:\n  sni: %s\n' "$host"
-        if [[ $insecure == 1 ]]; then printf '  insecure: true\n'; fi
+        if [[ $insecure == 1 ]]; then
+            printf '  insecure: true\n'
+        elif [[ -n ${TOOLBOX_HY2_CAFILE:-} ]]; then
+            printf "  ca: '%s'\n" "${TOOLBOX_HY2_CAFILE//\'/\'\'}"
+        fi
         printf 'socks5:\n  listen: 127.0.0.1:%s\n' "$sock"
-    } > "$dir/$label.yaml" || return 1
+    } > "$config" || { rm -f -- "$config"; return 1; }
+    hy2_place 0600 "$config" "$dir/$label.yaml" || { rm -f -- "$config"; return 1; }
+    rm -f -- "$config"
+    # 日志也独占创建；退出后登记最终哈希，回滚不能删固定名字的外来文件。
+    ( set -C; : > "$out" ) 2>/dev/null || return 1
+    chmod 0600 "$out" || return 1
 
     # 客户端要一直活着才能做数据面测试，所以放后台，靠日志判断结果。
     "$bin" client -c "$dir/$label.yaml" --disable-update-check >"$out" 2>&1 &
@@ -317,6 +394,9 @@ hy2_probe() {
 
     kill "$cpid" 2>/dev/null
     wait "$cpid" 2>/dev/null || true
+    local sum
+    sum=$(sha256sum -- "$out" | cut -d' ' -f1) || return 1
+    hy2_created_files+=("$out|$sum")
     return $result
 }
 
@@ -343,7 +423,10 @@ hy2_wait_active() {
 
 _hy2_install() {
     local cert=${1:-} key=${2:-} host=${3:-} port=${4:-} answer
-    local arch tmp etc bin unit pass trusted=1
+    local arch tmp etc bin unit pass trusted=1 interactive=0
+    local -a hy2_created_files=()
+    local hy2_etc_created=0 hy2_client_created=0 hy2_service_touched=0
+    [[ -n $cert && -n $key && -n $host ]] || interactive=1
 
     hy2_require_root || return 1
     hy2_require_debian || return 1
@@ -370,9 +453,19 @@ _hy2_install() {
     if [[ -n $port ]]; then
         hy2_valid_port "$port" || { hy2_die "端口不正确：$port（1-65535，无前导零）"; return 1; }
     else
-        port=$HY2_DEFAULT_PORT
+        if (( interactive )); then
+            printf '监听 UDP 端口（回车用 %s）：' "$HY2_DEFAULT_PORT"
+            IFS= read -r port || { hy2_err '没有收到端口，已取消。'; return 1; }
+        fi
+        port=${port:-$HY2_DEFAULT_PORT}
+        hy2_valid_port "$port" || { hy2_die "端口不正确：$port（1-65535，无前导零）"; return 1; }
     fi
     hy2_check_cert "$cert" "$key" "$host" || return 1
+    hy2_tls_trusted "$cert" || trusted=0
+    if [[ $trusted == 0 && ( ${TOOLBOX_HY2_CAFILE+x} || ${TOOLBOX_HY2_CAPATH+x} ) ]]; then
+        hy2_die '显式信任锚校验失败，拒绝降级为 insecure；请检查 CA 文件与完整证书链。'
+        return 1
+    fi
 
     # 冲突判定必须在写盘之前，并区分「我们的残留」和「别人的服务」。
     local state
@@ -394,11 +487,15 @@ _hy2_install() {
 
     # 没有单元文件却已有同名二进制/配置目录：可能是别人的安装，不静默覆盖
     # （否则回滚会把别人的文件一起删掉）。
-    if [[ -e $bin || -e $etc ]]; then
+    if [[ -e $bin || -L $bin || -e $etc || -L $etc ]]; then
         hy2_die "已存在 $bin 或 $etc，却没有 $unit；未覆盖，请人工确认归属。"
         return 1
     fi
 
+    if [[ -e $(hy2_client_dir) || -L $(hy2_client_dir) ]]; then
+        hy2_die '探针目录已存在且未确认归属，未覆盖；请人工确认归属。'
+        return 1
+    fi
     if hy2_udp_port_busy "$port"; then
         hy2_err "UDP 端口 $port 已被占用，监听它的进程："
         ss -lunpH 2>/dev/null | awk -v p=":$port" '$4 ~ p "$" {print "  " $4 " " $0}' | cut -c1-160 >&2
@@ -416,13 +513,19 @@ _hy2_install() {
     printf '  认证    : 随机密码，安装完成后只显示一次\n'
     printf '  防火墙  : 不改动；需自行放行 UDP %s\n' "$port"
     printf '确认安装？输入 YES 继续：'
-    IFS= read -r answer || true
+    IFS= read -r answer || { hy2_err '没有收到完整确认，已取消。'; return 1; }
     [[ ${answer^^} == YES ]] || { hy2_err '已取消，未修改系统。'; return 1; }
 
     # 互斥：同一时刻只允许一个安装/卸载。
     exec 9>"$(hy2_lock)" || { hy2_die "无法创建锁文件 $(hy2_lock)"; return 1; }
     flock -n 9 || { hy2_die '另一个安装/卸载正在进行，稍后再试。'; return 1; }
 
+    # 加锁后再读目标，关闭预检/确认期间另一安装留下文件的覆盖窗口。
+    if [[ $(hy2_unit_state) != absent || -e $bin || -L $bin || -e $etc || -L $etc \
+        || -e $(hy2_client_dir) || -L $(hy2_client_dir) ]]; then
+        hy2_die '目标在确认期间已出现，未确认归属；未覆盖，请人工确认归属。'
+        return 1
+    fi
     tmp=$(mktemp -d) || { hy2_die '无法创建临时目录'; return 1; }
     pass=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | cut -c1-32)
     [[ ${#pass} -eq 32 ]] || { rm -rf -- "$tmp"; hy2_die '密码生成失败'; return 1; }
@@ -431,12 +534,14 @@ _hy2_install() {
     hy2_err '--- 开始写入 ---'
     hy2_fetch "$arch" "$tmp/hysteria" || { rm -rf -- "$tmp"; hy2_rollback; return 1; }
 
-    install -d -m 0755 "$etc" || { rm -rf -- "$tmp"; hy2_rollback; return 1; }
-    install -m 0755 "$tmp/hysteria" "$bin" || { rm -rf -- "$tmp"; hy2_rollback; return 1; }
-    install -m 0600 "$cert" "$etc/cert.pem" || { rm -rf -- "$tmp"; hy2_rollback; return 1; }
-    install -m 0600 "$key" "$etc/key.pem" || { rm -rf -- "$tmp"; hy2_rollback; return 1; }
+    mkdir -p -- "$(dirname -- "$etc")" || { rm -rf -- "$tmp"; return 1; }
+    mkdir -m 0755 -- "$etc" || { rm -rf -- "$tmp"; hy2_die '配置目录已存在或无法独占创建'; return 1; }
+    hy2_etc_created=1
+    hy2_place 0755 "$tmp/hysteria" "$bin" || { rm -rf -- "$tmp"; hy2_rollback; return 1; }
+    hy2_place 0600 "$cert" "$etc/cert.pem" || { rm -rf -- "$tmp"; hy2_rollback; return 1; }
+    hy2_place 0600 "$key" "$etc/key.pem" || { rm -rf -- "$tmp"; hy2_rollback; return 1; }
 
-    cat > "$etc/config.yaml" <<EOF
+    cat > "$tmp/config.yaml" <<EOF || { rm -rf -- "$tmp"; hy2_rollback; return 1; }
 listen: :$port
 tls:
   cert: $etc/cert.pem
@@ -451,10 +556,11 @@ masquerade:
     content: '$HY2_MASQUERADE_TEXT'
     statusCode: 200
 EOF
-    chmod 0600 "$etc/config.yaml" && [[ -s $etc/config.yaml ]] \
-        || { rm -rf -- "$tmp"; hy2_rollback; return 1; }
+    if [[ ! -s $tmp/config.yaml ]] || ! hy2_place 0600 "$tmp/config.yaml" "$etc/config.yaml"; then
+        rm -rf -- "$tmp"; hy2_rollback; return 1
+    fi
 
-    cat > "$unit" <<EOF
+    cat > "$tmp/unit" <<EOF || { rm -rf -- "$tmp"; hy2_rollback; return 1; }
 [Unit]
 Description=Terry Toolbox Hysteria 2 server
 Documentation=https://v2.hysteria.network/
@@ -483,7 +589,9 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 [Install]
 WantedBy=multi-user.target
 EOF
-    chmod 0644 "$unit" && [[ -s $unit ]] || { rm -rf -- "$tmp"; hy2_rollback; return 1; }
+    if [[ ! -s $tmp/unit ]] || ! hy2_place 0644 "$tmp/unit" "$unit"; then
+        rm -rf -- "$tmp"; hy2_rollback; return 1
+    fi
 
     # 写盘后先离线冒烟：证书/配置/端口绑定错误在这里暴露，早于 systemd。
     if ! hy2_smoke "$bin" "$etc/config.yaml" "$port"; then
@@ -493,6 +601,7 @@ EOF
     if ! systemctl daemon-reload; then
         rm -rf -- "$tmp"; hy2_rollback; return 1
     fi
+    hy2_service_touched=1
     if ! systemctl enable --now "$HY2_UNIT_NAME" >/dev/null 2>&1; then
         hy2_err 'systemctl enable --now 失败。'
         rm -rf -- "$tmp"; hy2_rollback; return 1
@@ -509,11 +618,18 @@ EOF
         rm -rf -- "$tmp"; hy2_rollback; return 1
     fi
 
-    # 证书链不被本机信任时（自签/缺中间证书）用 insecure 探测，并明确标注。
+    # 信任必须基于实际复制的证书；明确选择 CA 的失败不得降级。
+    trusted=1
     hy2_tls_trusted "$etc/cert.pem" || trusted=0
+    if [[ $trusted == 0 && ( ${TOOLBOX_HY2_CAFILE+x} || ${TOOLBOX_HY2_CAPATH+x} ) ]]; then
+        hy2_die '写入后的证书链不被指定 CA 信任，拒绝降级为 insecure。'
+        rm -rf -- "$tmp"; hy2_rollback; return 1
+    fi
     local insecure=0
     if [[ $trusted == 0 ]]; then insecure=1; fi
 
+    mkdir -m 0700 -- "$(hy2_client_dir)" || { rm -rf -- "$tmp"; hy2_rollback; return 1; }
+    hy2_client_created=1
     if ! hy2_probe "$bin" "$host" "$port" "$pass" "$insecure" good; then
         hy2_err '认证探测失败（正确密码未连通）。'
         rm -rf -- "$tmp"; hy2_rollback; return 1
@@ -525,8 +641,9 @@ EOF
     fi
     printf '  负向探测：错误密码被拒绝 ✓\n'
 
-    printf '%s|%s|%s|%s\n' "$host" "$port" "$insecure" "$HY2_VERSION" > "$etc/meta"
-    chmod 0600 "$etc/meta"
+    printf '%s|%s|%s|%s\n' "$host" "$port" "$insecure" "$HY2_VERSION" > "$tmp/meta" \
+        || { rm -rf -- "$tmp"; hy2_rollback; return 1; }
+    hy2_place 0600 "$tmp/meta" "$etc/meta" || { rm -rf -- "$tmp"; hy2_rollback; return 1; }
     rm -rf -- "$tmp"
 
     hy2_report "$host" "$port" "$pass" "$insecure"
@@ -542,6 +659,9 @@ hy2_report() {
         printf '  证书链未被本机信任库验证通过：上面链接带 insecure=1，客户端需同样开启。\n'
     else
         printf '  证书链验证通过：客户端可保持严格校验（去掉 insecure=1）。\n'
+        if [[ -n ${TOOLBOX_HY2_CAFILE:-} ]]; then
+            printf '  使用自定义 CA：其他客户端也需配置同一信任锚，不能只复制连接链接。\n'
+        fi
     fi
     printf '\n验证情况：\n'
     printf '  [已验证] 单元 active、UDP %s 由 %s 监听\n' "$port" "$HY2_BIN_NAME"
@@ -560,7 +680,7 @@ _hy2_uninstall() {
     hy2_require_systemd || return 1
     unit=$(hy2_unit); etc=$(hy2_etc); bin=$(hy2_bin)
     state=$(hy2_unit_state)
-    if [[ $state == absent && ! -e $bin && ! -d $etc ]]; then
+    if [[ $state == absent && ! -e $bin && ! -L $bin && ! -e $etc && ! -L $etc ]]; then
         hy2_die '没有找到本模块的安装（单元、二进制、配置都不存在）。'
         return 1
     fi
@@ -568,40 +688,46 @@ _hy2_uninstall() {
         hy2_die "$unit 不是本模块生成的，未删除；请人工确认。"
         return 1
     fi
+    if [[ $state != ours || -L $bin || -L $etc || -L $(hy2_client_dir) ]]; then
+        hy2_die '没有自有单元或目标为符号链接，未确认归属；未删除，请人工确认归属。'
+        return 1
+    fi
 
     printf '将停止并删除：%s\n  %s\n  %s\n  %s\n' "$unit" "$bin" "$etc" "（证书副本，原始证书不动）"
     printf '确认卸载？输入 YES：'
-    IFS= read -r answer || true
+    IFS= read -r answer || { hy2_err '没有收到完整确认，已取消。'; return 1; }
     [[ ${answer^^} == YES ]] || { hy2_err '已取消。'; return 1; }
 
     exec 9>"$(hy2_lock)" || { hy2_die "无法创建锁文件"; return 1; }
     flock -n 9 || { hy2_die '另一个安装/卸载正在进行。'; return 1; }
 
-    systemctl disable --now "$HY2_UNIT_NAME" >/dev/null 2>&1 || true
-    rm -f -- "$unit"
+    [[ $(hy2_unit_state) == ours && ! -L $bin && ! -L $etc && ! -L $(hy2_client_dir) ]] \
+        || { hy2_die '确认期间归属改变，未删除。'; return 1; }
+    hy2_stop_owned || return 1
+    rm -f -- "$unit" || { hy2_die '删除单元失败，保留其余文件。'; return 1; }
     systemctl daemon-reload >/dev/null 2>&1 || true
     systemctl reset-failed "$HY2_UNIT_NAME" >/dev/null 2>&1 || true
-    rm -f -- "$bin"
-    rm -rf -- "$etc"
-    rm -rf -- "$(hy2_client_dir)"
+    if ! rm -f -- "$bin" || ! rm -rf -- "$etc" || ! rm -rf -- "$(hy2_client_dir)"; then
+        hy2_die '卸载清理失败，请人工处理。'; return 1
+    fi
     printf '已卸载。\n'
 }
 
 # 安装/卸载整体放进子 shell：锁用 exec 9 持有，子 shell 结束后自动释放，
-# 不会把锁句柄留到调用方 shell 里。子 shell 内显式 set -e，这样即使调用方把
-# 本函数放进 `||` / `$( )` 之类会关闭 errexit 的上下文，中途失败也会立即停下。
+# 不会把锁句柄留到调用方 shell 里。调用方的 `if` / `||` 会禁用 errexit，
+# 因此所有关键写入/服务动作都必须显式检查返回，不能仅依赖这里的 set -e。
 hy2_install() { ( set -e; _hy2_install "$@" ) ; }
-hy2_uninstall() { ( set -e; _hy2_uninstall "$@" ) ; }
+hy2_uninstall() { ( set -e; _hy2_uninstall ) ; }
 
 hy2_status() {
-    local host port insecure version bin
+    local host port _insecure version bin
     bin=$(hy2_bin)
     if [[ ! -e $(hy2_unit) ]]; then
         printf '未安装。\n'
         return 1
     fi
-    IFS='|' read -r host port insecure version < "$(hy2_etc)/meta" 2>/dev/null || true
-    printf '单元: %s\n' "$(hy2_unit)"
+    IFS='|' read -r host port _insecure version < "$(hy2_etc)/meta" 2>/dev/null || true
+    printf '单元: %s\n版本: %s\n' "$(hy2_unit)" "${version:-未知}"
     systemctl --no-pager -l status "$HY2_UNIT_NAME" 2>&1 | sed -n '1,6p'
     if [[ -n ${port:-} ]]; then
         printf '端口 %s 监听: ' "$port"

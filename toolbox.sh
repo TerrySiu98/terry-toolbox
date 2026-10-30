@@ -59,8 +59,7 @@ run_action() {
   local key=$1
   case "$key" in
     DIAG) toolbox_diagnostics ;;
-    A4) a4_menu ;;
-    A1|A2|A3|A5|B12|B23|B31) toolbox_network "$key" ;;
+    A1|A2|A3|A4|A5|B12|B23|B31) toolbox_network "$key" ;;
     B3|B4|B5|B9|B13|B17|B20|B21|B22|B24|B25|B26|B27|B28|B29|B30) toolbox_app "${key#B}" ;;
     MAIN_BBR|MAIN_DEPS|MAIN_REINSTALL|MAIN_REBOOT|B1|B2|B6|B7|B8|B11|B14|B15|B16|B19) toolbox_system "$key" ;;
     B10) toolbox_webssh ;;
@@ -68,35 +67,101 @@ run_action() {
     *) printf '无效选项：%s\n' "$key" ; return 1 ;;
   esac
 }
-a4_menu() {
-  local c
-  printf '\n'; _tb_heading 'A4 Hysteria 2'
-  _tb_line '[1] 安装'; _tb_line '[2] 卸载'; _tb_line '[3] 状态'; _tb_line '[0] 返回'; _tb_finish
-  printf '\n请输入编号：'
-  IFS= read -r c || return 1
-  case "$c" in
-    0) return 0 ;;
-    1) toolbox_hy2 install ;;
-    2) toolbox_hy2 uninstall ;;
-    3) toolbox_hy2 status ;;
-    *) printf '无效选项。\n' ; return 1 ;;
+_tb_managed_key() {
+  case "$1" in A[1-5]|B10|B12|B16|B19|B23|B31) return 0;; *) return 1;; esac
+}
+_tb_service_screen() {
+  local title
+  case "$1" in
+    A1) title='A1 Alpine Hysteria 2';; A2) title='A2 Alpine Xray';;
+    A3) title='A3 TUIC';; A4) title='A4 Hysteria 2';; A5) title='A5 Xray';;
+    B10) title='B10 WebSSH';; B12) title='B12 TCP Brutal';;
+    B16) title='B16 网络优化';; B19) title='B19 Alpine 工具';;
+    B23) title='B23 DNS 切换';; B31) title='B31 Relay 转发';;
+  esac
+  _tb_head "$title"
+  case "$1" in
+    B16) _tb_row '🚀 1. 应用优化参数'; _tb_row '↩️  2. 回滚到应用前';;
+    B19)
+      _tb_row '🖥️  1. Webtop 桌面容器'; _tb_row '🔀 2. UDP 端口跳跃'
+      _tb_row '↩️  3. 移除端口跳跃'; _tb_row '💾 4. swap（暂未启用）';;
+    B23)
+      _tb_row '🌐 1. Cloudflare DNS'; _tb_row '🌐 2. Google DNS'; _tb_row '🌐 3. Quad9 DNS'
+      _tb_row '🌐 4. 阿里 DNS'; _tb_row '🌐 5. 腾讯 DNS'; _tb_row '✍️  6. 自定义 DNS'
+      _tb_row '↩️  7. 恢复原状'; _tb_row '🩺 8. 查看状态';;
+    *) _tb_row '📦 1. 安装'; _tb_row '🗑️  2. 卸载'; _tb_row '🩺 3. 查看状态';;
+  esac
+  _tb_sep; _tb_row '↩️  0. 返回上一层'; _tb_bot
+  printf '\n'
+}
+_tb_service_choice_valid() {
+  case "$1" in
+    B16) [[ $2 =~ ^[12]$ ]];; B19) [[ $2 =~ ^[1-4]$ ]];;
+    B23) [[ $2 =~ ^[1-8]$ ]];; *) [[ $2 =~ ^[1-3]$ ]];;
+  esac
+}
+run_service_action() {
+  local key=$1 choice=$2 action
+  local input servers=()
+  case "$key" in
+    B16)
+      case "$choice" in
+        1) ( set -e; _toolbox_system_netopt_apply );;
+        2) ( set -e; _toolbox_system_netopt_rollback );;
+      esac ;;
+    B19)
+      case "$choice" in
+        1) ( set -e; _toolbox_system_alpine_webtop );;
+        2) ( set -e; _toolbox_system_alpine_hop_apply );;
+        3) ( set -e; _toolbox_system_alpine_hop_remove );;
+        4) ( set -e; _toolbox_system_alpine_swap );;
+      esac ;;
+    B23)
+      case "$choice" in
+        [1-5])
+          input=$(net_dns_preset "$choice") || return 1
+          read -r -a servers <<< "$input"
+          toolbox_network B23 install "${servers[@]}" ;;
+        6)
+          printf '输入 1-2 个 IPv4/IPv6 地址（空格或逗号分隔）：'
+          IFS= read -r input || { printf '\n没有收到输入，已取消。\n' >&2; return 1; }
+          input=${input//,/ }
+          read -r -a servers <<< "$input"
+          toolbox_network B23 install "${servers[@]}" ;;
+        7) toolbox_network B23 restore;; 8) toolbox_network B23 status;;
+      esac ;;
+    *)
+      case "$choice" in 1) action=install;; 2) action=uninstall;; 3) action=status;; esac
+      if [[ $key == B10 ]]; then toolbox_webssh "$action"; else toolbox_network "$key" "$action"; fi ;;
   esac
 }
 menu() {
-  local choice screen=main key
+  local choice screen=main key booted=0 service='' parent=main notice=''
   _tb_ui_init
-  _tb_banner
-  _tb_bootstrap || true
   while :; do
-    TB_SKIP_BANNER=1
-    case "$screen" in main) _tb_main_screen;; network) _tb_network_screen;; apps) _tb_apps_screen;; esac
+    _tb_redraw
+    case "$screen" in
+      main) _tb_main_screen;; network) _tb_network_screen;; apps) _tb_apps_screen;;
+      service) _tb_service_screen "$service";;
+    esac
+    if (( booted == 0 )); then booted=1; _tb_bootstrap || true; printf '\n'; fi
+    if [[ -n $notice ]]; then printf '\n %s%s%s\n\n' "$TB_YELLOW" "$notice" "$TB_RESET"; notice=''; fi
     _tb_read_choice || return 0
     choice=$TB_CHOICE
     case "$choice" in
       0|Q)
+        if [[ $screen == service ]]; then screen=$parent; service=''; continue; fi
         if [[ $screen != main ]]; then screen=main; continue; fi
         _tb_bye; return 0 ;;
     esac
+    if [[ $screen == service && $choice =~ ^[0-9]+$ ]]; then
+      if ! _tb_service_choice_valid "$service" "$choice"; then notice='无效的选择，请按菜单编号输入。'; continue; fi
+      load_modules || { notice='模块加载失败，请检查项目文件。'; continue; }
+      printf '\n'
+      run_service_action "$service" "$choice" || printf '\n %s操作未完成或已取消。%s\n' "$TB_YELLOW" "$TB_RESET"
+      _tb_pause || return 0
+      continue
+    fi
     key=$choice
     if [[ $screen == main ]]; then
       case "$choice" in
@@ -114,15 +179,18 @@ menu() {
     fi
     case "$key" in
       DIAG|MAIN_BBR|MAIN_DEPS|MAIN_REINSTALL|MAIN_REBOOT|A[1-5]|B[1-9]|B[12][0-9]|B3[01]) ;;
-      *) printf '\n %s无效的选择，请按菜单编号输入。%s\n' "$TB_YELLOW" "$TB_RESET"; continue;;
+      *) notice='无效的选择，请按菜单编号输入。'; continue;;
     esac
+    if _tb_managed_key "$key"; then
+      [[ $screen == service ]] || parent=$screen
+      service=$key; screen=service; continue
+    fi
     if [[ "$key" != B18 ]]; then
       if ! load_modules; then continue; fi
     fi
     printf '\n'
     run_action "$key" || printf '\n %s操作未完成或已取消。%s\n' "$TB_YELLOW" "$TB_RESET"
     _tb_pause || return 0
-    TB_SKIP_BANNER=0
   done
 }
 case "${1-}" in

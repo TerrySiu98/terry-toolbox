@@ -38,7 +38,7 @@ done
 # Context and version failures must occur before network creation, data or container writes.
 for scenario in 'MOCK_CONTEXT=remote' 'MOCK_CONTEXT_FAIL=1' 'MOCK_ENDPOINT=tcp://remote:2375' 'MOCK_ENDPOINT=unix:///tmp/proxy.sock' 'MOCK_INSPECT_FAIL=1' 'MOCK_VERSION=27.5.1' 'MOCK_VERSION=28.0.0-rc1' 'MOCK_VERSION=unknown' 'MOCK_VERSION_FAIL=1'; do
   reset_test
-  export "$scenario"
+  export "${scenario?}"
   if toolbox_app 3 <<< $'\ny' >/dev/null 2>&1; then fail "unsafe prerequisite accepted: $scenario"; fi
   ! grep -E '^CALL (network create|run) ' "$LOG" >/dev/null || fail "unsafe prerequisite wrote: $scenario"
   [[ ! -e $HOME/.local ]] || fail "unsafe prerequisite created data: $scenario"

@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { createHandler } from '../web/router.mjs';
 
-const script = await readFile(new URL('../docs/index.html', import.meta.url), 'utf8');
+const script = await readFile(process.env.TOOLBOX_TEST_SCRIPT || new URL('../docs/index.html', import.meta.url), 'utf8');
 const page = await readFile(new URL('../web/index.html', import.meta.url), 'utf8');
 const sha256 = createHash('sha256').update(script).digest('hex');
 const handler = createHandler({ script, page, sha256, contentSecurityPolicy: "default-src 'none'" });
@@ -25,6 +25,7 @@ for (const path of ['/', '/index.html']) {
   assert.equal(await r.text(), page);
   assert.equal(r.headers.get('Content-Type'), 'text/html; charset=utf-8');
   assert.ok(r.headers.get('Content-Security-Policy'));
+  assert.ok(r.headers.get('Cache-Control').includes('no-transform'), 'landing-page bytes must not be rewritten by edge injection');
   checked++;
 }
 for (const path of ['/toolbox.sh', '/?download=1']) {

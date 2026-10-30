@@ -13,7 +13,7 @@ export function createHandler({ script, page, sha256, contentSecurityPolicy }) {
       'X-Content-Type-Options': 'nosniff',
       'Referrer-Policy': 'strict-origin-when-cross-origin',
       'Strict-Transport-Security': 'max-age=86400',
-      'Cache-Control': 'public, max-age=60',
+      'Cache-Control': 'public, max-age=60, no-transform',
     });
     let body;
     let status = 200;

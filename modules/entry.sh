@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Source-only entry UI and bootstrap. Reference-style layout for SSH terminals.
+# Source-only UI. Navigation references jht.one (jinhuaitao); independent implementation.
 
 _tb_ui_init() {
   TB_RESET='' TB_BOLD='' TB_CYAN='' TB_BLUE='' TB_DIM='' TB_GREEN='' TB_YELLOW='' TB_RED=''
@@ -91,9 +91,12 @@ _tb_head() { printf '\n'; _tb_top '╔' '╗'; _tb_center "$1" "$TB_BOLD$TB_BLUE
 _tb_line() { _tb_row "$@"; }
 _tb_border() { _tb_sep; }
 _tb_finish() { _tb_bot; }
-_tb_banner() {
-  [[ ${TB_SKIP_BANNER:-0} == 1 ]] && return 0
+_tb_redraw() {
+  # Replace the visible page only; never erase the operator's terminal scrollback.
   if [[ -t 0 && -t 1 && ${TERM:-dumb} != dumb && -z ${TOOLBOX_NO_CLEAR:-} ]]; then printf '\033[H\033[2J'; fi
+  return 0
+}
+_tb_banner() {
   printf '\n'
   _tb_top '╔' '╗'
   local art
@@ -152,7 +155,7 @@ _tb_apps_screen() {
   _tb_pair '🐱 4. 哪吒面板' '⚙️  12. TCP Brutal'
   _tb_pair '🪪 5. X-UI' '🌍 13. MyIP'
   _tb_pair '💾 6. 虚拟内存' '🛰️  14. 回程测试'
-  _tb_pair '📈 7. 流量限制' '📨 15. TG 通知'
+  _tb_pair '📈 7. 流量告警' '📨 15. TG 通知'
   _tb_pair '🔑 8. 修改密码' '🚀 16. 网络优化'
   _tb_sep
   _tb_pair '🧭 17. Sun-panel' '🏔️  19. Alpine 工具'
@@ -174,7 +177,7 @@ _tb_read_choice() {
 _tb_pause() {
   if [[ -t 0 && -t 1 ]]; then
     local answer
-    printf '\n %s↩  操作结束，按回车返回菜单…%s' "$TB_DIM" "$TB_RESET"
+    printf '\n %s↩  操作结束，按回车返回当前菜单…%s' "$TB_DIM" "$TB_RESET"
     IFS= read -r answer || return 1
   fi
 }

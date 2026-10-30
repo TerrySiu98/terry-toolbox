@@ -1,13 +1,39 @@
 #!/usr/bin/env bash
 set -eu
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-source "$ROOT/modules/system.sh"
-log=$(mktemp "${TMPDIR:-/tmp}/toolbox-system-test.XXXXXX")
+# All fixtures, HOME, downloads and evidence live under Hermes scratch, never /tmp.
+export TMPDIR=${TMPDIR:-/root/.hermes/cache/scratch}
+case $TMPDIR in /root/.hermes/cache/scratch|/root/.hermes/cache/scratch/*) ;; *) printf 'unsafe TMPDIR\n' >&2; exit 1;; esac
+mkdir -p "$TMPDIR"
+TMPDIR=$(cd "$TMPDIR" && pwd -P)
+case $TMPDIR in /root/.hermes/cache/scratch|/root/.hermes/cache/scratch/*) ;; *) printf 'unsafe resolved TMPDIR\n' >&2; exit 1;; esac
+safetyroot=$(mktemp -d "$TMPDIR/toolbox-system-safety.XXXXXX")
+export HOME="$safetyroot/home"
+mkdir -p "$HOME" "$safetyroot/bin"
+for cmd in apt-get apk docker systemctl sysctl swapon swapoff mkswap dd passwd reboot \
+           iptables ip6tables rc-service mount umount chroot curl wget gpg dpkg dpkg-query; do
+ printf '#!/usr/bin/env bash\nprintf "UNMOCKED privileged boundary: %%s\\n" "%s" >&2\nexit 99\n' "$cmd" > "$safetyroot/bin/$cmd"
+ chmod 0755 "$safetyroot/bin/$cmd"
+done
+export PATH="$safetyroot/bin:$PATH"
+# Real install is allowed only for scratch paths; this catches hardcoded /opt etc.
+install() {
+ local arg
+ for arg in "$@"; do
+  case $arg in /*) [[ $arg == "$TMPDIR"/* ]] || { printf 'UNSAFE install target: %s\n' "$arg" >&2; return 99; };; esac
+ done
+ /usr/bin/install "$@"
+}
+# shellcheck source=modules/system.sh
+source "${SYSTEM_MODULE_UNDER_TEST:-$ROOT/modules/system.sh}"
+package_status_impl=$(declare -f _toolbox_system_package_installed)
+log=$(mktemp "$TMPDIR/toolbox-system-test.XXXXXX")
 docker_marker="${log}.docker"
-trap 'rm -f "$log" "$docker_marker"' EXIT
+trap 'rm -f "$log" "$docker_marker"; rm -rf "$safetyroot"' EXIT
 # Replace system boundaries with functions; no real privileged command is run.
 _toolbox_system_os() { printf '%s\n' "${TEST_OS:-debian}"; }
 _toolbox_system_root() { return 0; }
+_toolbox_system_package_installed() { return 1; }
 apt-get() { printf 'apt-get %s\n' "$*" >> "$log"; [[ ${MOCK_FAIL:-0} != 1 ]] || return 9; if [[ $* == *docker.io* ]]; then touch "$docker_marker"; fi
  if [[ -n ${mockroot:-} && $* == *vnstat* ]]; then touch "$mockroot/vnstat-installed"; fi; }
 apk() { printf 'apk %s\n' "$*" >> "$log"; }
@@ -46,11 +72,455 @@ sysctl() {
   *) echo 'unexpected sysctl' >&2; return 1;;
  esac
 }
+
+# Focused audit regressions share production code; only privileged boundaries mocked.
+# SYSTEM_AUDIT_CASE=S1..S7|S4|WEBTOP runs one slice; ALL runs every slice.
+audit_setup() {
+ auditroot=$(mktemp -d "$TMPDIR/toolbox-system-audit.XXXXXX")
+ export TOOLBOX_SYSTEM_ETC="$auditroot/etc" TOOLBOX_SYSTEM_STATE="$auditroot/state"
+ export TOOLBOX_SYSTEM_UNIT_DIR="$auditroot/units" TOOLBOX_SYSTEM_BIN_DIR="$auditroot/bin"
+ export TOOLBOX_SYSTEM_SYSCTL_DIR="$auditroot/sysctl" TOOLBOX_SYSTEMD_RUN="$auditroot/run"
+ export TOOLBOX_SWAP_ROOT="$auditroot/swap" TOOLBOX_WEBTOP_ROOT="$auditroot/webtop"
+ export TOOLBOX_DOCKER_APT_ROOT="$auditroot/apt" TOOLBOX_DOCKER_DATA_ROOT="$auditroot/docker-data"
+ export TOOLBOX_DOCKER_OS_RELEASE="$auditroot/os-release"
+ mkdir -p "$TOOLBOX_SYSTEM_ETC" "$TOOLBOX_SYSTEM_STATE" "$TOOLBOX_SYSTEM_UNIT_DIR" \
+  "$TOOLBOX_SYSTEM_BIN_DIR" "$TOOLBOX_SYSTEM_SYSCTL_DIR" "$TOOLBOX_SYSTEMD_RUN" "$TOOLBOX_SWAP_ROOT"
+ printf 'ID=debian\nVERSION_CODENAME=trixie\n' > "$TOOLBOX_DOCKER_OS_RELEASE"
+ : > "$log"; rm -f "$docker_marker"
+ auditvals="$auditroot/values"
+ printf '%s=%s\n' net.ipv4.tcp_available_congestion_control 'cubic bbr' \
+  net.ipv4.tcp_congestion_control cubic net.core.default_qdisc pfifo_fast net.core.somaxconn 128 \
+  net.ipv4.tcp_max_syn_backlog 1024 net.ipv4.tcp_fastopen 1 net.ipv4.tcp_slow_start_after_idle 1 \
+  net.ipv4.tcp_mtu_probing 0 net.ipv4.ip_local_port_range '32768 60999' \
+  net.core.rmem_max 212992 net.core.wmem_max 212992 > "$auditvals"
+ sysctl() {
+  printf 'sysctl %s\n' "$*" >> "$log"
+  local k v line found=0
+  case $1 in
+   -n) while IFS='=' read -r k v; do
+         [[ $k == "$2" ]] || continue
+         if [[ $k == net.ipv4.ip_local_port_range && ${AUDIT_TABS:-0} == 1 ]]; then
+          printf '%s\n' "${v/ /$'\t'}"
+         else printf '%s\n' "$v"; fi
+         found=1
+        done < "$auditvals"; (( found == 1 ));;
+   -w) k=${2%%=*}; v=${2#*=}
+       [[ ${AUDIT_WRITE_FAIL:-} != "$k" ]] || return 1
+       [[ ${AUDIT_WRITE_IGNORE:-} != "$k" ]] || return 0
+       while IFS= read -r line; do [[ $line == "$k="* ]] || printf '%s\n' "$line"; done \
+        < "$auditvals" > "$auditvals.new"
+       printf '%s=%s\n' "$k" "$v" >> "$auditvals.new"; mv "$auditvals.new" "$auditvals";;
+   -p) [[ ${AUDIT_APPLY_FAIL:-0} != 1 ]] || return 1
+       while IFS='=' read -r k v; do
+        [[ $k == '#'* || -z $k ]] && continue
+        k=${k// /}; v=${v# }
+        if [[ $k != "${AUDIT_DRIFT_KEY:-}" ]]; then sysctl -w "$k=$v"; fi
+        [[ ${AUDIT_STDOUT:-0} != 1 ]] || printf '%s = %s\n' "$k" "$v"
+       done < "$2"; return 0;;
+   *) return 1;;
+  esac
+ }
+ systemctl() {
+  printf 'systemctl %s\n' "$*" >> "$log"
+  local unit=${*: -1}
+  case $* in
+   'disable --now '*) [[ ${AUDIT_STOP_FAIL:-0} != 1 ]] || return 1
+      rm -f "$auditroot/active-$unit" "$auditroot/enabled-$unit"
+      if [[ ${AUDIT_SWAP_READ_AFTER_STOP:-0} == 1 ]]; then : > "$auditroot/swap-read-fail"; fi;;
+   'enable --now '*) [[ ${AUDIT_ENABLE_FAIL:-0} != 1 ]] || return 1
+      touch "$auditroot/active-$unit" "$auditroot/enabled-$unit";;
+   'enable '*) touch "$auditroot/enabled-$unit";;
+   'stop '*) [[ ${AUDIT_SERVICE_STOP_FAIL:-0} != 1 ]] || return 1
+      rm -f "$auditroot/active-$unit";;
+   'start '*) touch "$auditroot/active-$unit";;
+   'show -p FragmentPath'*) [[ ${AUDIT_FOREIGN_UNIT:-} != "$unit" ]] || printf '/usr/lib/systemd/system/foreign.service\n';;
+   'show -p DropInPaths'*) return 0;;
+   'show -p ActiveState'*) if [[ -e $auditroot/active-$unit ]]; then printf 'active\n'; else printf 'inactive\n'; fi;;
+   'show -p UnitFileState'*) [[ ${AUDIT_STATE_READ_FAIL:-0} != 1 ]] || return 1
+      if [[ -e $auditroot/enabled-$unit ]]; then printf 'enabled\n'; else printf 'disabled\n'; fi;;
+   'is-active --quiet '*) [[ -e $auditroot/active-$unit ]];;
+   'is-enabled --quiet '*) [[ -e $auditroot/enabled-$unit ]];;
+   *) return 0;;
+  esac
+ }
+ vnstat() { printf '{"interfaces":[]}\n'; }
+ _toolbox_system_has() {
+  case " ${MOCK_MISSING:-} " in *" $1 "*) return 1;; esac
+  case $1 in docker) [[ -e $docker_marker ]];; *) return 0;; esac
+ }
+ _toolbox_system_package_installed() { [[ " ${AUDIT_INSTALLED:-} " == *" $1 "* ]]; }
+ apt-get() {
+  printf 'apt-get %s\n' "$*" >> "$log"
+  [[ $* != "${AUDIT_APT_FAIL:-}" ]] || return 9
+  [[ ${AUDIT_APT_FAIL:-} != update || ${*: -1} != update ]] || return 9
+  [[ ${AUDIT_APT_FAIL:-} != download || " $* " != *' download '* ]] || return 9
+  if [[ " $* " == *' download '* ]]; then
+   for fixture_pkg in docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; do
+    [[ ${AUDIT_DEB_MISSING:-} != "$fixture_pkg" ]] || continue
+    : > "$fixture_pkg.deb"
+   done
+  fi
+  [[ $* != *'install '* || $* != *docker-ce* ]] || touch "$docker_marker"
+  return 0
+ }
+ apt-cache() {
+  [[ ${AUDIT_POLICY_FAIL:-0} != 1 ]] || return 1
+  printf '%s:\n  Installed: (none)\n  Candidate: %s\n  Version table:\n' "${*: -1}" "${AUDIT_CANDIDATE:-(none)}"
+ }
+ dpkg-deb() {
+  printf 'dpkg-deb %s\n' "$*" >> "$log"
+  [[ ${AUDIT_DEB_READ_FAIL:-0} != 1 ]] || return 1
+  local fixture_pkg=${*: -1}; fixture_pkg=${fixture_pkg##*/}; fixture_pkg=${fixture_pkg%.deb}
+  printf '%s %s %s' "$fixture_pkg" '5:29.1.1-1~debian.13~trixie' "${AUDIT_DEB_ARCH:-amd64}"
+ }
+ apk() { printf 'apk %s\n' "$*" >> "$log"; touch "$docker_marker"; }
+ dpkg() { [[ $* == --print-architecture ]] && printf 'amd64\n'; }
+ dpkg-query() { return 1; }
+ curl() {
+  printf 'curl %s\n' "$*" >> "$log"
+  [[ ${AUDIT_DOWNLOAD_FAIL:-0} != 1 ]] || return 22
+  local dest=''
+  while (( $# )); do case $1 in -o) dest=$2; shift 2;; *) shift;; esac; done
+  [[ -n $dest ]] && printf 'mock armored Docker GPG key\n' > "$dest"
+ }
+ gpg() {
+  printf 'gpg %s\n' "$*" >> "$log"
+  [[ ${AUDIT_KEY_FAIL:-0} != 1 ]] || return 1
+  printf 'pub:-:4096:1:mock:0:0::-:::scSC:\nfpr:::::::::%s:\n' \
+   "${AUDIT_FINGERPRINT:-9DC858229FC7DD38854AE2D88D81803C0EBFCD88}"
+ }
+ docker() {
+  printf 'docker %s\n' "$*" >> "$log"
+  case $1 in
+   version) [[ ${AUDIT_DOCKER_READ_FAIL:-0} != 1 ]] || return 1
+            printf '%s\n' "${AUDIT_VERSION:-28.0.0}";;
+   ps) return 0;;
+   inspect) printf 'true\n';;
+   context) case $2 in show) printf 'default\n';; inspect) printf 'unix:///var/run/docker.sock\n';; esac;;
+   *) return 0;;
+  esac
+ }
+ swapon() {
+  printf 'swapon %s\n' "$*" >> "$log"
+  [[ ${AUDIT_SWAP_READ_FAIL:-0} != 1 && ! -e $auditroot/swap-read-fail ]] || return 1
+  [[ ! -e $auditroot/swap-active ]] || printf '%s\n' "$TOOLBOX_SWAP_ROOT/swapfile_toolbox"
+  return 0
+ }
+ swapoff() { printf 'swapoff %s\n' "$*" >> "$log"; rm -f "$auditroot/swap-active"; }
+}
+audit_case() (
+ set -e
+ audit_setup
+ trap 'rc=$?; if (( rc != 0 )); then [[ ! -f $auditroot/out ]] || cat "$auditroot/out" >&2; fi; rm -rf "$auditroot"' EXIT
+ case $1 in
+  S1)
+   AUDIT_TABS=1
+   _toolbox_system_netopt_apply <<< $'YES\nYES' > "$auditroot/out" 2>&1
+   grep -q '网络参数已应用' "$auditroot/out";;
+  S2)
+   AUDIT_STDOUT=1
+   _toolbox_system_netopt_apply <<< $'YES\nYES' > "$auditroot/out" 2>&1
+   if grep -q 'syntax error.*arithmetic' "$auditroot/out"; then
+    printf 'S2 stdout used as arithmetic flag\n' >&2; exit 1
+   fi
+   rm -f "$TOOLBOX_SYSTEM_SYSCTL_DIR/99-terry-toolbox.conf" "$TOOLBOX_SYSTEM_STATE/net-opt.previous"
+   sysctl -w net.core.somaxconn=128
+   AUDIT_DRIFT_KEY=net.core.somaxconn
+   if _toolbox_system_netopt_apply <<< $'YES\nYES' > "$auditroot/out" 2>&1; then
+    printf 'S2 false success with stdout/runtime mismatch\n' >&2; exit 1
+   fi
+   grep -q '回读不一致：net.core.somaxconn' "$auditroot/out"
+   ! grep -q '网络参数已应用' "$auditroot/out";;
+  S3)
+   _toolbox_system_netopt_apply <<< $'YES\nYES' > "$auditroot/out" 2>&1
+   before=$(<"$TOOLBOX_SYSTEM_STATE/net-opt.previous")
+   sysctl -w net.ipv4.tcp_congestion_control=cubic
+   : > "$log"
+   if _toolbox_system_netopt_apply </dev/null > "$auditroot/out" 2>&1; then
+    printf 'S3 same file/runtime drift false success\n' >&2; exit 1
+   fi
+   [[ $(sysctl -n net.ipv4.tcp_congestion_control) == cubic ]]
+   [[ $(<"$log") != *'sysctl -p'* ]]
+   _toolbox_system_netopt_apply <<< $'YES\nYES' > "$auditroot/out" 2>&1
+   [[ $(sysctl -n net.ipv4.tcp_congestion_control) == bbr ]]
+   [[ $(<"$TOOLBOX_SYSTEM_STATE/net-opt.previous") == "$before" ]]
+   _toolbox_system_netopt_apply </dev/null > "$auditroot/out" 2>&1
+   AUDIT_APPLY_FAIL=1
+   sysctl -w net.ipv4.tcp_congestion_control=cubic
+   if _toolbox_system_netopt_apply <<< $'YES\nYES' > "$auditroot/out" 2>&1; then exit 1; fi
+   [[ $(<"$TOOLBOX_SYSTEM_STATE/net-opt.previous") == "$before" ]]
+   [[ -e $TOOLBOX_SYSTEM_SYSCTL_DIR/99-terry-toolbox.conf ]];;
+  S4)
+   for id in B7 B15; do
+    if [[ $id == B7 ]]; then names=("$TOOLBOX_SYSTEM_ETC/traffic.conf" "$TOOLBOX_SYSTEM_BIN_DIR/terry-toolbox-traffic-check" \
+      "$TOOLBOX_SYSTEM_UNIT_DIR/terry-toolbox-traffic.service" "$TOOLBOX_SYSTEM_UNIT_DIR/terry-toolbox-traffic.timer")
+     input=$'2\nYES\nYES'
+    else names=("$TOOLBOX_SYSTEM_ETC/telegram.conf" "$TOOLBOX_SYSTEM_BIN_DIR/terry-toolbox-tg-report" \
+      "$TOOLBOX_SYSTEM_UNIT_DIR/terry-toolbox-tg.service" "$TOOLBOX_SYSTEM_UNIT_DIR/terry-toolbox-tg.timer")
+     input=$'123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n-1001234567890\nYES\nYES'
+    fi
+    for target in "${names[@]}"; do
+     printf 'FOREIGN %s\n' "$target" > "$target"; before=$(<"$target"); : > "$log"
+     if toolbox_system "$id" <<< "$input" > "$auditroot/out" 2>&1; then
+      printf 'S4 %s foreign file accepted: %s\n' "$id" "$target" >&2; exit 1
+     fi
+     [[ $(<"$target") == "$before" && ! -s $log ]]
+     rm -f "$target"
+     ln -s "$auditroot/missing-foreign" "$target"
+     if toolbox_system "$id" <<< "$input" > "$auditroot/out" 2>&1; then exit 1; fi
+     [[ -L $target ]]; rm -f "$target"
+    done
+   done;;
+  S5)
+   f="$TOOLBOX_SWAP_ROOT/swapfile_toolbox"; u="$TOOLBOX_SYSTEM_UNIT_DIR/swapfile_toolbox.swap"
+   printf 'swap\n' > "$f"; printf '# terry-toolbox B6 swap unit\nWhat=%s\n' "$f" > "$u"
+   printf 'PHASE=file\nPATH=%s\nUNIT=%s\nINODE=%s\n' "$f" "$u" "$(stat -c '%d:%i' "$f")" > "$TOOLBOX_SYSTEM_STATE/swap.txn"
+   ino=$(stat -c '%d:%i' "$f"); AUDIT_SWAP_READ_FAIL=1
+   rc=0; _toolbox_system_swap_member "$f" || rc=$?
+   [[ $rc == 2 ]] || { printf 'S5 unreadable membership not tri-state: rc=%s\n' "$rc" >&2; exit 1; }
+   if _toolbox_system_swap_rollback "$f" "$u" "$ino" > "$auditroot/out" 2>&1; then exit 1; fi
+   [[ -e $f && -e $u && -e $TOOLBOX_SYSTEM_STATE/swap.txn ]]
+   unset AUDIT_SWAP_READ_FAIL
+   touch "$auditroot/swap-active"; AUDIT_SWAP_READ_AFTER_STOP=1
+   if _toolbox_system_swap_rollback "$f" "$u" "$ino" > "$auditroot/out" 2>&1; then exit 1; fi
+   [[ -e $f && -e $u && -e $TOOLBOX_SYSTEM_STATE/swap.txn ]];;
+  S6)
+   _toolbox_system_docker <<< $'YES\nYES' > "$auditroot/out" 2>&1
+   [[ $(<"$log") == *'docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin'* ]]
+   [[ $(<"$log") != *'install -y docker.io'* ]]
+   [[ $(<"$log") == *'docker version --format {{.Server.Version}}'* ]]
+   key="$TOOLBOX_DOCKER_APT_ROOT/keyrings/terry-toolbox-docker.asc"
+   src="$TOOLBOX_DOCKER_APT_ROOT/sources.list.d/terry-toolbox-docker.sources"
+   [[ -f $key && -f $src ]]
+   [[ $(<"$src") == *'URIs: https://download.docker.com/linux/debian'* && $(<"$src") == *"Signed-By: $key"* ]]
+   # Repository refresh must occur again AFTER publishing the verified key/source.
+   [[ $(grep -c 'update$' "$log") == 2 ]]
+   [[ $(<"$log") == *'Dir::Etc::sourceparts=-'* && $(<"$log") == *'Dir::State::lists='* ]]
+   [[ $(<"$log") == *'download docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin'* ]]
+   [[ $(<"$log") == *'apt-get install -y --no-upgrade --no-install-recommends /'*'/debs/docker-ce.deb'* ]]
+   [[ $(<"$log") == *'apt-get install -y --no-upgrade ca-certificates curl gnupg'* ]]
+   for flag in low readfail badkey download update packages; do
+    rm -f "$docker_marker" "$key" "$src"; : > "$log"
+    unset AUDIT_VERSION AUDIT_DOCKER_READ_FAIL AUDIT_FINGERPRINT AUDIT_DOWNLOAD_FAIL AUDIT_APT_FAIL
+    case $flag in low) AUDIT_VERSION=26.1.5;; readfail) AUDIT_DOCKER_READ_FAIL=1;;
+     badkey) AUDIT_FINGERPRINT=DEADBEEF;; download) AUDIT_DOWNLOAD_FAIL=1;; update) AUDIT_APT_FAIL=update;; packages) AUDIT_APT_FAIL=download;; esac
+    if _toolbox_system_docker <<< $'YES\nYES' > "$auditroot/out" 2>&1; then
+     printf 'S6 unsafe success: %s\n' "$flag" >&2; exit 1
+    fi
+    ! grep -q 'Docker Engine 已安装' "$auditroot/out"
+   done
+   unset AUDIT_APT_FAIL
+   rm -f "$docker_marker" "$key" "$src"
+   for flag in candidate policy missing-deb bad-arch unreadable-deb; do
+    unset AUDIT_CANDIDATE AUDIT_POLICY_FAIL AUDIT_DEB_MISSING AUDIT_DEB_ARCH AUDIT_DEB_READ_FAIL
+    case $flag in candidate) AUDIT_CANDIDATE='5:99.0.0-foreign';; policy) AUDIT_POLICY_FAIL=1;;
+     missing-deb) AUDIT_DEB_MISSING=docker-ce;; bad-arch) AUDIT_DEB_ARCH=arm64;; unreadable-deb) AUDIT_DEB_READ_FAIL=1;; esac
+    : > "$log"
+    if _toolbox_system_docker <<< $'YES\nYES' > "$auditroot/out" 2>&1; then
+     printf 'S6 unsafe provenance success: %s\n' "$flag" >&2; exit 1
+    fi
+    [[ ! -e $docker_marker && $(<"$log") != *'apt-get install -y --no-upgrade --no-install-recommends /'* ]]
+    rm -f "$key" "$src"
+   done
+   unset AUDIT_CANDIDATE AUDIT_POLICY_FAIL AUDIT_DEB_MISSING AUDIT_DEB_ARCH AUDIT_DEB_READ_FAIL
+   printf 'FOREIGN\n' > "$src"; : > "$log"
+   if _toolbox_system_docker <<< $'YES\nYES' > "$auditroot/out" 2>&1; then exit 1; fi
+   [[ $(<"$src") == FOREIGN && ! -s $log ]]
+   rm -f "$src"; : > "$log"
+   apt-get() {
+    printf 'apt-get %s\n' "$*" >> "$log"
+    if [[ ${*: -1} == update && -e $src ]]; then return 9; fi
+    return 0
+   }
+   if _toolbox_system_docker <<< $'YES\nYES' > "$auditroot/out" 2>&1; then exit 1; fi
+   [[ ! -e $key && ! -e $src && $(<"$log") != *'install -y --no-upgrade docker-ce '* ]]
+   # Refuse existing conflicting packages and data; never uninstall as a shortcut.
+   AUDIT_INSTALLED=containerd; : > "$log"
+   if _toolbox_system_docker <<< $'YES\nYES' > "$auditroot/out" 2>&1; then exit 1; fi
+   [[ ! -s $log ]]; unset AUDIT_INSTALLED
+   mkdir -p "$TOOLBOX_DOCKER_DATA_ROOT/docker"; : > "$log"
+   if _toolbox_system_docker <<< $'YES\nYES' > "$auditroot/out" 2>&1; then exit 1; fi
+   [[ ! -s $log ]];;
+  DOCKER_STABLE)
+   # B1 and apps must agree: prereleases are not stable Engine >=28.
+   touch "$docker_marker"
+   for version in 28.0.0-rc.1 29.0.0-beta.2 28.0.0-dev 27.9.9 unknown; do
+    AUDIT_VERSION=$version
+    if _toolbox_system_docker_verify > "$auditroot/out" 2>&1; then
+     printf 'B1 falsely accepted unstable/unsupported Engine: %s\n' "$version" >&2; exit 1
+    fi
+    ! grep -q 'Docker Engine 已安装' "$auditroot/out"
+   done
+   for version in 28.0.0 29.1.2+vendor.1; do
+    AUDIT_VERSION=$version
+    _toolbox_system_docker_verify > "$auditroot/out" 2>&1
+    grep -q 'Docker Engine 已安装' "$auditroot/out"
+   done;;
+  S7)
+   AUDIT_INSTALLED='curl nano'
+   _toolbox_system_deps <<< $'YES\nYES' > "$auditroot/out" 2>&1
+   [[ $(<"$log") == $'apt-get update\napt-get install -y --no-upgrade socat wget sudo iptables' ]] \
+    || { printf 'S7 missing-only/update mismatch: %s\n' "$(<"$log")" >&2; exit 1; }
+   : > "$log"; AUDIT_APT_FAIL=update
+   if _toolbox_system_deps <<< $'YES\nYES' > "$auditroot/out" 2>&1; then exit 1; fi
+   [[ $(<"$log") == 'apt-get update' ]]
+   unset AUDIT_APT_FAIL; : > "$log"; AUDIT_INSTALLED='curl socat wget sudo nano iptables'
+   _toolbox_system_deps </dev/null > "$auditroot/out" 2>&1
+   [[ ! -s $log ]]
+   # Test the real status parser rather than substituting the entire implementation.
+   eval "$package_status_impl"
+   dpkg-query() { printf '%s' "${AUDIT_PACKAGE_STATUS:-install ok installed}"; return "${AUDIT_PACKAGE_RC:-0}"; }
+   _toolbox_system_package_installed curl
+   AUDIT_PACKAGE_STATUS='deinstall ok config-files'; rc=0
+   _toolbox_system_package_installed curl || rc=$?; [[ $rc == 1 ]]
+   AUDIT_PACKAGE_RC=2; rc=0
+   _toolbox_system_package_installed curl || rc=$?; [[ $rc == 2 ]]
+   if _toolbox_system_deps <<< $'YES\nYES' > "$auditroot/out" 2>&1; then exit 1; fi
+   [[ ! -s $log ]];;
+  SYSCTL_ROLLBACK)
+   _toolbox_system_netopt_apply <<< $'YES\nYES' > "$auditroot/out" 2>&1
+   state="$TOOLBOX_SYSTEM_STATE/net-opt.previous"; file="$TOOLBOX_SYSTEM_SYSCTL_DIR/99-terry-toolbox.conf"
+   # A successful sysctl -w can still leave a different running value.
+   AUDIT_WRITE_IGNORE=net.ipv4.tcp_congestion_control
+   if _toolbox_system_netopt_rollback <<< $'YES\nYES' > "$auditroot/out" 2>&1; then
+    printf 'rollback falsely succeeded without readback\n' >&2; exit 1
+   fi
+   [[ -f $state ]]; unset AUDIT_WRITE_IGNORE
+   _toolbox_system_netopt_rollback <<< $'YES\nYES' > "$auditroot/out" 2>&1
+   [[ ! -e $state ]]
+   printf 'FOREIGN\nnet.core.somaxconn=1\n' > "$state"; : > "$log"
+   if _toolbox_system_netopt_rollback <<< $'YES\nYES' > "$auditroot/out" 2>&1; then exit 1; fi
+   [[ -f $state && ! -s $log ]]
+   rm -f "$state"; ln -s "$auditvals" "$state"
+   if _toolbox_system_netopt_rollback <<< $'YES\nYES' > "$auditroot/out" 2>&1; then exit 1; fi
+   [[ -L $state && ! -s $log ]]
+   rm -f "$state"
+   _toolbox_system_netopt_apply <<< $'YES\nYES' > "$auditroot/out" 2>&1
+   # Foreign replacement during confirmation must not be overwritten/deleted.
+   _toolbox_system_confirm() { printf 'FOREIGN\n' > "$file"; return 0; }
+   : > "$log"
+   if _toolbox_system_netopt_rollback > "$auditroot/out" 2>&1; then exit 1; fi
+   [[ $(<"$file") == FOREIGN && ! -s $log ]];;
+  S4_TXN)
+   for id in B7 B15; do
+    if [[ $id == B7 ]]; then
+     timer=$_TOOLBOX_TRAFFIC_TIMER; service=$_TOOLBOX_TRAFFIC_SERVICE; marker=$_TOOLBOX_SYS_MARK_B7
+     names=("$TOOLBOX_SYSTEM_ETC/traffic.conf" "$TOOLBOX_SYSTEM_BIN_DIR/$_TOOLBOX_TRAFFIC_CHECK" "$TOOLBOX_SYSTEM_UNIT_DIR/$service" "$TOOLBOX_SYSTEM_UNIT_DIR/$timer")
+    else
+     timer=$_TOOLBOX_TG_TIMER; service=$_TOOLBOX_TG_SERVICE; marker=$_TOOLBOX_SYS_MARK_B15
+     names=("$TOOLBOX_SYSTEM_ETC/telegram.conf" "$TOOLBOX_SYSTEM_BIN_DIR/$_TOOLBOX_TG_REPORT" "$TOOLBOX_SYSTEM_UNIT_DIR/$service" "$TOOLBOX_SYSTEM_UNIT_DIR/$timer")
+    fi
+    # Exercise the real shared transaction directly, including all four backups.
+    txn_dir=''; txn_marker=$marker; txn_timer=$timer; txn_service=$service; txn_active=0; txn_enabled=0
+    txn_paths=("${names[@]}"); txn_before=(); txn_hash=(); txn_written=(); txn_written_hash=()
+    for target in "${names[@]}"; do printf '%s\nOLD %s\n' "$marker" "$target" > "$target"; done
+    touch "$auditroot/active-$timer" "$auditroot/enabled-$timer" "$auditroot/active-$service"
+    _toolbox_system_timer_begin
+    for i in 0 1 2 3; do printf '%s\nNEW\n' "$marker" > "$txn_dir/new.$i"; done
+    _toolbox_system_timer_commit
+    AUDIT_SERVICE_STOP_FAIL=1
+    if _toolbox_system_timer_cleanup > "$auditroot/out" 2>&1; then
+     printf 'S4 cleanup deleted files while service stop failed\n' >&2; exit 1
+    fi
+    for target in "${names[@]}"; do [[ $(<"$target") == *NEW* ]]; done
+    [[ -d $txn_dir ]]; unset AUDIT_SERVICE_STOP_FAIL
+    # Even an in-place edit to the last target must block ALL earlier deletes.
+    printf '%s\nFOREIGN EDIT\n' "$marker" > "${names[3]}"
+    if _toolbox_system_timer_cleanup > "$auditroot/out" 2>&1; then exit 1; fi
+    [[ $(<"${names[0]}") == *NEW* && $(<"${names[3]}") == *'FOREIGN EDIT'* && -d $txn_dir ]]
+    rm -rf "$txn_dir"; rm -f "${names[@]}"
+    AUDIT_FOREIGN_UNIT="$service"; : > "$log"
+    if _toolbox_system_timer_preflight "$marker" "${names[@]}" > "$auditroot/out" 2>&1; then
+     printf 'S4 foreign loaded service accepted\n' >&2; exit 1
+    fi
+    unset AUDIT_FOREIGN_UNIT
+    # Successful rollback restores ALL old artifacts, permissions and timer state.
+    txn_dir=''; txn_active=0; txn_enabled=0; txn_before=(); txn_hash=(); txn_written=(); txn_written_hash=()
+    for target in "${names[@]}"; do printf '%s\nOLD %s\n' "$marker" "$target" > "$target"; done
+    chmod 0600 "${names[0]}"; chmod 0755 "${names[1]}"
+    touch "$auditroot/active-$timer" "$auditroot/enabled-$timer"
+    _toolbox_system_timer_begin
+    for i in 0 1 2 3; do printf '%s\nNEW\n' "$marker" > "$txn_dir/new.$i"; done
+    _toolbox_system_timer_commit; _toolbox_system_timer_cleanup
+    for target in "${names[@]}"; do [[ $(<"$target") == *'OLD '* ]]; done
+    [[ $(stat -c %a "${names[0]}") == 600 && $(stat -c %a "${names[1]}") == 755 ]]
+    [[ ! -e $txn_dir && -e $auditroot/active-$timer ]]; rm -f "${names[@]}"
+    # Unknown prior state cannot be silently recorded as inactive/disabled.
+    txn_dir=''; txn_before=(); txn_hash=(); txn_written=(); txn_written_hash=()
+    AUDIT_STATE_READ_FAIL=1
+    if _toolbox_system_timer_begin > "$auditroot/out" 2>&1; then
+     printf 'S4 unreadable prior timer state accepted\n' >&2; exit 1
+    fi
+    unset AUDIT_STATE_READ_FAIL
+    _toolbox_system_timer_cleanup
+   done;;
+  S5_OWNERSHIP)
+   f="$TOOLBOX_SWAP_ROOT/swapfile_toolbox"; u="$TOOLBOX_SYSTEM_UNIT_DIR/swapfile_toolbox.swap"
+   j="$TOOLBOX_SYSTEM_STATE/swap.txn"
+   printf 'swap\n' > "$f"; printf 'FOREIGN\n' > "$u"
+   ino=$(stat -c '%d:%i' "$f")
+   printf 'PHASE=file\nPATH=%s\nUNIT=%s\nINODE=%s\n' "$f" "$u" "$ino" > "$j"
+   touch "$auditroot/swap-active"; : > "$log"
+   if _toolbox_system_swap_rollback "$f" "$u" "$ino" > "$auditroot/out" 2>&1; then
+    printf 'S5 rollback deleted foreign unit\n' >&2; exit 1
+   fi
+   [[ $(<"$u") == FOREIGN && -e $f && -e $j && -e $auditroot/swap-active ]]
+   [[ $(<"$log") != *'systemctl disable'* && $(<"$log") != *swapoff* ]]
+   # A journal cannot authorize deletion outside the configured swap paths.
+   printf 'FOREIGN\n' > "$auditroot/victim"
+   printf 'PHASE=file\nPATH=%s\nUNIT=%s\nINODE=%s\n' "$auditroot/victim" "$u" "$(stat -c '%d:%i' "$auditroot/victim")" > "$j"
+   if _toolbox_system_swap_recover > "$auditroot/out" 2>&1; then exit 1; fi
+   [[ -e $auditroot/victim && -e $j ]];;
+  CONDITIONAL)
+   # Match parent menu: function || handler disables errexit even inside (set -e).
+   run_service_action() { ( set -e; "$@" ); }
+   for writer in _toolbox_system_write_traffic_check _toolbox_system_write_tg_report; do
+    failed=0
+    (
+     # Real partial write then I/O failure: chmod can succeed, but writer must fail.
+     cat() { command cat "$@"; return 1; }
+     run_service_action "$writer" "$auditroot/partial" > "$auditroot/out" 2>&1
+    ) || failed=1
+    [[ $failed == 1 ]] || { printf 'conditional writer swallowed I/O failure: %s\n' "$writer" >&2; exit 1; }
+   done
+   AUDIT_APT_FAIL=update; failed=0
+   run_service_action _toolbox_system_deps <<< $'YES\nYES' > "$auditroot/out" 2>&1 || failed=1
+   [[ $failed == 1 && $(<"$log") == 'apt-get update' ]]
+   unset AUDIT_APT_FAIL; AUDIT_STDOUT=1; AUDIT_DRIFT_KEY=net.core.somaxconn; failed=0
+   run_service_action _toolbox_system_netopt_apply <<< $'YES\nYES' > "$auditroot/out" 2>&1 || failed=1
+   [[ $failed == 1 && -e $TOOLBOX_SYSTEM_STATE/net-opt.previous ]]
+   unset AUDIT_DRIFT_KEY
+   (
+    _toolbox_system_put() { command cat >/dev/null; return 1; }
+    failed=0
+    run_service_action _toolbox_system_netopt_apply <<< $'YES\nYES' > "$auditroot/out" 2>&1 || failed=1
+    [[ $failed == 1 ]] || exit 1
+   )
+   : > "$log"; AUDIT_APT_FAIL=update; failed=0
+   run_service_action _toolbox_system_docker <<< $'YES\nYES' > "$auditroot/out" 2>&1 || failed=1
+   [[ $failed == 1 && $(<"$log") == 'apt-get update' ]];;
+  WEBTOP)
+   touch "$docker_marker"; TEST_OS=alpine
+   _toolbox_system_alpine_webtop <<< $'YES\nYES' > "$auditroot/out" 2>&1
+   [[ -d $TOOLBOX_WEBTOP_ROOT && $(<"$log") == *"-v $TOOLBOX_WEBTOP_ROOT:/config"* ]];;
+  *) printf 'unknown audit case: %s\n' "$1" >&2; exit 2;;
+ esac
+ printf 'audit %s passed\n' "$1"
+)
+if [[ -n ${SYSTEM_AUDIT_CASE:-} ]]; then
+ if [[ $SYSTEM_AUDIT_CASE == ALL ]]; then
+  for audit in S1 S2 S3 S4 S5 S6 S7 DOCKER_STABLE SYSCTL_ROLLBACK S4_TXN S5_OWNERSHIP CONDITIONAL WEBTOP; do audit_case "$audit"; done
+ else audit_case "$SYSTEM_AUDIT_CASE"; fi
+ exit 0
+fi
+
+for audit in S1 S2 S3 S4 S5 S6 S7 DOCKER_STABLE SYSCTL_ROLLBACK S4_TXN S5_OWNERSHIP CONDITIONAL WEBTOP; do audit_case "$audit"; done
+: > "$log"; rm -f "$docker_marker"
 # Cancellation and EOF are fail-closed.
 if toolbox_system MAIN_DEPS </dev/null >/dev/null 2>&1; then exit 1; fi
 [ ! -s "$log" ]
 printf 'YES\nYES\n' | toolbox_system MAIN_DEPS >/dev/null
-[ "$(<"$log")" = 'apt-get install -y curl socat wget sudo nano iptables' ]
+[ "$(<"$log")" = $'apt-get update\napt-get install -y --no-upgrade curl socat wget sudo nano iptables' ]
 : > "$log"
 printf 'YES\nNO\n' | toolbox_system MAIN_REBOOT >/dev/null 2>&1 && exit 1
 [ ! -s "$log" ]
@@ -63,8 +533,12 @@ printf 'YES\nYES\n' | toolbox_system B8 >/dev/null
 printf 'YES\nYES\n' | toolbox_system MAIN_BBR >/dev/null
 [ "$(<"$log")" = 'sysctl -w net.ipv4.tcp_congestion_control=bbr' ]
 : > "$log"
-printf 'YES\nYES\n' | toolbox_system B1 >/dev/null
-[ "$(<"$log")" = 'apt-get install -y docker.io' ]
+# Installation/version/official repository are covered by the audit slices below.
+MOCK_DOCKER_INSTALLED=1
+if printf 'YES\nYES\n' | toolbox_system B1 >/dev/null 2>&1; then exit 1; fi
+[ ! -s "$log" ]
+touch "$docker_marker"
+unset MOCK_DOCKER_INSTALLED
 : > "$log"
 if printf 'YES\nYES\n' | toolbox_system 1 >/dev/null 2>&1; then exit 1; fi
 [ ! -s "$log" ]
@@ -110,7 +584,7 @@ swap_file="$swap_root/swapfile_toolbox"
 export TOOLBOX_SYSTEM_STATE="$swap_state" TOOLBOX_SYSTEM_UNIT_DIR="$swap_units"
 export TOOLBOX_SYSTEMD_RUN="$swap_root/run/systemd/system"
 export TOOLBOX_SWAP_ROOT="$swap_root" TOOLBOX_SWAP_SIZE_MB=256
-trap 'rm -f "$log" "$docker_marker"; rm -rf "$swap_root" "$swap_state"' EXIT
+trap 'rm -f "$log" "$docker_marker"; rm -rf "$swap_root" "$swap_state"; rm -rf "$safetyroot"' EXIT
 
 # 只读边界桩。MOCK_* 只在子 shell 内生效，不泄漏到后面的用例。
 findmnt() { printf '%s\n' "${MOCK_FSTYPE:-ext4}"; }
@@ -156,6 +630,11 @@ systemctl() {
  case $* in
   'show -p FragmentPath'*) [[ ! -e $swap_root/fragment ]] || printf '%s\n' "$(<"$swap_root/fragment")";;
   'show -p DropInPaths'*) [[ ! -e $swap_root/dropinpaths ]] || printf '%s\n' "$(<"$swap_root/dropinpaths")";;
+  'show -p LoadState'*) [[ -e $swap_unit ]] && printf 'loaded\n' || printf 'not-found\n';;
+  'show -p ActiveState'*)
+   # systemd stop can be quiet while the kernel still holds swap (swapoff-stuck test).
+   [[ -e $swap_state/unit-$unit ]] && printf 'active\n' || printf 'inactive\n';;
+  'show -p Job'*) printf '0\n';;
   'daemon-reload') [[ ${MOCK_RELOAD_FAIL:-0} != 1 ]];;
   'enable --now '*)
    [[ ${MOCK_ENABLE_FAIL:-0} != 1 ]] || return 1
@@ -224,6 +703,16 @@ b6 $'YES\nYES' || { printf 'B6 正常路径失败\n' >&2; cat "$out" >&2; exit 1
 [[ ! -s $swap_root/etc/fstab ]]
 b6_order dd mkswap 'enable --now' 'is-active --quiet' 'swapon --show=NAME'
 [[ $(<"$out") == *'swap 已启用'* ]]
+# Conditional parent context still fails closed on dd/enable/verification failures.
+for failure in dd enable verify; do
+ b6_reset
+ case $failure in dd) MOCK_DD=fail;; enable) MOCK_ENABLE_FAIL=1;; verify) MOCK_ACTIVE_FAIL=1;; esac
+ failed=0
+ ( set -e; b6 $'YES\nYES' ) || failed=1
+ [[ $failed == 1 && ! -e $swap_file && ! -e $swap_unit && ! -e $swap_state/swap.txn ]]
+done
+b6_reset
+b6 $'YES\nYES'
 # 已启用后再跑：幂等，不重写文件与单元。
 unit_before=$(<"$swap_unit")
 : > "$log"
@@ -264,12 +753,12 @@ b6 $'YES\nYES' && { printf 'B6 验证失败未回滚\n' >&2; exit 1; }
 [[ -e $swap_unit && -e $swap_state/swap.txn && -e $swap_file ]]
 [[ -e $swap_root/active ]]
 grep -q '^swapoff ' "$log" || { printf 'B6 未尝试 swapoff\n' >&2; exit 1; }
-# 路径在 dd 期间被换成符号链接：识别后中止，删链接、留原来的目标文件。
+# 路径在 dd 期间被换成符号链接：归属未知，留链接与事务供人工处理。
 b6_reset
 MOCK_DD=race
 b6 $'YES\nYES' && { printf 'B6 路径替换未拒绝\n' >&2; exit 1; }
 [[ $(<"$out") == *'不是普通文件'* ]]
-[[ -e $swap_root/victim && ! -L $swap_file ]]
+[[ -e $swap_root/victim && -L $swap_file && -e $swap_state/swap.txn ]]
 ! grep -qx 'mkswap' "$log"
 MOCK_DD=ok
 # 上个进程被 SIGKILL 留下的日志：下次先按日志回滚残留，再重新预检。
@@ -330,7 +819,7 @@ b6 $'YES\nYES' 6 || { printf 'B6 数字别名失败\n' >&2; exit 1; }
 # ---------------------------------------------------------------- 新增系统工具
 # 全部使用隔离目录与命令桩：不读写真实 /etc、/var/lib、systemd 单元。
 mockroot=$(mktemp -d "${TMPDIR:-/tmp}/toolbox-sys-test.XXXXXX")
-trap 'rm -f "$log" "$docker_marker"; rm -rf "$swap_root" "$swap_state" "$mockroot"' EXIT
+trap 'rm -f "$log" "$docker_marker"; rm -rf "$swap_root" "$swap_state" "$mockroot"; rm -rf "$safetyroot"' EXIT
 export TOOLBOX_SYSTEM_ETC="$mockroot/etc/terry-toolbox"
 export TOOLBOX_SYSTEM_STATE="$mockroot/var/lib/terry-toolbox"
 export TOOLBOX_SYSTEM_UNIT_DIR="$mockroot/etc/systemd/system"
@@ -338,6 +827,7 @@ export TOOLBOX_SYSTEM_BIN_DIR="$mockroot/usr/local/bin"
 export TOOLBOX_SYSTEM_SYSCTL_DIR="$mockroot/etc/sysctl.d"
 export TOOLBOX_SYSTEMD_RUN="$mockroot/run/systemd/system"
 export MOCK_ROOT="$mockroot"
+export TOOLBOX_WEBTOP_ROOT="$mockroot/webtop"
 # 这两个开关要传给安装出来的脚本子进程，必须导出。
 export MOCK_TG_FAIL=0 MOCK_VNSTAT_NEVER=0
 mkdir -p "$TOOLBOX_SYSTEM_ETC" "$TOOLBOX_SYSTEM_STATE" "$TOOLBOX_SYSTEM_UNIT_DIR" \
@@ -356,7 +846,9 @@ printf 'curl %s\n' "$*" >> "$STUBLOG"
 # 与真实 curl 一样，响应体进 -o 指定的文件；这里不必实现，只解析出来。
 out=/dev/stdout
 while (( $# )); do case $1 in -o) out=$2; shift 2;; *) shift;; esac; done
-case $out in /dev/null) ;; *) printf '%s\n' '{"ok":true}' > "$out";; esac
+body='{"ok":true}'
+[[ ${MOCK_TG_API_FAIL:-0} != 1 ]] || body='{"ok":false}'
+case $out in /dev/null) ;; /dev/stdout) printf '%s\n' "$body";; *) printf '%s\n' "$body" > "$out";; esac
 exit 0
 STUB
 cat > "$stub/vnstat" <<'STUB'
@@ -393,6 +885,9 @@ systemctl() {
  case $* in
   'enable --now '*) touch "$mockroot/active-$unit"; return 0;;
   'disable --now '*) rm -f "$mockroot/active-$unit"; return 0;;
+  'stop '*) rm -f "$mockroot/active-$unit"; return 0;;
+  'show -p ActiveState'*) if [[ -e $mockroot/active-$unit ]]; then printf 'active\n'; else printf 'inactive\n'; fi;;
+  'show -p UnitFileState'*) if [[ -e $mockroot/active-$unit ]]; then printf 'enabled\n'; else printf 'disabled\n'; fi;;
   'is-active --quiet '*) [[ -e $mockroot/active-$unit ]];;
   *) return 0;;
  esac
@@ -413,7 +908,7 @@ if printf '2\nYES\nYES\n' | toolbox_system B7 >/dev/null 2>&1; then printf 'B7: 
 [ ! -s "$log" ]
 rm -f "$conf"
 if printf '2\nYES\nNO\n' | toolbox_system B7 >/dev/null 2>&1; then printf 'B7: 二次确认未生效\n' >&2; exit 1; fi
-[ ! -s "$log" ]
+! grep -v '^systemctl show ' "$log"
 
 # --- B7 安装失败：包装不上时不留配置
 : > "$log"
@@ -441,7 +936,7 @@ printf 'TOKEN=%s\nCHAT_ID=%s\n' '123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' 
 marker="$TOOLBOX_SYSTEM_STATE/traffic-$(date +%Y%m).state"
 rm -f "$marker"; : > "$stublog"
 TOOLBOX_TRAFFIC_CONF="$conf" TOOLBOX_TRAFFIC_STATE="$TOOLBOX_SYSTEM_STATE" \
- TOOLBOX_TG_CONF="$tgconf" "$check"
+ TOOLBOX_TG_CONF="$tgconf" "$check" || { cat "$stublog" >&2; exit 1; }
 [[ $(<"$stublog") == *sendMessage* && $(<"$stublog") == *'3.00 GiB'* && $(<"$stublog") == *'2 GiB'* ]]
 [ -s "$marker" ]
 sends=$(grep -c sendMessage "$stublog" || true)
@@ -453,6 +948,19 @@ printf '2000-01-01\n' > "$marker"
 TOOLBOX_TRAFFIC_CONF="$conf" TOOLBOX_TRAFFIC_STATE="$TOOLBOX_SYSTEM_STATE" \
  TOOLBOX_TG_CONF="$tgconf" "$check"
 [ "$(grep -c sendMessage "$stublog" || true)" -gt "$sends" ]
+# Failed transport/API response must not consume today's alert; next run retries.
+for failure in transport api; do
+ rm -f "$marker"; : > "$stublog"
+ export MOCK_TG_FAIL=0 MOCK_TG_API_FAIL=0
+ if [[ $failure == transport ]]; then MOCK_TG_FAIL=1; else MOCK_TG_API_FAIL=1; fi
+ if TOOLBOX_TRAFFIC_CONF="$conf" TOOLBOX_TRAFFIC_STATE="$TOOLBOX_SYSTEM_STATE" TOOLBOX_TG_CONF="$tgconf" "$check"; then
+  printf 'B7 alert failure incorrectly succeeded: %s\n' "$failure" >&2; exit 1
+ fi
+ [[ ! -e $marker ]]
+ export MOCK_TG_FAIL=0 MOCK_TG_API_FAIL=0
+ TOOLBOX_TRAFFIC_CONF="$conf" TOOLBOX_TRAFFIC_STATE="$TOOLBOX_SYSTEM_STATE" TOOLBOX_TG_CONF="$tgconf" "$check"
+ [[ -s $marker && $(grep -c sendMessage "$stublog") == 2 ]]
+done
 # 阈值提高到 10 GiB 后不再告警。
 printf '%s\nLIMIT_GIB=10\n' '# terry-toolbox B7 traffic config' > "$conf"
 rm -f "$marker"; : > "$stublog"
@@ -472,7 +980,9 @@ fi
 [[ $(<"$mockroot/out") == *'未产生可用统计'* ]]
 # 恢复的是本次运行之前的阈值（5），不是失败写入的 7。
 [[ $(<"$conf") == *'LIMIT_GIB=5'* ]]
-[[ $(<"$log") == *'systemctl disable --now terry-toolbox-traffic.timer'* ]]
+[[ $(<"$log") != *'systemctl disable --now terry-toolbox-traffic.timer'* ]]
+[[ -e $mockroot/active-terry-toolbox-traffic.timer ]]
+[[ -x $TOOLBOX_SYSTEM_BIN_DIR/terry-toolbox-traffic-check && -e $TOOLBOX_SYSTEM_UNIT_DIR/terry-toolbox-traffic.service ]]
 # 恢复运行不残留 .bak 文件。
 ls "$TOOLBOX_SYSTEM_ETC"/traffic.conf.bak.* >/dev/null 2>&1 && { printf 'B7: 残留备份\n' >&2; exit 1; }
 touch "$mockroot/vnstat-ready"
@@ -517,6 +1027,14 @@ case $- in *x*) ;; *) [[ $(<"$mockroot/out") != *"$token"* ]] || { printf 'B15: 
 printf '%s\n-1001234567890\nYES\nYES\n' '987654321:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB' \
  | MOCK_TG_FAIL=1 toolbox_system B15 >/dev/null 2>&1 && { printf 'B15: 重配失败未报错\n' >&2; exit 1; }
 [[ $(<"$tgconf") == *"TOKEN=$token"* ]]
+# HTTP success with API rejection is not a successful test notification.
+export MOCK_TG_API_FAIL=1
+api_token="987654321:$(printf '%035d' 0)"
+if printf '%s\n-1001234567890\nYES\nYES\n' "$api_token" | toolbox_system B15 >/dev/null 2>&1; then
+ printf 'B15 accepted ok=false API response\n' >&2; exit 1
+fi
+[[ $(<"$tgconf") == *"TOKEN=$token"* ]]
+export MOCK_TG_API_FAIL=0
 # 外来配置拒绝覆盖。
 printf 'no marker\n' > "$tgconf"
 : > "$log"
@@ -772,7 +1290,7 @@ if printf '1\nYES\nYES\n' | MOCK_DOCKER_PULL_FAIL=1 toolbox_system B19 >/dev/nul
 printf '1\nYES\nYES\n' | toolbox_system B19 > "$mockroot/out" 2>&1
 [[ $(<"$log") == *'docker pull lscr.io/linuxserver/webtop:latest'* ]]
 [[ $(<"$log") == *'-p 127.0.0.1:3000:3000'* ]]
-[[ $(<"$log") == *'-v /opt/terry-toolbox-webtop:/config'* ]]
+[[ $(<"$log") == *"-v $TOOLBOX_WEBTOP_ROOT:/config"* ]]
 [[ $(<"$log") == *'inspect'* ]]
 [[ $(<"$mockroot/out") == *'容器已运行'* ]]
 rm -f "$mockroot/docker-containers/terry-toolbox-webtop"

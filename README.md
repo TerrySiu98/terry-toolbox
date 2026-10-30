@@ -22,9 +22,10 @@ Terry Toolbox 是一个面向 Linux 服务器的中文菜单工具箱。登录�
 
 ## 开发进度
 
-- **已实测**：全部 Docker 应用（启动、访问、清理）；系统体检；Hysteria 2 全流程；WebSSH 认证拦截与卸载。
-- **已开发、待真机验收**：BBR、依赖、Docker、改密码、重启、路由追踪、swap、Xray、DNS、TCP Brutal、Relay、Alpine HY2/Xray、1Panel、流量统计、Telegram 通知、网络优化、Alpine 工具、NodeQuality。
-- **计划**：系统重装（M3）。
+- **本轮开发预览验证**：默认 shell 套件、真实 PTY 菜单、单文件构建及 Worker 路由；新增 swap 启动任务/SIGTERM、sysctl 缺键回滚与真实离线 APT 包源回归，回环 TLS / socat 通过。特权操作仍为模拟，不是真实安装验收。
+- **历史实测记录**：部分 Docker 应用、Hysteria 2 全流程、WebSSH 认证拦截与卸载；不能据此声称当前全部功能已通过真实验收。
+- **已开发、待当前版本真机验收**：BBR、依赖、Docker、改密码、重启、路由追踪、Debian/Ubuntu swap、Xray、DNS、TCP Brutal、Relay、Alpine HY2/Xray、1Panel、流量告警、Telegram 通知、网络优化、WebSSH 和各 Docker 应用。
+- **计划或未启用**：系统重装（M3）、Docker IPv6、WebSSH 个人版/Easynode、Xray VMess + WS、Alpine swap。
 - **预留**：B18。
 
 ## 使用方法
@@ -55,7 +56,7 @@ bash toolbox.sh
 curl -fsSL sh.uw.cx | sha256sum
 ```
 
-与仓库 `docs/index.html` 的哈希对比，一致再执行。**当前发布版本的 SHA-256**：`79667e2b64b918f06a485a534aec8d1f9e7a6425466f10200a7ff35649f5dad4`（每次发布后更新）。
+与仓库 `docs/index.html` 的哈希对比，一致再执行。**当前发布版本的 SHA-256**：`38946953c2e24fb29c0f60b7a1dde5aee5fdf806e1875085b4683a26dc5f8d00`（每次发布后更新）。
 
 服务端下载的是单文件版本，全部模块已经打包进去，不需要准备其他文件。Debian / Ubuntu 为当前主要支持环境，Alpine 仅部分功能。
 
@@ -74,7 +75,11 @@ curl -fsSL sh.uw.cx | sha256sum
 - `2` 安装 BBR，`3` 安装基础依赖，`4` 重装系统（计划），`5` 常用工具（Docker、应用、体检以外的系统项）
 - `DIAG` 只读体检，`99` 重启，`0` 退出
 
-进入子菜单后 `0` 返回上一层；`A4`、`B9` 这类完整编号在任何界面都能直接输入。安装类功能需要 root，执行前都会显示影响并二次确认。
+进入子菜单后 `0` 返回上一层；功能管理页返回所属分类，分类页返回主菜单，只有主菜单 `0` 才退出。操作结束后按回车留在当前功能页，单纯返回不再额外暂停。`A4`、`B9` 这类完整编号在任何界面都能直接输入。安装类功能需要 root，执行前会显示影响并要求确认。
+
+真实终端切页会清除当前画面再重绘，不清除历史滚动记录；重定向到日志时不发送清屏控制符。需要保留每次画面时可设置 `TOOLBOX_NO_CLEAR=1`。
+
+网络服务、WebSSH、TCP Brutal、网络优化、Alpine 工具、DNS 与 Relay 通过功能管理页选择动作，不会选中编号就直接安装。TLS 服务安装会询问已有证书、私钥路径及证书域名；当前不自动申请或生成证书。输入结束或取消不会视为安装成功。
 
 ## 功能列表
 
@@ -87,21 +92,21 @@ curl -fsSL sh.uw.cx | sha256sum
 | `DIAG` | 服务器体检 | 开发中：只读查看系统、运行时间、内存、磁盘、网络和监听端口 |
 | `M1` | BBR | 开发中：调整当前运行期拥塞控制，重启后可能失效 |
 | `M2` | 基础依赖 | 开发中：通过系统包管理器安装常用依赖 |
-| `M3` | 重装系统 | 计划：调用第三方重装脚本，尚未接入 |
+| `M3` | 重装系统 | 计划、禁用：尚无经过验证的恢复与重装方案，选择此项不会执行重装 |
 | `M4` | 重启服务器 | 开发中：确认后重启本机 |
-| `B1` | Docker | 开发中：通过系统包管理器安装；Docker IPv6 尚未实现 |
+| `B1` | Docker | 开发中：Debian/Ubuntu 使用固定 GPG 主密钥指纹、私有官方索引下载再安装本地包；拒绝全局已有 Docker 包索引及已有安装/冲突包/数据，普通依赖仍用系统源；Alpine 使用系统仓库；回读稳定版 Engine ≥28，Docker IPv6 未实现 |
 | `B2` | NodeQuality | 开发中：固定 SHA-256 后执行综合质量测试，真实运行已验证 |
 | `B4` | 哪吒面板 | 开发中：容器部署入口，真实运行待验证 |
 | `B5` | X-UI | 开发中：3X-UI 容器部署入口，真实运行待验证 |
 | `B6` | 虚拟内存 | 开发中：事务式 swapfile + systemd 单元（独占锁、锁内复检、信号回滚、不写 fstab），真实机器待验收 |
-| `B7` | 流量限制 | 开发中：vnstat 流量统计与阈值检查，systemd timer 告警 |
+| `B7` | 流量告警 | 开发中：vnstat 流量统计与阈值检查，systemd timer 告警；不阻断流量，不等于限速 |
 | `B8` | 修改密码 | 开发中：调用系统 `passwd` 修改 root 密码，不使用固定密码 |
-| `B10` | 网页 SSH | 已实测：WebSSH（PyPI 固定版本 + nginx Basic 认证，仅回环）、401 拦截、网页终端、卸载均通过；个人版/EasyNode 未做 |
+| `B10` | 网页 SSH | 开发中：WebSSH（PyPI 固定版本 + nginx Basic 认证，仅回环），支持菜单安装/卸载/状态；有历史实测记录，当前修复版本待真机复验；个人版/Easynode 未做 |
 | `B11` | 1Panel | 开发中：官方安装包，固定版本校验，已有安装则拒绝 |
 | `B14` | 三网回程 | 开发中：向预设目标执行路由追踪 |
 | `B15` | Telegram 流量通知 | 开发中：Token / Chat 隐藏输入，systemd timer 推送 |
-| `B16` | 网络优化 | 开发中：独立 sysctl drop-in，备份原值，可回滚 |
-| `B19` | Alpine 工具 | 开发中：Webtop、swap、端口跳跃，仅 Alpine |
+| `B16` | 网络优化 | 开发中：独立 sysctl drop-in、保存原值；新增可读参数需先回滚旧方案，回滚记录缺键则保留现场并拒绝 |
+| `B19` | Alpine 工具 | 开发中：Webtop、UDP 端口跳跃及移除；Alpine swap 暂未启用 |
 
 ### 网络服务
 
@@ -110,7 +115,7 @@ curl -fsSL sh.uw.cx | sha256sum
 | `A1` | Alpine Hysteria 2 | 开发中：仅 Alpine + OpenRC；固定官方发布二进制并校验 SHA-256，失败回滚 |
 | `A2` | Alpine Xray | 开发中：Alpine + OpenRC 的 VLESS + REALITY；固定校验值、失败回滚，回落流量不限 |
 | `A3` | TUIC | 开发中：固定官方 v1.0.0 静态二进制，自动验证启动与端口归属；认证需客户端实测 |
-| `A4` | Hysteria 2 | 已实测：Debian 安装、自检、认证、数据面、重启、卸载均通过 |
+| `A4` | Hysteria 2 | 开发中：有 Debian 安装、认证、数据面、重启、卸载的历史实测记录；当前交互与安全修复版本待真机复验 |
 | `A5` | Xray | 开发中：VLESS Reality，回落限流、并发锁、回滚和认证自检 |
 | `B12` | TCP Brutal | 开发中：DKMS 编译 kernel module、开机载入与默认拥塞控制；仅非容器 Debian |
 | `B23` | DNS 切换 | 开发中：仅 systemd-resolved，先查 resolv.conf 归属；验证失败回滚并列出泄漏面 |
@@ -118,7 +123,9 @@ curl -fsSL sh.uw.cx | sha256sum
 
 ### 常用应用
 
-全部应用已在隔离测试机完成真实启动与网页访问，测试后已清理容器；后续配置、认证和长期持久化仍需自行验证。 默认绑定本机地址；远程访问、公网暴露、认证和备份需要另外配置。
+应用部署入口均有实现与模拟测试，部分有历史隔离测试机运行记录；**当前版本不作「全部应用真机验收完成」声明**。后续配置、认证和长期持久化仍需验证。需要稳定版 **Docker Engine ≥ 28**，低版本会因回环端口泄露风险被拒绝，不会绕过该门禁。
+
+默认绑定 `127.0.0.1`；远程访问需 SSH 隧道或另行配置经过审查的反向代理、HTTPS 和认证。WebSSH、NginxWebUI、LibreTV、Stirling PDF 默认可能同用 8080，安装时请为它们指定不同端口；NPM 还需要本机 80/443。
 
 | 编号 | 应用 | 用途 |
 | --- | --- | --- |
@@ -147,15 +154,18 @@ curl -fsSL sh.uw.cx | sha256sum
 
 ## 开发与测试
 
-菜单编号与「启动检测后进分层菜单」的交互参照 [jht.one](https://jht.one)（jinhuaitao）的公开脚本，脚本实现独立；上游未附版权与许可声明，因此本仓库暂不代为标注许可证。
+菜单编号与「启动检测后进分层菜单」的交互参照 [jht.one](https://jht.one)（jinhuaitao）的公开脚本，脚本实现独立；上游未附版权与许可声明，因此本仓库不代为标注上游许可证。本仓库自身也尚未声明许可证，公开可读不代表已授予开源许可。
 
-源码、欢迎页与 Worker 路由均已公开。相关入口检查：
+源码、欢迎页与 Worker 路由均已公开。默认回归只模拟特权命令，文件写入使用临时路径；网络套件还会使用本机回环 TLS / socat 测试，但不安装系统服务。运行完整默认套件：
 
 ```bash
-bash tests/entry-test.sh
-bash tests/build-test.sh
+for t in tests/*-test.sh; do bash "$t" || exit; done
+python3 tests/menu-test.py
+python3 tests/docker-origin-test.py # 真实离线 APT，索引与空包为明确标注的合成 fixture
 node tests/worker-test.mjs
 ```
+
+`tests/b2-real.sh` 是单独的真实 NodeQuality 运行，不属于默认回归。**不要在业务机器上把真实安装测试当作回归运行。**
 
 生成 GitHub Pages 保留产物与 Cloudflare Worker 包：
 

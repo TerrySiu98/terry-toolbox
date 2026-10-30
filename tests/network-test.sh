@@ -1,16 +1,43 @@
 #!/usr/bin/env bash
 # Isolated tests: these never execute a real installer or touch system settings.
+# shellcheck disable=SC2016,SC2317
+# Fixture dollars are literal; command mocks are callbacks used by sourced code.
 #
 # B12/A3/B31 的边界全部指向临时目录，外部命令全部打桩（dkms/modprobe/sysctl/
 # systemctl/ss/curl/…）。真实执行的只有模块逻辑本身、openssl、tar、sha256sum、
 # install/stat 和一次真的 socat 转发（用生成的 ExecStart，跑在临时高位端口）。
 set -eu
 ROOT=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-work=$(mktemp -d "${TMPDIR:-/tmp}/toolbox-network-test.XXXXXXXX")
-trap 'rm -rf -- "$work"' EXIT
+work=$(mktemp -d "${TMPDIR:-/root/.hermes/cache/scratch}/toolbox-network-test.XXXXXXXX")
+cleanup() {
+    python3 -c '
+import os, signal, time
+marker = ("TOOLBOX_TEST_WORK=" + os.environ["TOOLBOX_TEST_WORK"]).encode()
+skip = {os.getpid(), os.getppid()}
+def owned(pid):
+    try:
+        return marker in open("/proc/%s/environ" % pid, "rb").read().split(b"\0")
+    except (OSError, ProcessLookupError):
+        return False
+pids = [int(p) for p in os.listdir("/proc") if p.isdigit() and int(p) not in skip and owned(p)]
+for pid in pids:
+    try: os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError: pass
+time.sleep(0.05)
+for pid in pids:
+    if owned(pid):
+        try: os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError: pass
+'
+    rm -rf -- "${work:?}"
+}
+trap cleanup EXIT
+export HOME=$work/home TOOLBOX_TEST_WORK=$work
+export TMPDIR=$work
+mkdir -p "$HOME"
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 mkdir -p "$work/bin" "$work/pathbin"
-for cmd in curl wget apk apt apt-get systemctl rc-service rc-update sysctl; do
+for cmd in curl wget apk apt apt-get dnf yum systemctl rc-service rc-update sysctl modprobe rmmod dkms depmod; do
     printf '#!/usr/bin/env bash\nprintf "%%s\\n" invoked >> "$NETWORK_TEST_MARKER"\nexit 99\n' > "$work/bin/$cmd"
     chmod +x "$work/bin/$cmd"
 done
@@ -20,6 +47,13 @@ mkdir -p "$SD"
 export SD
 # 打桩目录优先于兜底目录，否则 exit 99 的桩会挡住真实流程。
 export PATH="$work/pathbin:$work/bin:$PATH"
+# 早期 B23 status 也是只读桩，不能调用兜底 systemctl 或真实解析器。
+systemctl() {
+    [[ ${1:-} == is-active ]] || { printf forbidden >> "$NETWORK_TEST_MARKER"; return 99; }
+    return 3
+}
+resolvectl() { [[ ${1:-} == status ]]; }
+export TOOLBOX_DNS_DROPIN_DIR=$work/dns TOOLBOX_DNS_RESOLV_CONF=$work/resolv.conf
 # Source must be inert and keep the caller alive.
 out=$(bash -ec 'source "$1"; printf sourced' _ "$ROOT/modules/network.sh") || fail 'source failed'
 [[ $out == sourced ]] || fail 'source has output or side effects'
@@ -75,10 +109,22 @@ if toolbox_network A1 unexpected >"$work/out" 2>&1; then fail 'extra argument ac
 # A4 由 modules/hy2.sh 实现：没加载模块时 fail closed，加载后与菜单等价。
 (
     unset -f toolbox_hy2
-    printf '/tmp/cert.pem\n/tmp/key.pem\n443\nINSTALL\n' | toolbox_network A4 > "$work/a4.out" 2>&1 && fail '缺 hy2 模块的 A4 仍报成功'
+    printf '%s\n%s\n443\nINSTALL\n' "$work/missing.crt" "$work/missing.key" | toolbox_network A4 > "$work/a4.out" 2>&1 && fail '缺 hy2 模块的 A4 仍报成功'
     [[ $(<"$work/a4.out") == *'未加载'* && $(<"$work/a4.out") == *'未修改系统'* ]] || fail 'A4 未说明缺少模块'
 )
+export TOOLBOX_HY2_ETC=$work/hy2/etc TOOLBOX_HY2_BIN_DIR=$work/hy2/bin
+export TOOLBOX_HY2_UNIT_DIR=$work/hy2/units TOOLBOX_HY2_LOCK=$work/hy2/lock
+export TOOLBOX_HY2_CLIENT_DIR=$work/hy2/verify TOOLBOX_HY2_SYSTEMD_RUN=$work/hy2/no-systemd
+export TOOLBOX_HY2_OS_RELEASE=$work/debian
 source "$ROOT/modules/hy2.sh"
+(
+    toolbox_hy2() { printf '<%s>\n' "$@"; return 7; }
+    rc=0
+    toolbox_network A4 install "$work/cert with spaces.pem" "$work/key.pem" example.test 18443 >"$work/a4-forward.out" || rc=$?
+    [[ $rc == 7 ]] || fail 'A4 未保留 HY2 的退出码'
+    expected=$(printf '<%s>\n' install "$work/cert with spaces.pem" "$work/key.pem" example.test 18443)
+    [[ $(<"$work/a4-forward.out") == "$expected" ]] || fail 'A4 转发吞掉/拆分参数'
+)
 toolbox_network A4 status > "$work/a4.out" 2>&1 && fail 'A4 未安装时 status 仍成功'
 grep -q '未安装' "$work/a4.out" || fail 'A4 未转发到 hy2 status'
 toolbox_network A4 frobnicate > "$work/a4.out" 2>&1 && fail 'A4 未知动作被接受'
@@ -89,7 +135,7 @@ for helper in toolbox_network_hy2_preflight toolbox_network_hy2_apply; do
 done
 # 缺参数/缺证书时仍在写盘前失败，且不碰 systemctl。
 (
-    for input in '' $'/tmp/cert.pem\n/tmp/key.pem\nexample.test\n443\nINSTALL\n' 'INSTALL'; do
+    for input in '' "$(printf '%s\n%s\nexample.test\n443\nINSTALL\n' "$work/missing.crt" "$work/missing.key")" 'INSTALL'; do
         printf '%s' "$input" | toolbox_network A4 > "$work/a4-refusal" 2>&1 && fail 'A4 accepted input'
         [[ -s $work/a4-refusal ]] || fail 'A4 refused silently'
     done
@@ -181,6 +227,7 @@ lsmod() {
     [[ -e $SD/loaded ]] && printf '%s\n' 'brutal 262144 0'
     return 0
 }
+depmod() { printf '%s\n' "depmod $*" >> "$SD/mod.log"; }
 dkms() {
     printf '%s\n' "dkms $*" >> "$SD/dkms.log"
     local action=${1:-} name
@@ -315,7 +362,7 @@ assert_clean 'B12 非 root'
 TOOLBOX_NET_OS_RELEASE=$work/ubuntu toolbox_network B12 install </dev/null >"$work/o" 2>&1 && fail 'B12 Ubuntu 被接受'
 grep -q '仅支持 Debian' "$work/o" || fail 'B12 Ubuntu 未说明'
 assert_clean 'B12 Ubuntu'
-TOOLBOX_NET_OS_RELEASE=$TOOLBOX_NET_OS_RELEASE
+
 TOOLBOX_NET_SYSTEMD_RUN=$work/nope toolbox_network B12 install </dev/null >"$work/o" 2>&1 && fail 'B12 无 systemd 被接受'
 assert_clean 'B12 无 systemd'
 MOCK_VIRT=docker toolbox_network B12 install </dev/null >"$work/o" 2>&1 && fail 'B12 容器被接受'
@@ -603,6 +650,15 @@ toolbox_network A3 uninstall <<< "YES" >"$work/o" 2>&1 || { cat "$work/o" >&2; f
 assert_clean 'A3 卸载'
 [[ -e $work/good.crt ]] || fail 'A3 卸载删了原始证书'
 reset
+# 菜单不带参数：缺的证书/私钥/主机名要逐项补问，端口回车用默认
+MOCK_PORT=443 MOCK_PROTO=udp; export MOCK_PORT MOCK_PROTO
+out=$(printf '1\n%s\n%s\n%s\n\nYES\nTUIC\n' "$work/good.crt" "$work/good.key" tuic.example.test \
+    | toolbox_network A3 2>&1) || { printf '%s\n' "$out" >&2; fail 'A3 交互式补全参数后安装失败'; }
+grep -q '"server": "\[::\]:443"' "$TOOLBOX_NET_ETC/terry-toolbox-tuic/config.json" || fail 'A3 交互式安装端口不是默认 443'
+toolbox_network A3 uninstall <<< "YES" >/dev/null 2>&1 || fail 'A3 交互式安装后卸载失败'
+reset
+printf '%s\n' "$work/good.crt" | toolbox_network A3 install >/dev/null 2>&1 && fail 'A3 EOF 被当成安装'
+assert_clean 'A3 交互式 EOF'
 unset MOCK_PORT MOCK_PROTO
 
 # ================================================================ A5 Xray (Debian)
@@ -925,74 +981,34 @@ toolbox_network A5 uninstall <<< 'YES' >"$work/o" 2>&1 || { cat "$work/o" >&2; f
 assert_clean 'A5 卸载'
 reset
 
-# ---------- 真实端到端：真 xray 二进制 + 真探针 + 真回落目标 ----------
-# 本机有 xray（或 A5_REAL_XRAY 指定）且能出网时才跑；不下载就跳过。
-real_xray=${A5_REAL_XRAY:-$(command -v xray 2>/dev/null || true)}
-[[ -n $real_xray ]] || for c in /usr/local/bin/xray /usr/bin/xray; do
-    [[ -x $c ]] && { real_xray=$c; break; }
-done
-[[ -x $real_xray ]] || real_xray=''   # 指定的路径不存在就当没有
-if [[ -z $real_xray ]]; then
-    printf '（跳过真实端到端：没有 xray 二进制，设 A5_REAL_XRAY 可指定）\n'
-elif ! /usr/bin/curl -fsS --max-time 6 -o /dev/null https://www.cloudflare.com/ 2>/dev/null; then
-    printf '（跳过真实端到端：本机无出网）\n'
-else
-    realzip=$work/pkg/realxray.zip
-    if [[ ! -s $realzip ]]; then
-        /usr/bin/curl -fsSL --max-time 180 -o "$realzip" \
-            'https://github.com/XTLS/Xray-core/releases/download/v26.10.29/Xray-linux-64.zip' \
-            || { rm -f "$realzip"; printf '（跳过真实端到端：下载不到官方包）\n'; }
-    fi
-    if [[ -s $realzip ]]; then
-        # 取回真实函数（前面的桩只在该段有效）
-        source "$ROOT/modules/network.sh" 2>/dev/null || true
-        # 这一段要真实的 s_client 与 curl
-        rm -f "$work/pathbin/openssl"; mv "$work/bin/curl" "$work/bin/curl.off"
-        unset -f curl; hash -r
-        eval "a5_probe_dbg() $(declare -f net_a5_probe | tail -n +2)"
-        net_a5_probe() { a5_probe_dbg "$@"; local r=$?; cp -r "$TOOLBOX_NET_RUN/terry-toolbox-xray-verify" "$work/cli-$2" 2>/dev/null; return $r; }
-        # 绑真端口并让 systemctl 真的把 ExecStart 跑起来，别的照旧。
-        A5_REAL_PORT=$(net_alpine_free_port 18560)
-        sysfn=$(declare -f systemctl)   # 桩换掉后要还原，后面的 B31 还要用
-        systemctl() {
-            local line pid
-            case ${1:-} in
-                enable)
-                    : > "$SD/active"
-                    line=$(sed -n 's/^ExecStart=//p' \
-                        "$TOOLBOX_NET_UNIT_DIR/terry-toolbox-xray.service")
-                    ( eval "exec $line" >"$SD/real.log" 2>&1 ) 9>&- &
-                    pid=$!
-                    printf '%s\n' "$pid" > "$SD/mainpid"
-                    printf 'LISTEN 0 128 0.0.0.0:%s 0.0.0.0:* users:(("xray",pid=%s,fd=3))\n' \
-                        "$A5_REAL_PORT" "$pid" >> "$SD/ports"
-                    ;;
-                is-active) [[ -e $SD/active ]] && return 0 || return 3 ;;
-                disable)
-                    [[ $* == *--now* ]] && {
-                        rm -f "$SD/active"
-                        [[ -s $SD/mainpid ]] && kill "$(cat "$SD/mainpid")" 2>/dev/null
-                    }
-                    return 0 ;;
-                show) cat "$SD/mainpid" 2>/dev/null || printf '0\n' ;;
-                *) return 0 ;;
-            esac
-        }
-        TOOLBOX_A5_ZIP_SRC=$realzip TOOLBOX_A5_SHA256=$(sha256sum -- "$realzip" | cut -d' ' -f1) \
-            inst_a5 www.cloudflare.com www.cloudflare.com "$A5_REAL_PORT" >"$work/o" 2>&1 \
-            || { cat "$work/o" >&2; fail 'A5 真实端到端安装失败'; }
-        grep -q '\[已验证\] 正确 UUID' "$work/o" || fail 'A5 真实端到端未证明认证'
-        [[ -s $SD/real.log ]] || fail 'A5 真实服务没有日志'
-        grep -q 'accepted tcp:' "$SD/real.log" || fail 'A5 真实服务日志没有认证记录'
-        grep -q '"limitFallbackUpload"' "$A5_ETC/config.json" || fail 'A5 真实配置缺限速'
-        $real_xray run -test -c "$A5_ETC/config.json" >/dev/null 2>&1 || fail 'A5 真实配置过不了 xray 自检'
-        toolbox_network A5 uninstall <<< 'YES' >"$work/o" 2>&1 || fail 'A5 真实端到端卸载失败'
-        kill "$(cat "$SD/mainpid" 2>/dev/null)" 2>/dev/null || true
-        assert_clean 'A5 真实端到端卸载'
-        eval "$sysfn"; reset
-        printf '（真实端到端已通过）\n'
-    fi
-fi
+# ---------- 菜单不带参数：缺的回落目标/SNI 要逐项补问 ----------
+MOCK_PORT=443 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
+out=$(printf '1\ndest.example.test\ndest.example.test\n\nYES\nXRAY\n' | toolbox_network A5 2>&1) \
+    || { printf '%s\n' "$out" >&2; fail 'A5 交互式补全参数后安装失败'; }
+[[ $(sed -n 's/.*"port": \([0-9]*\),/\1/p' "$A5_ETC/config.json" | head -n1) == 443 ]] || fail 'A5 交互式安装端口不是默认 443'
+grep -q '"target": "dest.example.test:443"' "$A5_ETC/config.json" || fail 'A5 交互式安装目标不对'
+toolbox_network A5 uninstall <<< 'YES' >"$work/o" 2>&1 || fail 'A5 交互式安装后卸载失败'
+reset
+# 问到一半就 EOF 也要在写盘前退出
+printf 'dest.example.test\n' | toolbox_network A5 install >/dev/null 2>&1 && fail 'A5 EOF 被当成安装'
+assert_clean 'A5 交互式 EOF'
+
+# ---------- A3/A5 菜单自定义端口，不能把端口输入吞作确认 ----------
+MOCK_PORT=18443 MOCK_PROTO=udp; export MOCK_PORT MOCK_PROTO
+out=$(printf '%s\n%s\ntuic.example.test\n18443\nYES\nTUIC\n' "$work/good.crt" "$work/good.key" | toolbox_network A3 install 2>&1) \
+    || { printf '%s\n' "$out" >&2; fail 'A3 交互自定义端口失败'; }
+grep -q '"server": "\[::\]:18443"' "$(net_tuic_etc)/config.json" || fail 'A3 交互端口被忽略'
+toolbox_network A3 uninstall <<< YES >/dev/null 2>&1 || fail 'A3 自定义端口卸载失败'
+reset
+MOCK_PORT=18443 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
+out=$(printf 'dest.example.test:8443\ndest.example.test\n18443\nYES\nXRAY\n' | toolbox_network A5 install 2>&1) \
+    || { printf '%s\n' "$out" >&2; fail 'A5 交互自定义端口失败'; }
+grep -q '"port": 18443' "$A5_ETC/config.json" || fail 'A5 监听端口被忽略'
+grep -q '"target": "dest.example.test:8443"' "$A5_ETC/config.json" || fail 'A5 回落端口被忽略'
+toolbox_network A5 uninstall <<< YES >/dev/null 2>&1 || fail 'A5 自定义端口卸载失败'
+reset
+
+# 真 Xray + 公网回落目标验收只在指定一次性主机单独运行，不属于隔离套件。
 
 # ---------- 分发 ----------
 toolbox_network A5 bogus >"$work/o" 2>&1 && fail 'A5 未知动作被接受'
@@ -1070,7 +1086,7 @@ grep -qxF "ExecStart=$TOOLBOX_NET_SOCAT -d -d UDP-LISTEN:18081,reuseaddr,fork UD
 # 同一端口换协议允许并存
 MOCK_PORT=18081 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
 inst_relay tcp 18081 relay.example.test 443 >"$work/o" 2>&1 || { cat "$work/o" >&2; fail 'B31 同端口 TCP+UDP 并存失败'; }
-[[ $(ls "$TOOLBOX_NET_UNIT_DIR" | wc -l) -eq 3 ]] || fail 'B31 单元数不对'
+[[ $(find "$TOOLBOX_NET_UNIT_DIR" -mindepth 1 -maxdepth 1 -type f | wc -l) -eq 3 ]] || fail 'B31 单元数不对'
 # 重复同协议同端口必须拒绝
 inst_relay tcp 18080 relay.example.test 443 >"$work/o" 2>&1 && fail 'B31 重复单元被覆盖'
 grep -q '已存在' "$work/o" || fail 'B31 重复单元未说明'
@@ -1089,8 +1105,23 @@ toolbox_network B31 uninstall all <<< 'YES' >"$work/o" 2>&1 || fail 'B31 全部�
 toolbox_network B31 status >/dev/null 2>&1 && fail 'B31 卸载后 status 仍报存在'
 reset
 
-# 真实 socat 往返：直接用生成的 ExecStart，证明参数本身可用。
-if [[ -x /usr/bin/socat || -x /bin/socat ]]; then
+# B31 空参数补问，默认 tcp 与显式 udp 均生成对应单元；EOF 不写盘。
+for proto in tcp udp; do
+    MOCK_PORT=18090 MOCK_PROTO=$proto; export MOCK_PORT MOCK_PROTO
+    input=$proto; [[ $proto == tcp ]] && input=''
+    out=$(printf '1\n%s\n18090\nrelay.example.test\n8443\nYES\nRELAY\n' "$input" | toolbox_network B31 2>&1) \
+        || { printf '%s\n' "$out" >&2; fail 'B31 交互补全失败'; }
+    grep -q "${proto^^}:relay.example.test:8443" "$TOOLBOX_NET_UNIT_DIR/terry-toolbox-relay-$proto-18090.service" || fail 'B31 目标/协议被忽略'
+    toolbox_network B31 uninstall "$proto" 18090 <<< YES >/dev/null 2>&1 || fail 'B31 交互安装卸载失败'
+    reset
+done
+for input in '' $'tcp\n' $'tcp\n18090\n' $'tcp\n18090\nrelay.example.test\n'; do
+    printf '%s' "$input" | toolbox_network B31 install >/dev/null 2>&1 && fail 'B31 EOF 仍安装'
+    assert_clean 'B31 交互 EOF'
+done
+
+# 真实 socat 往返：显式启用才运行；默认隔离测试不改动真实网络。
+if [[ ${TOOLBOX_NETWORK_REAL_TESTS:-0} == 1 && ( -x /usr/bin/socat || -x /bin/socat ) ]]; then
     # PATH 里的 socat 是桩，真实往返必须用真身。
     real_socat=/usr/bin/socat
     [[ -x $real_socat ]] || real_socat=/bin/socat
@@ -1099,12 +1130,14 @@ if [[ -x /usr/bin/socat || -x /bin/socat ]]; then
     net_relay_write_unit tcp 18590 127.0.0.1 18591 || fail 'B31 真实单元生成失败'
     exec_line=$(sed -n 's/^ExecStart=//p' "$TOOLBOX_NET_UNIT_DIR/terry-toolbox-relay-tcp-18590.service")
     [[ -n $exec_line ]] || fail 'B31 真实单元无 ExecStart'
+    exec_line=${exec_line/TCP-LISTEN:18590,/TCP-LISTEN:18590,bind=127.0.0.1,}
     out=$(timeout 15 bash -c '
         set -u
-        "$1" -d -d TCP-LISTEN:18591,fork,reuseaddr EXEC:/bin/cat >/dev/null 2>&1 &
+        "$1" -d -d TCP-LISTEN:18591,bind=127.0.0.1,fork,reuseaddr EXEC:/bin/cat >/dev/null 2>&1 &
         t=$!
         '"$exec_line"' >/dev/null 2>&1 &
         r=$!
+        trap '"'"'kill "$r" "$t" 2>/dev/null || true; wait "$r" "$t" 2>/dev/null || true'"'"' EXIT
         for i in $(seq 50); do ss -ltn 2>/dev/null | grep -q ":18590 " && break; sleep 0.1; done
         exec 3<>/dev/tcp/127.0.0.1/18590 || exit 9
         printf "relay-through\n" >&3
@@ -1113,6 +1146,7 @@ if [[ -x /usr/bin/socat || -x /bin/socat ]]; then
         kill $r $t 2>/dev/null
     ' _ "$real_socat" 2>&1) || true
     [[ $out == relay-through ]] || { printf 'GOT:[%s]\n' "$out" >&2; fail 'B31 真实转发未通'; }
+    printf 'B31 loopback socat roundtrip passed (127.0.0.1:18590 -> 127.0.0.1:18591)\n'
     TOOLBOX_NET_SOCAT=$save_socat
     reset
 fi
@@ -1126,4 +1160,36 @@ printf '3\n' | toolbox_network A3 >"$work/o" 2>&1 && fail 'A3 未安装时 statu
 printf '9\n' | toolbox_network A3 >"$work/o" 2>&1 && fail 'A3 子菜单非法编号被接受'
 printf '3\n' | toolbox_network B12 2>/dev/null | grep -q 'B12 TCP Brutal' && fail 'B12 子菜单标题漏到 stdout'
 
+# 条件上下文中非空 cat 写入后报错，必须失败而不是继续安装。
+for key in A3 A5 B31; do
+    reset
+    (
+        cat() { if (( $# == 0 )); then command cat; return 1; fi; command cat "$@"; }
+        case $key in
+            A3) MOCK_PORT=18443 MOCK_PROTO=udp; export MOCK_PORT MOCK_PROTO
+                inst_tuic "$work/good.crt" "$work/good.key" tuic.example.test 18443 >"$work/write-fail-$key.out" 2>&1 && fail 'A3 配置写入失败被忽略' ;;
+            A5) inst_a5 dest.example.test dest.example.test 18443 >"$work/write-fail-$key.out" 2>&1 && fail 'A5 配置写入失败被忽略' ;;
+            B31) MOCK_PORT=18443 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
+                inst_relay tcp 18443 relay.example.test 8443 >"$work/write-fail-$key.out" 2>&1 && fail 'B31 单元写入失败被忽略' ;;
+        esac
+        :
+    )
+    assert_clean "$key 写入失败"
+done
+reset
+
+# 完整菜单交互的最后端口输入与任意前置输入 EOF 不能套默认继续。
+for key in A3 A5; do
+    reset
+    if [[ $key == A3 ]]; then
+        input=$(printf '%s\n%s\ntuic.example.test\n' "$work/good.crt" "$work/good.key")
+    else
+        input=$(printf 'dest.example.test\ndest.example.test\n')
+    fi
+    printf '%s' "$input" | toolbox_network "$key" install >/dev/null 2>&1 && fail "$key 端口 EOF 仍安装"
+    assert_clean "$key 端口 EOF"
+done
+reset
+
+[[ ! -e $NETWORK_TEST_MARKER ]] || fail '命中了真实命令兜底拒绝桩'
 printf 'network tests passed\n'

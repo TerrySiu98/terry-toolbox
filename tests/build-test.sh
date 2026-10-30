@@ -24,7 +24,7 @@ out=$(printf 'B18\n0\n' | HOME="$tmp" bash "$artifact" 2>&1)
 [[ $out == *'预留，暂未实现'* ]] || fail 'reserved B18'
 # A5 已启用，但此环境缺依赖会先退出，没有固定文案；只要求菜单不中断。
 out=$(printf 'A5\n0\n' | HOME="$tmp" bash "$artifact" 2>&1)
-[[ $out == *'请输入编号：'* ]] || fail 'network dispatch'
+[[ $out == *'A5 Xray'* && $out == *'返回上一层'* ]] || fail 'network management dispatch'
 out=$(printf 'B2\nNO\n0\n' | HOME="$tmp" bash "$artifact" 2>&1)
 [[ $out == *'NodeQuality：官方综合测试'* ]] || fail 'system dispatch'
 # App dispatch needs a Docker stub: B28 prints its image and note, then the trailing "0"
