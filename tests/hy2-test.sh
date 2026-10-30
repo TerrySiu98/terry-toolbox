@@ -88,6 +88,7 @@ systemctl() {
             return 0
             ;;
         disable) [[ $* == *--now* ]] && rm -f "$SD/active"; return 0 ;;
+        show) [[ -e $SD/mainpid ]] && cat "$SD/mainpid"; return 0 ;;
         *) return 0 ;;
     esac
 }
@@ -323,7 +324,14 @@ if grep -q 'server -c' <<< "$out"; then printf '%s\n' "$out" >&2; fail '报告�
 hy2_port_owned_by 18443 "$bin" || fail '未识别自有监听'
 printf 'UNCONN 0 0 0.0.0.0:20000 0.0.0.0:* users:(("nginx",pid=999999,fd=3))\n' > "$SD/ports"
 if hy2_port_owned_by 20000 "$bin"; then fail '把他人的监听当成自己的'; fi
-rm -f "$SD/ports"
+# systemd 的 MainPID 也是有效证据（脚本安装时 exe 是解释器）
+printf '[Service]\nExecStart=%s/terry-toolbox-hy2 server\n' "$work/bin" > "$work/units/u.service"
+printf 'UNCONN 0 0 0.0.0.0:20001 0.0.0.0:* users:(("bash",pid=555,fd=3))\n' > "$SD/ports"
+printf '555\n' > "$SD/mainpid"
+if hy2_port_owned_by 20001 "$bin" u.service; then :; else fail 'MainPID 证据未被采纳'; fi
+printf '777\n' > "$SD/mainpid"
+if hy2_port_owned_by 20001 "$bin" u.service; then fail '不相关 MainPID 被采纳'; fi
+rm -f "$SD/ports" "$SD/mainpid" "$work/units/u.service"
 
 # 15. 再次安装必须拒绝（已在运行），且不改动现有文件
 sum=$(sha256sum "$conf" | cut -d' ' -f1)

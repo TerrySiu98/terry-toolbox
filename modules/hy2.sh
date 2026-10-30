@@ -386,7 +386,7 @@ _hy2_install() {
     printf '即将安装 Hysteria 2 服务端：\n'
     printf '  版本    : v%s（官方发布，安装前校验 SHA-256）\n' "$HY2_VERSION"
     printf '  主机名  : %s\n' "$host"
-    printf '  监听    : 0.0.0.0:%s/udp（IPv4+IPv6 通配）\n' "$port"
+    printf '  监听    : :%s/udp（所有地址，IPv4+IPv6）\n' "$port"
     printf '  证书    : %s\n' "$cert"
     printf '  私钥    : %s（复制到 %s，权限 600）\n' "$key" "$etc"
     printf '  单元    : %s\n' "$unit"
@@ -413,7 +413,6 @@ _hy2_install() {
     install -m 0600 "$cert" "$etc/cert.pem" || { rm -rf -- "$tmp"; hy2_rollback; return 1; }
     install -m 0600 "$key" "$etc/key.pem" || { rm -rf -- "$tmp"; hy2_rollback; return 1; }
 
-    local masq=''
     cat > "$etc/config.yaml" <<EOF
 listen: :$port
 tls:
@@ -429,7 +428,8 @@ masquerade:
     content: '$HY2_MASQUERADE_TEXT'
     statusCode: 200
 EOF
-    chmod 0600 "$etc/config.yaml"
+    chmod 0600 "$etc/config.yaml" && [[ -s $etc/config.yaml ]] \
+        || { rm -rf -- "$tmp"; hy2_rollback; return 1; }
 
     cat > "$unit" <<EOF
 [Unit]
@@ -460,7 +460,7 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 [Install]
 WantedBy=multi-user.target
 EOF
-    chmod 0644 "$unit"
+    chmod 0644 "$unit" && [[ -s $unit ]] || { rm -rf -- "$tmp"; hy2_rollback; return 1; }
 
     # 写盘后先离线冒烟：证书/配置/端口绑定错误在这里暴露，早于 systemd。
     if ! hy2_smoke "$bin" "$etc/config.yaml" "$port"; then
@@ -571,7 +571,8 @@ hy2_install() { ( set -e; _hy2_install "$@" ) ; }
 hy2_uninstall() { ( set -e; _hy2_uninstall "$@" ) ; }
 
 hy2_status() {
-    local host port insecure version
+    local host port insecure version bin
+    bin=$(hy2_bin)
     if [[ ! -e $(hy2_unit) ]]; then
         printf '未安装。\n'
         return 1
