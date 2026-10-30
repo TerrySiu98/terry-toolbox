@@ -47,7 +47,6 @@ reset_test
 
 # Dispatch failures and cancellation must never invoke docker run.
 if toolbox_app 18 </dev/null; then fail 'B18 must be reserved'; fi
-if toolbox_app 28 </dev/null; then fail 'B28 must be unimplemented'; fi
 if toolbox_app invalid </dev/null; then fail 'invalid ID'; fi
 if toolbox_app 9 <<< $'\nn'; then fail 'cancel must fail'; fi
 ! grep -F 'CALL run' "$LOG" >/dev/null || fail 'cancel ran docker'
@@ -206,5 +205,51 @@ if toolbox_app 5 <<< $'no\n\ny' >/dev/null 2>&1; then fail 'x-ui implicit reuse 
 ! grep -E '^CALL (run|network create)' "$LOG" >/dev/null || fail 'x-ui reuse refusal wrote resources'
 toolbox_app 5 <<< $'REUSE\n\ny' >/dev/null 2>&1 || fail 'x-ui confirmed reuse failed'
 ! grep -E '^CALL (rm|container rm|network rm|volume rm)' "$LOG" >/dev/null || fail 'x-ui automatic deletion'
+reset_test
+
+# Every app must state its actual auth/bootstrap situation, not just "change the password".
+# Cancelling after the port prompt is enough: notes print before it.
+for pair in '9:无内置认证' '13:无内置登录认证' '17:admin@sun.cc' '17:12345678' '20:第一个账号' \
+            '21:初始化向导' '22:/console' '24:无默认凭据' '25:创建管理员账号' '26:没有用户名' \
+            '27:SECURITY_ENABLELOGIN=false' '29:无默认凭据' '30:SIGNUPS_ALLOWED=true' \
+            '4:admin/admin' '5:admin/admin'; do
+  audit_id=${pair%%:*}; audit_want=${pair#*:}
+  audit_out=$(toolbox_app "$audit_id" <<< $'\nn' 2>&1 || :)
+  [[ $audit_out == *"$audit_want"* ]] || fail "B$audit_id missing auth note: $audit_want"
+done
+! grep -E '^CALL (run|network create)' "$LOG" >/dev/null || fail 'auth note audit wrote resources'
+reset_test
+
+# B28: publisher image pinned by digest, secret via environment, H2 data mounted,
+# amd64/root/default-credential limits stated in the note.
+toolbox_app 28 <<< $'\ny\nthis-is-a-strong-password' > "$TEST_DIR/output-28" 2>&1 || fail 'B28 did not run'
+assert_log '127.0.0.1:9999:9999'
+assert_log "--mount type=bind,src=$HOME/.local/share/terry-toolbox/apps/mfa-start,dst=/mfa-start/data"
+assert_log '--env SPRING_SECURITY_USER_PASSWORD'
+assert_log 'SPRING_SECURITY_USER_NAME=mfa-start-user'
+grep -E '^CALL run .* lovele/mfa-start@sha256:[0-9a-f]{64}$' "$LOG" >/dev/null || fail 'B28 image not pinned'
+! grep -F 'this-is-a-strong-password' "$LOG" >/dev/null || fail 'B28 password in argv'
+[[ $(grep -c '^CALL network create --driver bridge ' "$LOG") == 1 ]] || fail 'B28 missing isolated network'
+! grep '^CALL run ' "$LOG" | grep -E -- '--net(=|work[= ]host)|docker\.sock|--cap-add|--privileged' >/dev/null || fail 'B28 unsafe privileges or network'
+grep -F 'admin/admin1234' "$TEST_DIR/output-28" >/dev/null || fail 'B28 default credential warning missing'
+grep -F 'amd64' "$TEST_DIR/output-28" >/dev/null || fail 'B28 architecture note missing'
+grep -F 'root 运行' "$TEST_DIR/output-28" >/dev/null || fail 'B28 root/ownership warning missing'
+reset_test
+if toolbox_app 28 <<< $'\ny\nshort' >/dev/null 2>&1; then fail 'B28 weak password accepted'; fi
+! grep -E '^CALL (run|network create)' "$LOG" >/dev/null || fail 'B28 weak password wrote resources'
+[[ ! -e $HOME/.local ]] || fail 'B28 weak password created data'
+reset_test
+if toolbox_app 28 <<< $'\ny\nn' >/dev/null 2>&1; then fail 'B28 accepted cancellation'; fi
+if toolbox_app 28 <<< $'\nn' >/dev/null 2>&1; then fail 'B28 accepted port cancellation'; fi
+reset_test
+MOCK_FAIL=1
+if toolbox_app 28 <<< $'\ny\nthis-is-a-strong-password' >/dev/null 2>&1; then fail 'B28 failed run accepted'; fi
+[[ -d $HOME/.local/share/terry-toolbox/apps/mfa-start ]] || fail 'B28 data not preserved'
+unset MOCK_FAIL
+: > "$LOG"
+if toolbox_app 28 <<< $'no\n\ny\nthis-is-a-strong-password' >/dev/null 2>&1; then fail 'B28 implicit reuse accepted'; fi
+! grep -E '^CALL (run|network create)' "$LOG" >/dev/null || fail 'B28 reuse refusal wrote resources'
+toolbox_app 28 <<< $'REUSE\n\ny\nthis-is-a-strong-password' >/dev/null 2>&1 || fail 'B28 confirmed reuse failed'
+! grep -E '^CALL (rm|container rm|network rm|volume rm)' "$LOG" >/dev/null || fail 'B28 automatic deletion'
 reset_test
 printf 'All apps tests passed.\n'

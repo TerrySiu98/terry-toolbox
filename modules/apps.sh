@@ -9,7 +9,8 @@
 # Only the default local Unix socket is accepted. A socket proxy could still point
 # to a remote daemon: the operator must ensure it really is the local Engine.
 # Multi-platform manifest digests resolved from official registries on 2026-10-30;
-# SHA-256 verified against manifest bytes and registry digest header. Pinning is not
+# SHA-256 verified against manifest bytes and registry digest header. B28 is single-arch (amd64).
+# Pinning is not
 # signature verification, security review or a guarantee of application readiness.
 # Pins require deliberate security updates and compatibility testing before reuse.
 # Stirling PDF remains mutable: its registry returned HTTP 403 during validation.
@@ -20,6 +21,15 @@
 # https://docs.nexterm.dev/installation
 # https://nezha.wiki/en_US/guide/dashboard.html
 # https://github.com/MHSanaei/3x-ui/wiki/Installation
+#
+# B28 来源证据: https://github.com/doubleDimple/mfa-start 的 Dockerfile（eclipse-temurin:8-jdk-jammy,
+# WORKDIR /mfa-start, EXPOSE 9999, H2 数据写 ./data）与该仓库自带 deploy.yaml 引用的
+# lovele/mfa-start 完全一致；Docker Hub 账号 lovele 逐个 release 发布同名标签（2.2.4–2.2.52，
+# 最新标签与 release 同一分钟推送），但注册表元数据没有源码仓库标注，属高可信推断而非官方背书。
+# 上游官方部署方式是下载未校验的 JAR + 脚本，故这里改用镜像 digest 固定。
+# 应用只有表单登录，release 配置内置默认 admin/admin1234，可用 SPRING_SECURITY_USER_* 覆盖。
+# 镜像仅提供 linux/amd64 单架构（非 manifest list）。
+# B10 WebSSH 仍留在 modules/webssh.sh：上游只有 Dockerfile 与 compose 自建，没有官方镜像。
 
 # A subshell prevents secrets, umask and local environment changes leaking to the caller.
 toolbox_app() (
@@ -28,23 +38,23 @@ toolbox_app() (
     local -a args=()
     if [[ $# != 1 ]]; then printf '用法: toolbox_app <数字>\n' >&2; return 2; fi
     case "$id" in
-        3)  name=alist; image=xhofe/alist@sha256:afa909f81817770520df07515287eb3df3d4e3c6631ca28b02cbae8499149b39; default_port=5244; target_port=5244; data_target=/opt/alist/data; note='初始化后立即更换管理员密码；查看上游文档获取初始密码。' ;;
+        3)  name=alist; image=xhofe/alist@sha256:afa909f81817770520df07515287eb3df3d4e3c6631ca28b02cbae8499149b39; default_port=5244; target_port=5244; data_target=/opt/alist/data; note='首次启动的初始管理员密码因版本而异：可用 docker exec -it terry-alist ./alist admin 查看，忘记则须按上游文档随机重置，登录后立即更换。' ;;
         4)  name=nezha; image=ghcr.io/nezhahq/nezha@sha256:c3de06b940fc2da673e7d29be3c742270440cb881675df84b35e474ab9799bf1; default_port=8008; target_port=8008; data_target=/dashboard/data; note='上游首次启动默认 admin/admin；立即从 /dashboard 登录并修改密码，公网开放前必须配置 HTTPS 和认证。Agent 通信和网页共用端口；本部署仅本机访问，远程 Agent 须另行安全配置支持 gRPC 的 TLS 代理及 Agent 地址。复用数据如已更改监听端口，需自行调整配置。' ;;
         5)  name=x-ui; image=ghcr.io/mhsanaei/3x-ui@sha256:1628adbd9bed680d25d6f714bef4a20f132105f4612ea294952f6665dad32e5b; default_port=2053; target_port=2053; data_target=/etc/x-ui; environment=xui; note='3X-UI 上游首次启动默认 admin/admin；立即修改凭据，建议开启 2FA、设置独立路径，公网访问前配置 HTTPS。仅映射管理端口，代理入站端口未映射；须另行审查并配置端口、协议及防火墙。未授予 NET_ADMIN/NET_RAW，Fail2ban 已禁用，IP 限制封禁不会生效。复用数据如已更改监听端口或路径需自行调整。' ;;
-        9)  name=it-tools; image=corentinth/it-tools@sha256:8b8128748339583ca951af03dfe02a9a4d7363f61a216226fc28030731a5a61f; default_port=7090; target_port=80 ;;
-        13) name=myip; image=jason5ng32/myip@sha256:ba54d22576f1cd86dcfb9c453fcf805bd6817ca9bed234a6fd529f5f0f19fb31; default_port=18966; target_port=18966; note='MaxMind 功能需要另行配置凭据；域名访问需配置 ALLOWED_DOMAINS。' ;;
-        17) name=sun-panel; image=hslr/sun-panel@sha256:dc8fea427bf5ee825b81ebbc5bd6f39e61123ecbf8173601a57b1ec00637c444; default_port=3002; target_port=3002; data_target=/app/conf; note='上游说明最新版本可能闭源；初始化后修改默认账号。' ;;
+        9)  name=it-tools; image=corentinth/it-tools@sha256:8b8128748339583ca951af03dfe02a9a4d7363f61a216226fc28030731a5a61f; default_port=7090; target_port=80; note='无内置认证：任何能连到该端口的人都能直接使用；公网开放前须自备认证与 HTTPS。' ;;
+        13) name=myip; image=jason5ng32/myip@sha256:ba54d22576f1cd86dcfb9c453fcf805bd6817ca9bed234a6fd529f5f0f19fb31; default_port=18966; target_port=18966; note='无内置登录认证，访问者都能查询（可选限流与安全配置见上游文档）；MaxMind 功能需要另行配置凭据；域名访问需配置 ALLOWED_DOMAINS。' ;;
+        17) name=sun-panel; image=hslr/sun-panel@sha256:dc8fea427bf5ee825b81ebbc5bd6f39e61123ecbf8173601a57b1ec00637c444; default_port=3002; target_port=3002; data_target=/app/conf; note='首次登录的默认账号为 admin@sun.cc、密码 12345678（由上游初始化代码写入），登录后立即修改。上游说明最新版本可能闭源。' ;;
         18) printf 'B18 为预留项。\n' >&2; return 2 ;;
-        20) name=memos; image=neosmemo/memos@sha256:24c2707ddd8fbd2ceaa7a61ecab86a53cdcde640b24ce572b73da14b00b5785f; default_port=5230; target_port=5230; data_target=/var/opt/memos; note='请立即通过本机页面完成管理员初始化。' ;;
-        21) name=nginx-proxy-manager; image=jc21/nginx-proxy-manager@sha256:4393e642e233e5efd5adeb7f10918d4aaea71c9ed875b94190273fc8e87f9594; default_port=81; target_port=81; data_target=/data; extra_ports=npm; note='代理端口 80/443 仅绑定本机，初始化后更改默认登录凭据。容器内 localhost 指向 NPM 自身，无法访问宿主机 127.0.0.1 或其他应用的 loopback 端口；默认独立网络也无法访问其他应用。请另行设计并审查安全的上游连接及 TLS，勿假定 localhost 可用。' ;;
-        22) name=halo; image=halohub/halo@sha256:cc28f8bab142b79bf1bc5bdb07c2e0746821af5c814705e72b5beda6e9cabbc9; default_port=8090; target_port=8090; data_target=/root/.halo2; note='请立即通过本机页面完成初始化。' ;;
-        24) name=nginxwebui; image=cym1102/nginxwebui@sha256:3e5ffa13dfc23702e3cd8d60320466617649a783b39ae5087ebee0a1ac704c67; default_port=8080; target_port=8080; data_target=/home/nginxWebUI; note='仅映射管理端口；容器内 Nginx 的代理端口需自行审查并映射。' ;;
-        25) name=nexterm; image=nexterm/aio@sha256:def6f6a50b48c842d3fbe796ff8e7ce6b8fa54e2d92116a62742859c64f47d7e; default_port=6989; target_port=6989; data_target=/app/data; environment=nexterm; note='Bridge 网络不支持所有 host 网络功能；请妥善备份加密密钥。' ;;
-        26) name=libretv; image=ghcr.io/librespark/libretv@sha256:f19c897f84c303e887d1f03313897dc294dfbeebd4ac9d2aa42070146d18b7e9; default_port=8080; target_port=8080; environment=libretv; note='上游要求设置访问密码；仅使用合法视频源。' ;;
-        27) name=stirling-pdf; image=docker.stirlingpdf.com/stirlingtools/stirling-pdf:latest; default_port=8080; target_port=8080; data_target=/configs; note='默认仅本机访问；公网访问前请单独配置认证和 TLS。' ;;
-        28) printf 'B28 mfa-start 未实现：原脚本下载未校验的 JAR 和脚本，无法安全确认发行物。\n' >&2; return 2 ;;
-        29) name=ddns-go; image=jeessy/ddns-go@sha256:0336e6eddcb4052e978c90f0aa530f77205b1dd08fe28057869dbc77a60c5671; default_port=9876; target_port=9876; data_target=/root; note='请在本机页面初始化并设置密码；bridge 模式可能无法读取宿主机网卡/IPv6。' ;;
-        30) name=vaultwarden; image=vaultwarden/server@sha256:efb3cde962015fcc036b2ea625242248611943b27212ebf4392841fb30fad055; default_port=3003; target_port=80; data_target=/data; note='先在本机完成账号初始化并关闭注册；正式使用需可信域名、HTTPS、备份及上游安全配置。' ;;
+        20) name=memos; image=neosmemo/memos@sha256:24c2707ddd8fbd2ceaa7a61ecab86a53cdcde640b24ce572b73da14b00b5785f; default_port=5230; target_port=5230; data_target=/var/opt/memos; note='首次打开页面时创建第一个账号，该账号即管理员；创建后关闭公开注册。' ;;
+        21) name=nginx-proxy-manager; image=jc21/nginx-proxy-manager@sha256:4393e642e233e5efd5adeb7f10918d4aaea71c9ed875b94190273fc8e87f9594; default_port=81; target_port=81; data_target=/data; extra_ports=npm; note='首次访问进入初始化向导创建管理员（当前版本无固定默认凭据；更早版本为 admin@example.com / changeme，亦可用 INITIAL_ADMIN_EMAIL/PASSWORD 预先指定）。代理端口 80/443 仅绑定本机。容器内 localhost 指向 NPM 自身，无法访问宿主机 127.0.0.1 或其他应用的 loopback 端口；默认独立网络也无法访问其他应用。请另行设计并审查安全的上游连接及 TLS，勿假定 localhost 可用。' ;;
+        22) name=halo; image=halohub/halo@sha256:cc28f8bab142b79bf1bc5bdb07c2e0746821af5c814705e72b5beda6e9cabbc9; default_port=8090; target_port=8090; data_target=/root/.halo2; note='无默认凭据；请立即通过本机页面 /console 完成管理员初始化。' ;;
+        24) name=nginxwebui; image=cym1102/nginxwebui@sha256:3e5ffa13dfc23702e3cd8d60320466617649a783b39ae5087ebee0a1ac704c67; default_port=8080; target_port=8080; data_target=/home/nginxWebUI; note='无默认凭据：首次打开页面时初始化管理员账号，须设为复杂密码（本容器以 root 执行 nginx 及系统命令）。仅映射管理端口；容器内 Nginx 的代理端口需自行审查并映射。' ;;
+        25) name=nexterm; image=nexterm/aio@sha256:def6f6a50b48c842d3fbe796ff8e7ce6b8fa54e2d92116a62742859c64f47d7e; default_port=6989; target_port=6989; data_target=/app/data; environment=nexterm; note='首次访问自行创建管理员账号；账号体系由应用自身数据库维护。Bridge 网络不支持所有 host 网络功能；数据与加密密钥须一并备份。' ;;
+        26) name=libretv; image=ghcr.io/librespark/libretv@sha256:f19c897f84c303e887d1f03313897dc294dfbeebd4ac9d2aa42070146d18b7e9; default_port=8080; target_port=8080; environment=libretv; note='上游要求设置访问密码：该密码即唯一访问口令，没有用户名；仅使用合法视频源。' ;;
+        27) name=stirling-pdf; image=docker.stirlingpdf.com/stirlingtools/stirling-pdf:latest; default_port=8080; target_port=8080; data_target=/configs; note='默认不启用登录（SECURITY_ENABLELOGIN=false）：任何可达者都能使用，公网访问前须开启登录并配置 TLS。' ;;
+        28) name=mfa-start; image=lovele/mfa-start@sha256:d328fb3d8046192356b7e693bb4afdea160a897ac6d227a8260aa23f89077572; default_port=9999; target_port=9999; data_target=/mfa-start/data; environment=mfa-start; note='release 配置自带默认 admin/admin1234；本工具改用固定用户名 mfa-start-user 和自设密码，经 SPRING_SECURITY_USER_* 环境变量传入（不进入命令行）。只有表单登录，无 HTTPS、无 2FA：公网前须自行配置反向代理与 TLS。数据是未加密的 H2 单文件（/mfa-start/data），容器以 root 运行且文件属主为 root，其中保存的 TOTP 种子泄露即可生成验证码，须定期备份并限制读取。镜像只有 linux/amd64 架构。' ;;
+        29) name=ddns-go; image=jeessy/ddns-go@sha256:0336e6eddcb4052e978c90f0aa530f77205b1dd08fe28057869dbc77a60c5671; default_port=9876; target_port=9876; data_target=/root; note='无默认凭据：首次访问须自行设置管理员账号和复杂密码；bridge 模式可能无法读取宿主机网卡/IPv6。' ;;
+        30) name=vaultwarden; image=vaultwarden/server@sha256:efb3cde962015fcc036b2ea625242248611943b27212ebf4392841fb30fad055; default_port=3003; target_port=80; data_target=/data; note='默认允许注册（SIGNUPS_ALLOWED=true）：首个注册账号即管理员，初始化后立即关闭注册。正式使用需可信域名、HTTPS、备份及上游安全配置。' ;;
         *) printf '未知应用编号: %s\n' "$id" >&2; return 2 ;;
     esac
     if ! command -v docker >/dev/null 2>&1; then
@@ -150,10 +160,20 @@ toolbox_app() (
             export PASSWORD=$secret; unset secret
             args+=(--env PASSWORD)
             ;;
+        mfa-start)
+            # 覆盖 release 配置内置的 admin/admin1234；值只经环境变量进入 Docker。
+            printf '设置 mfa-start 登录密码（至少 12 字符，输入不回显）: ' >&2
+            if ! IFS= read -r -s secret; then printf '\n输入结束。\n' >&2; return 1; fi
+            printf '\n' >&2
+            if (( ${#secret} < 12 )); then printf '密码过短。\n' >&2; return 1; fi
+            export SPRING_SECURITY_USER_PASSWORD=$secret; unset secret
+            args+=(--env SPRING_SECURITY_USER_PASSWORD)
+            ;;
     esac
     if [[ $environment == xui ]]; then
         args+=(--env 'XUI_ENABLE_FAIL2BAN=false' --env 'XRAY_VMESS_AEAD_FORCED=false')
     fi
+    if [[ $id == 28 ]]; then args+=(--env 'SPRING_SECURITY_USER_NAME=mfa-start-user'); fi
     # Docker itself arbitrates ports and container names atomically. Never remove
     # anything after failure: a newly created directory may contain valuable data.
     if [[ -n $data_target ]]; then

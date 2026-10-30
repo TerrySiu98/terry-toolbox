@@ -22,7 +22,21 @@ out=$(printf 'DIAG\nB18\nA1\nB2\nB28\n0\n' | HOME="$tmp" bash "$artifact" 2>&1)
 [[ $out == *'预留，暂未实现'* ]] || fail 'reserved B18'
 [[ $out == *'A1 (Alpine HY2): 未实现'* ]] || fail 'network dispatch'
 [[ $out == *'NodeQuality（不执行未经验证的远程脚本）'* ]] || fail 'system dispatch'
-[[ $out == *'B28 mfa-start 未实现'* ]] || fail 'app dispatch'
+# App dispatch needs a Docker stub: B28 prints its image and note, then the trailing "0"
+# is an invalid port, which aborts before any data directory is created.
+mkdir -p "$tmp/stub"
+printf '%s\n' '#!/bin/sh' 'case "$1 $2" in' \
+    'context\ show) echo default ;;' \
+    'context\ inspect) echo unix:///var/run/docker.sock ;;' \
+    'version\ --format) echo 28.0.0 ;;' \
+    'container\ ls) : ;;' \
+    'info\ *) : ;;' \
+    '*) exit 0 ;;' 'esac' > "$tmp/stub/docker"
+chmod +x "$tmp/stub/docker"
+out=$(printf 'B28\n0\n' | HOME="$tmp" PATH="$tmp/stub:$PATH" bash "$artifact" 2>&1)
+[[ $out == *'B28 mfa-start'* ]] || fail 'app dispatch'
+[[ $out == *'lovele/mfa-start@sha256:'* ]] || fail 'app image'
+[[ $out == *'admin/admin1234'* ]] || fail 'app credential note'
 [[ ! -e $tmp/.local ]] || fail 'unexpected app state'
 # Build from isolated fixtures: source bytes are copied, never executed during build.
 fixture="$tmp/source with spaces"
