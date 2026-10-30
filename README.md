@@ -57,7 +57,7 @@ Terry Toolbox 是一个面向 Linux 服务器的中文菜单工具箱。登录�
 | `B2` | NodeQuality | 计划：综合质量测试 |
 | `B4` | 哪吒面板 | 计划 |
 | `B5` | X-UI | 计划 |
-| `B6` | 虚拟内存 | 开发中：swap，安全复核进行中 |
+| `B6` | 虚拟内存 | 计划：swap 暂时禁用，安全问题修复后再启用 |
 | `B7` | 流量限制 | 计划 |
 | `B8` | 修改密码 | 开发中：调用系统 `passwd` 修改 root 密码，不使用固定密码 |
 | `B10` | 网页 SSH | 计划：WebSSH、个人版 WebSSH、EasyNode |
@@ -74,7 +74,7 @@ Terry Toolbox 是一个面向 Linux 服务器的中文菜单工具箱。登录�
 | `A1` | Alpine Hysteria 2 | 计划 |
 | `A2` | Alpine Xray | 计划 |
 | `A3` | TUIC | 计划 |
-| `A4` | Hysteria 2 | 开发中：Debian / Ubuntu systemd，安装流程正在复核 |
+| `A4` | Hysteria 2 | 计划：暂时禁用，安装安全问题修复后再启用 |
 | `A5` | Xray | 计划 |
 | `B12` | TCP Brutal | 计划 |
 | `B23` | DNS 切换 | 计划：当前暂不启用 |
