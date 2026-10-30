@@ -21,8 +21,13 @@ if (( EUID != 0 )) && [[ -z ${TOOLBOX_ELEVATED:-} ]]; then
         exit 1
       fi
       # 管道执行时 stdin 不是终端，菜单会读不到；能拿到终端就切回去。
-      if [[ ! -t 0 && -t 2 || -r /dev/tty ]]; then exec sudo -E bash "$_tb_tmp" "$@" </dev/tty; fi
-      exec sudo -E bash "$_tb_tmp" "$@"
+      if [[ -t 0 ]]; then
+        exec sudo -E bash "$_tb_tmp" "$@"
+      elif { : </dev/tty; } 2>/dev/null; then
+        exec sudo -E bash "$_tb_tmp" "$@" </dev/tty
+      else
+        exec sudo -E bash "$_tb_tmp" "$@"
+      fi
       ;;
     *) exec sudo -E bash "${BASH_SOURCE[0]}" "$@" ;;
   esac

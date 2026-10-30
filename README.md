@@ -55,7 +55,7 @@ bash toolbox.sh
 curl -fsSL sh.uw.cx | sha256sum
 ```
 
-与仓库 `docs/index.html` 的哈希对比，一致再执行。**当前发布版本的 SHA-256**：`4eb5e324e469c44b99af3b5ee51e6bf2eca3c66e936566311e32e54da8de5dbc`（每次发布后更新）。
+与仓库 `docs/index.html` 的哈希对比，一致再执行。**当前发布版本的 SHA-256**：`5f4463bd672546097717fc0efccc7f41f36bd0ba33055493cd4df53ecc5b4547`（每次发布后更新）。
 
 服务端下载的是单文件版本，全部模块已经打包进去，不需要准备其他文件。Debian / Ubuntu 为当前主要支持环境，Alpine 仅部分功能。
 
