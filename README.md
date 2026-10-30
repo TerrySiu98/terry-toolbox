@@ -12,13 +12,13 @@
 
 ---
 
-> **开发中，暂未发布。** 本仓库目前只有项目说明，脚本仍在本地开发和审查。下方功能表同时列出开发中的功能和计划项目，不能视为全部可用；请勿在生产服务器测试。
+> **开发预览，尚非稳定版。** 源码与单文件脚本已公开。下方功能表同时列出已实测、待真机验收及计划项目，不能视为全部完成；首次使用请选测试机。
 
 ## 简介
 
 Terry Toolbox 是一个面向 Linux 服务器的中文菜单工具箱。登录服务器后运行脚本，输入编号就能进入相应功能。
 
-启动菜单本身不安装软件、不修改配置。涉及安装、修改系统或重启的操作，会先显示内容并请求确认。B18 暂时保留，以后再补。
+启动时只做系统检测，缺依赖才询问是否安装。涉及安装、修改系统或重启的操作，会先显示内容并二次确认。B18 暂时保留，以后再补。
 
 ## 开发进度
 
@@ -55,21 +55,26 @@ bash toolbox.sh
 curl -fsSL sh.uw.cx | sha256sum
 ```
 
-与仓库 `docs/index.html` 的哈希对比，一致再执行。**当前发布版本的 SHA-256**：`5f4463bd672546097717fc0efccc7f41f36bd0ba33055493cd4df53ecc5b4547`（每次发布后更新）。
+与仓库 `docs/index.html` 的哈希对比，一致再执行。**当前发布版本的 SHA-256**：`79667e2b64b918f06a485a534aec8d1f9e7a6425466f10200a7ff35649f5dad4`（每次发布后更新）。
 
 服务端下载的是单文件版本，全部模块已经打包进去，不需要准备其他文件。Debian / Ubuntu 为当前主要支持环境，Alpine 仅部分功能。
 
-### 菜单怎么操作？
+网站与脚本由 **Cloudflare Workers** 托管，HTTPS 证书由 Cloudflare 提供；GitHub 用于保存源码。
+- 浏览器访问 [https://sh.uw.cx](https://sh.uw.cx)：欢迎页、复制命令、下载入口。
+- curl / wget 访问相同地址：返回脚本，保留短命令。HTTP 会重定向到 HTTPS；希望首个请求也加密，可写 `bash <(curl -fsSL https://sh.uw.cx)`。
+- 明确下载脚本：[https://sh.uw.cx/toolbox.sh](https://sh.uw.cx/toolbox.sh)，不依赖请求头；校验值：[https://sh.uw.cx/sha256](https://sh.uw.cx/sha256)。
 
-进入菜单后输入编号，例如：
+### 启动与菜单
 
-- 输入 `DIAG`：查看系统、内存、磁盘、网络和监听端口。
-- 输入 `M1`：进入 BBR 设置。
-- 输入 `B1`：进入 Docker 安装。
-- 输入 `A4`：进入 Hysteria 2 的安装 / 卸载 / 状态。
-- 输入 `0`：退出。
+启动时先识别系统与架构，只缺依赖时才提示安装（`Y` 确认，其他键跳过；只补齐缺失项，不升级系统）。不支持的系统仍可进菜单，由各功能自行检查。
 
-软件安装类功能通常需要 root 权限；具体以菜单提示为准。
+主菜单只有一屏；输入编号回车即可：
+
+- `1` 网络服务：Alpine HY2/Xray、TUIC、HY2、Xray
+- `2` 安装 BBR，`3` 安装基础依赖，`4` 重装系统（计划），`5` 常用工具（Docker、应用、体检以外的系统项）
+- `DIAG` 只读体检，`99` 重启，`0` 退出
+
+进入子菜单后 `0` 返回上一层；`A4`、`B9` 这类完整编号在任何界面都能直接输入。安装类功能需要 root，执行前都会显示影响并二次确认。
 
 ## 功能列表
 
@@ -142,7 +147,27 @@ curl -fsSL sh.uw.cx | sha256sum
 
 ## 开发与测试
 
-源码仍在本地开发，尚未公开。当前测试主要使用隔离模拟，**模拟测试通过不代表真实安装、重启恢复或应用访问已经通过**。源码发布后，这里会补上开发环境、测试命令与贡献说明。
+菜单编号与「启动检测后进分层菜单」的交互参照 [jht.one](https://jht.one)（jinhuaitao）的公开脚本，脚本实现独立；上游未附版权与许可声明，因此本仓库暂不代为标注许可证。
 
+源码、欢迎页与 Worker 路由均已公开。相关入口检查：
 
-> 域名验证已完成，GitHub Pages 正在签发 HTTPS 证书；入口写 `sh.uw.cx` 不带协议，http 与 https 都能用，开强制 HTTPS 后自动转向 https。
+```bash
+bash tests/entry-test.sh
+bash tests/build-test.sh
+node tests/worker-test.mjs
+```
+
+生成 GitHub Pages 保留产物与 Cloudflare Worker 包：
+
+```bash
+bash scripts/release.sh
+python3 scripts/build-worker.py
+```
+
+部署时通过环境变量 `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` 提供凭据（不入库），或给 `scripts/deploy-cloudflare.py` 传入私有凭据文件；已有域名绑定后仅上传 Worker，不需要重新切 DNS。
+
+```bash
+python3 scripts/deploy-cloudflare.py
+```
+
+Worker 不向 GitHub 回源：欢迎页与已发布 Bash 原始字节一并打包。发布后需回读浏览器页、curl 脚本和 `/sha256`；脚本变更后同步 README 中的 SHA-256。**模拟测试通过不代表真实安装、重启恢复或应用访问已经通过**；真机验收状态以功能表和开发进度为准。

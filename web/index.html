@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#f5f5f0">
+<meta name="description" content="Terry Toolbox — 一个中文 Linux 服务器工具箱。系统管理、网络服务与常用应用，输入编号开始。">
+<title>Terry Toolbox · 服务器工具箱</title>
+<style>
+:root{color-scheme:light;--paper:#f5f5f0;--ink:#202522;--muted:#6a726b;--line:#dcdfd7;--green:#41624b;--terminal:#1b2520;--accent:#a9cda4}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--paper);color:var(--ink);font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;-webkit-font-smoothing:antialiased}a{color:inherit;text-decoration:none}button{font:inherit}a:focus-visible,button:focus-visible,summary:focus-visible{outline:3px solid #82a68b;outline-offset:5px}.wrap{max-width:1060px;margin:auto;padding:0 32px}header{display:flex;align-items:center;justify-content:space-between;height:90px;border-bottom:1px solid var(--line)}.brand{display:flex;align-items:center;gap:11px;font-size:16px;font-weight:650;letter-spacing:-.4px}.mark{display:grid;place-items:center;width:32px;height:32px;border-radius:9px;background:var(--ink);color:#c8dbbb;font:700 15px ui-monospace,SFMono-Regular,Consolas,monospace}.nav{display:flex;gap:25px;font-size:13px;color:var(--muted)}.nav a:hover{color:var(--ink)}main{padding:76px 0 46px}.hero{display:grid;grid-template-columns:1.1fr .9fr;gap:58px;align-items:start}.eyebrow{font-size:11px;color:var(--green);font-weight:650;letter-spacing:2.5px;text-transform:uppercase;display:flex;align-items:center;gap:9px}.dot{width:7px;height:7px;border-radius:50%;background:#7d9870}h1{font-size:56px;line-height:1.22;letter-spacing:-2.8px;font-weight:620;margin:23px 0 22px}h1 span{color:var(--green)}.intro{font-size:15px;line-height:1.9;color:var(--muted);margin:0;max-width:370px}.pills{display:flex;flex-wrap:wrap;gap:8px;margin-top:25px}.pill{font-size:11px;border:1px solid var(--line);border-radius:30px;padding:7px 10px;color:#5d685f}.terminal{background:var(--terminal);border-radius:16px;color:#d5ded1;box-shadow:0 16px 32px #1b25200d;margin-top:6px;overflow:hidden}.terminal-top{padding:16px 19px;border-bottom:1px solid #ffffff0c;display:flex;justify-content:space-between;align-items:center;font:11px ui-monospace,SFMono-Regular,Consolas,monospace;color:#8d9b90}.lights{display:flex;gap:5px}.lights i{display:block;width:6px;height:6px;background:#55655a;border-radius:50%}.terminal-body{padding:25px 22px 27px;font:12px/1.9 ui-monospace,SFMono-Regular,Consolas,monospace}.term-comment{color:#7e9484}.term-title{font-size:13px;font-weight:600;color:#c9dfb9;margin:4px 0 15px}.term-row{display:grid;grid-template-columns:41px 1fr;gap:9px}.term-key{color:#accf9e}.term-foot{margin-top:16px;color:#8ba58f}.term-cursor{display:inline-block;width:6px;height:12px;background:#b8dca9;vertical-align:-2px}.section-label{font-size:10px;letter-spacing:2px;text-transform:uppercase;color:var(--muted)}.start{margin-top:58px}.start-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}.start-head span:last-child{font-size:11px;color:var(--muted)}.command{background:#fff;border:1px solid var(--line);border-radius:12px;padding:19px 20px;display:flex;gap:18px;align-items:center;justify-content:space-between}.command code{font:13px/1.7 ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere}.prompt{color:#83997e;margin-right:10px;user-select:none}.copy{flex-shrink:0;background:#eaf0e5;border:1px solid #dce4d6;border-radius:7px;color:#3b563f;padding:9px 13px;font-size:12px;cursor:pointer;min-width:80px}.copy:hover{background:#dfe9d9}.copy:disabled{opacity:.6}.hint{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap;margin-top:12px;font-size:11px;color:var(--muted);line-height:1.8}.hint a{text-decoration:underline;text-underline-offset:3px}.features{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;margin-top:47px;padding-top:27px;border-top:1px solid var(--line)}.number{font:10px ui-monospace,SFMono-Regular,Consolas,monospace;color:#83917e}.feature h2{font-size:15px;margin:10px 0 10px;font-weight:600}.feature p{font-size:12px;line-height:1.9;color:var(--muted);margin:0}.notice{display:flex;gap:12px;align-items:flex-start;margin-top:33px;background:#ebece4;border-radius:9px;padding:15px 17px;font-size:11px;line-height:1.9;color:#66715f}.notice strong{font-weight:600;color:#505e4b;white-space:nowrap}.more{margin-top:19px;font-size:12px;color:var(--muted)}summary{cursor:pointer;width:fit-content;line-height:1.9}.more p{line-height:1.9;max-width:680px}.more code{background:#e9ece5;border-radius:4px;padding:2px 4px;overflow-wrap:anywhere}footer{border-top:1px solid var(--line);padding:22px 0 27px;display:flex;justify-content:space-between;gap:15px;font-size:10px;color:#7d877a}.footer-right{display:flex;gap:17px}.footer-right a:hover{text-decoration:underline}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+@media(max-width:760px){.wrap{padding:0 22px}header{height:74px}.nav{gap:18px;font-size:12px}main{padding-top:43px}.hero{grid-template-columns:1fr;gap:31px}h1{font-size:44px;letter-spacing:-2px;margin-top:20px}.intro{max-width:440px}.terminal{margin:0}.terminal-body{padding:22px}.start{margin-top:32px}.command{padding:17px 15px;gap:10px;align-items:flex-start}.command code{font-size:11px}.prompt{margin-right:5px}.copy{padding:8px 9px;min-width:65px;font-size:11px}.features{gap:19px;margin-top:32px;padding-top:23px}.feature h2{font-size:13px}.feature p{font-size:11px}.notice{margin-top:25px;flex-direction:column;gap:2px}footer{flex-direction:column;gap:12px}.start-head span:last-child{font-size:10px}.brand{font-size:15px}}
+@media(max-width:350px){.wrap{padding:0 16px}.nav{gap:12px}h1{font-size:39px}.features{grid-template-columns:1fr;gap:19px}.feature{display:grid;grid-template-columns:30px 1fr}.feature h2{margin-top:0}.feature p{grid-column:2}.command{flex-direction:column}.copy{align-self:flex-end}}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+<a class="brand" href="/" aria-label="Terry Toolbox 首页"><span class="mark" aria-hidden="true">&gt;_</span>Terry Toolbox</a>
+<nav class="nav" aria-label="主导航"><a href="#start">开始使用</a><a href="https://github.com/TerrySiu98/terry-toolbox" target="_blank" rel="noopener noreferrer">GitHub ↗</a></nav>
+</header>
+<main>
+<section class="hero" aria-labelledby="title">
+<div><div class="eyebrow"><span class="dot" aria-hidden="true"></span>LINUX SERVER TOOLKIT</div>
+<h1 id="title">服务器的事，<br><span>从一个菜单开始。</span></h1>
+<p class="intro">系统管理、网络服务与常用应用。<br>一个中文工具箱，输入编号，按需操作。</p>
+<div class="pills"><span class="pill">开源 Bash 脚本</span><span class="pill">Debian / Ubuntu</span><span class="pill">部分支持 Alpine</span></div>
+</div>
+<div class="terminal" aria-label="工具箱菜单示意，非实时终端">
+<div class="terminal-top"><span class="lights" aria-hidden="true"><i></i><i></i><i></i></span><span>toolbox.sh · 菜单示意</span></div>
+<div class="terminal-body"><div class="term-comment"># 启动先检测依赖，确认后才安装</div><div class="term-title">TERRY TOOLBOX</div><div class="term-row"><span class="term-key">1</span><span>网络服务</span></div><div class="term-row"><span class="term-key">2</span><span>BBR</span></div><div class="term-row"><span class="term-key">5</span><span>常用工具</span></div><div class="term-row"><span class="term-key">DIAG</span><span>只读体检</span></div><div class="term-row"><span class="term-key">0</span><span>退出</span></div><div class="term-foot">请输入编号：<span class="term-cursor" aria-hidden="true"></span></div></div>
+</div>
+</section>
+<section class="start" id="start" aria-label="开始使用">
+<div class="start-head"><span class="section-label">QUICK START</span><span>在自己的 Linux 服务器上运行</span></div>
+<div class="command"><code id="command"><span class="prompt" aria-hidden="true">$</span><span id="command-text">bash &lt;(curl -fsSL sh.uw.cx)</span></code><button class="copy" id="copy" type="button" aria-describedby="copy-status">复制命令</button></div>
+<span class="sr-only" id="copy-status" role="status" aria-live="polite"></span>
+<div class="hint"><span>终端获取脚本，浏览器看到此页。非 root 用户会请求 sudo。</span><a href="/toolbox.sh" download="toolbox.sh">下载脚本 ↗</a></div>
+</section>
+<section class="features" aria-label="功能分类">
+<article class="feature"><div class="number">01 / SYSTEM</div><h2>系统管理</h2><p>体检、BBR、虚拟内存<br>依赖、流量与网络配置</p></article>
+<article class="feature"><div class="number">02 / NETWORK</div><h2>网络服务</h2><p>Hysteria 2、Xray、TUIC<br>DNS 与端口转发</p></article>
+<article class="feature"><div class="number">03 / APPS</div><h2>常用应用</h2><p>IT-Tools、Memos、Alist<br>导航、反代与密码管理</p></article>
+</section>
+<aside class="notice"><strong>开发预览</strong><span>功能的验收状态以仓库 README 为准，并非全部完成真机测试。安装或修改前请查看提示、保留备份；首次使用建议选择测试机。</span></aside>
+<details class="more"><summary>没有 curl？或想先检查脚本</summary><p>如果已安装 wget，可以运行 <code>bash &lt;(wget -qO- sh.uw.cx)</code>。两者都没有时，先安装下载工具；Alpine 还需要 Bash。</p><p>更安全的做法：下载 <a href="/toolbox.sh" download="toolbox.sh"><u>toolbox.sh</u></a>，查看代码并对照 <a href="/sha256"><u>SHA-256</u></a>，确认后再执行。也可将命令中的地址写成 <code>https://sh.uw.cx</code>，从首个请求就使用 HTTPS。</p></details>
+</main>
+<footer><span>Terry's Hermes · 小工具，按需用。</span><div class="footer-right"><a href="https://github.com/TerrySiu98/terry-toolbox#功能列表" target="_blank" rel="noopener noreferrer">完整功能</a><a href="/sha256">SHA-256</a><span>Hosted on Cloudflare</span></div></footer>
+</div>
+<script>
+const button = document.getElementById('copy');
+const status = document.getElementById('copy-status');
+button.addEventListener('click', async () => {
+  button.disabled = true;
+  button.textContent = '复制中…';
+  try {
+    await navigator.clipboard.writeText(document.getElementById('command-text').textContent.trim());
+    button.textContent = '已复制 ✓';
+    status.textContent = '命令已复制到剪贴板';
+  } catch {
+    button.textContent = '请手动复制';
+    status.textContent = '浏览器未允许剪贴板访问，请选中命令手动复制';
+  } finally {
+    button.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

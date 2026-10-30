@@ -9,12 +9,18 @@
 # 固定上游：HyNetworks/hysteria app/v2.13.0 官方发布二进制 + SHA-256 白名单。
 # 不使用官方一键脚本，也不从「latest」解析版本号。
 
-readonly HY2_VERSION='2.13.0'
-readonly HY2_BIN_NAME='terry-toolbox-hy2'
-readonly HY2_UNIT_NAME='terry-toolbox-hy2.service'
-readonly HY2_DEFAULT_PORT=443
-readonly HY2_MIN_VALID_DAYS=7
-readonly HY2_MASQUERADE_TEXT='Terry Toolbox Hysteria 2'
+hy2_const() { # name value
+    [[ -n ${!1+set} ]] && return 0
+    printf -v "$1" '%s' "$2"
+    readonly "$1"
+}
+
+hy2_const HY2_VERSION '2.13.0'
+hy2_const HY2_BIN_NAME 'terry-toolbox-hy2'
+hy2_const HY2_UNIT_NAME 'terry-toolbox-hy2.service'
+hy2_const HY2_DEFAULT_PORT 443
+hy2_const HY2_MIN_VALID_DAYS 7
+hy2_const HY2_MASQUERADE_TEXT 'Terry Toolbox Hysteria 2'
 
 # 测试可覆盖的路径与外部事实；默认值即真实主机路径。
 hy2_etc()      { printf '%s\n' "${TOOLBOX_HY2_ETC:-/etc/terry-toolbox-hy2}"; }
@@ -346,9 +352,19 @@ _hy2_install() {
     arch=$(hy2_arch) || return 1
     etc=$(hy2_etc); bin=$(hy2_bin); unit=$(hy2_unit)
 
-    [[ -n $cert ]] || { hy2_die '缺少证书路径。'; return 1; }
-    [[ -n $key ]] || { hy2_die '缺少私钥路径。'; return 1; }
-    [[ -n $host ]] || { hy2_die '缺少主机名（证书对应的域名）。'; return 1; }
+    # 菜单只传动作不传参数：缺的项逐一问，问到一半就 EOF 也算取消。
+    if [[ -z $cert ]]; then
+        printf '证书文件路径（PEM，含完整链）：'
+        IFS= read -r cert || { hy2_err '没有收到证书路径，已取消。'; return 1; }
+    fi
+    if [[ -z $key ]]; then
+        printf '私钥文件路径：'
+        IFS= read -r key || { hy2_err '没有收到私钥路径，已取消。'; return 1; }
+    fi
+    if [[ -z $host ]]; then
+        printf '证书对应的域名：'
+        IFS= read -r host || { hy2_err '没有收到域名，已取消。'; return 1; }
+    fi
     host=${host,,}
     hy2_valid_hostname "$host" || { hy2_die "主机名格式不正确：$host"; return 1; }
     if [[ -n $port ]]; then
@@ -375,6 +391,13 @@ _hy2_install() {
             return 1
             ;;
     esac
+
+    # 没有单元文件却已有同名二进制/配置目录：可能是别人的安装，不静默覆盖
+    # （否则回滚会把别人的文件一起删掉）。
+    if [[ -e $bin || -e $etc ]]; then
+        hy2_die "已存在 $bin 或 $etc，却没有 $unit；未覆盖，请人工确认归属。"
+        return 1
+    fi
 
     if hy2_udp_port_busy "$port"; then
         hy2_err "UDP 端口 $port 已被占用，监听它的进程："

@@ -13,7 +13,7 @@ mkdir -p -- "$output_dir"
 output_dir=$(cd -- "$output_dir" && pwd)
 output=$output_dir/$output_name
 [[ ! -e $output && ! -L $output ]] || { printf 'Output already exists: %s\n' "$output" >&2; exit 1; }
-modules=(apps network system diagnostics hy2 webssh)
+modules=(entry apps network system diagnostics hy2 webssh)
 for file in "$root/toolbox.sh" "${modules[@]/#/$root/modules/}"; do
   # Module names get their extension below; the entrypoint already has one.
   [[ $file == "$root/toolbox.sh" ]] || file+=.sh
@@ -23,6 +23,7 @@ done
 # Fail closed if the loader changes: don't silently delete unfamiliar code.
 expected=$(printf '%s\n' \
   'load_modules() {' \
+  '  [[ ${TOOLBOX_MODULES_LOADED:-0} == 1 ]] && return 0' \
   '  local f' \
   '  for f in apps network system diagnostics hy2 webssh; do' \
   '    if [[ ! -r "$TOOLBOX_DIR/modules/$f.sh" ]]; then' \
@@ -32,6 +33,7 @@ expected=$(printf '%s\n' \
   '    # shellcheck source=/dev/null' \
   '    source "$TOOLBOX_DIR/modules/$f.sh"' \
   '  done' \
+  '  TOOLBOX_MODULES_LOADED=1' \
   '}')
 tmp=$(mktemp "$output_dir/.toolbox-build.XXXXXXXX")
 trap 'rm -f -- "$tmp"' EXIT
@@ -50,11 +52,15 @@ found=0
         printf 'Unexpected load_modules definition; review build script.\n' >&2; exit 1
       fi
       printf '%s\n' '# Bundled modules; load_modules is intentionally a no-op.' 'TOOLBOX_BUNDLED=1' 'load_modules() { :; }'
-      for module in "${modules[@]}"; do
+      for module in apps network system diagnostics hy2 webssh; do
         printf '\n# BEGIN bundled module: %s\n' "$module"
         cat -- "$root/modules/$module.sh"
         printf '\n# END bundled module: %s\n' "$module"
       done
+    elif [[ $line == 'source "$TOOLBOX_DIR/modules/entry.sh"' ]]; then
+      printf '\n# BEGIN bundled module: entry\n'
+      cat -- "$root/modules/entry.sh"
+      printf '\n# END bundled module: entry\n'
     elif [[ $line == 'TOOLBOX_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)' ]]; then
       # The loader no longer needs a directory, and BASH_SOURCE is unset for stdin.
       printf '%s\n' "TOOLBOX_DIR='' # No external modules in the standalone bundle."

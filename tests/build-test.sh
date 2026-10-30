@@ -16,7 +16,7 @@ bash -s -- --list < "$artifact" > "$tmp/stdin-list" 2> "$tmp/stdin-error"
 [[ $(<"$tmp/stdin-list") == "$(bash "$root/toolbox.sh" --list)" && ! -s $tmp/stdin-error ]] || fail 'stdin execution'
 if bash "$artifact" --unknown >"$tmp/out" 2>&1; then fail 'accepted unknown option'; fi
 out=$(printf '0\n' | bash "$artifact")
-[[ $out == *'Terry 服务器工具箱'* ]] || fail 'menu exit'
+[[ $out == *'请选择要执行的操作'* ]] || fail 'menu exit'
 # 每个动作单独一次运行：B2/A5 可能各自读 stdin，混在一起会互相吃掉输入。
 out=$(printf 'DIAG\n0\n' | HOME="$tmp" bash "$artifact" 2>&1)
 [[ $out == *'=== 系统 ==='* ]] || fail 'diagnostics dispatch'

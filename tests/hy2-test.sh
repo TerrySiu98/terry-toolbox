@@ -146,6 +146,9 @@ before=$(find "$work" -mindepth 1 | wc -l)
 out=$(bash -ec "source '$ROOT/modules/hy2.sh'; declare -F toolbox_hy2 >/dev/null && printf ok")
 [[ $out == ok ]] || fail 'sourcing 未定义 toolbox_hy2'
 [[ $(find "$work" -mindepth 1 | wc -l) -eq $before ]] || fail 'sourcing 产生文件'
+out=$(bash -euc 'source "$1"; source "$1"; declare -F toolbox_hy2 >/dev/null; printf ok' _ "$ROOT/modules/hy2.sh" 2>"$work/source-twice.err") \
+    || fail '重复 source hy2.sh 失败'
+[[ $out == ok && ! -s $work/source-twice.err ]] || fail '重复 source hy2.sh 有输出或 readonly 报错'
 
 # 2. 非 root 拒绝
 if TOOLBOX_HY2_UID=1000 toolbox_hy2 install "$work/good.crt" "$work/good.key" "$GOOD_H" 443 <<< 'YES' >/dev/null 2>&1; then
@@ -218,6 +221,19 @@ printf '[Service]\nExecStart=%s/terry-toolbox-hy2 server\n' "$work/bin" > "$work
 out=$(toolbox_hy2 install "$work/good.crt" "$work/good.key" "$GOOD_H" <<< 'YES' 2>&1 || true)
 [[ $out == *'已在运行'* ]] || fail '运行中的自有服务未拒绝重装'
 rm -f "$SD/active"
+reset
+
+# 7b. 没有单元文件但已有同名二进制/配置目录：可能是别人的安装，写盘前拒绝
+printf '#!/bin/sh\nexit 0\n' > "$work/bin/terry-toolbox-hy2"
+out=$(toolbox_hy2 install "$work/good.crt" "$work/good.key" "$GOOD_H" <<< 'YES' 2>&1 || true)
+[[ $out == *'请人工确认归属'* ]] || fail '同名二进制未被拒绝'
+[[ ! -e $work/units/terry-toolbox-hy2.service ]] || fail '同名二进制仍写了单元'
+[[ ! -d $work/etc/terry-toolbox-hy2 ]] || fail '同名二进制仍写了配置'
+reset
+mkdir -p "$work/etc/terry-toolbox-hy2"
+out=$(toolbox_hy2 install "$work/good.crt" "$work/good.key" "$GOOD_H" <<< 'YES' 2>&1 || true)
+[[ $out == *'请人工确认归属'* ]] || fail '同名配置目录未被拒绝'
+[[ ! -e $work/units/terry-toolbox-hy2.service ]] || fail '同名配置目录仍写了单元'
 reset
 
 # 8. 取消确认不得写盘
@@ -390,5 +406,16 @@ reset
 if toolbox_hy2 frobnicate >/dev/null 2>&1; then fail '未知动作被接受'; fi
 if toolbox_hy2 install >/dev/null 2>&1; then fail '缺少参数仍安装'; fi
 assert_clean '参数错误'
+
+# 24. 菜单里不带参数：缺的证书/私钥/主机名要逐项提问，端口仍可默认。
+export MOCK_PORT=443
+out=$(printf '%s\n%s\n%s\nYES\n' "$work/good.crt" "$work/good.key" "$GOOD_H" | toolbox_hy2 install 2>&1) \
+    || { printf '%s\n' "$out" >&2; fail '交互式补全参数后安装失败'; }
+grep -q '^listen: :443$' "$work/etc/terry-toolbox-hy2/config.yaml" || fail '交互式安装端口不是默认 443'
+toolbox_hy2 uninstall <<< 'YES' >/dev/null 2>&1 || fail '交互式安装后卸载失败'
+reset
+# 问到一半就 EOF 也要在写盘前退出
+printf '%s\n' "$work/good.crt" | toolbox_hy2 install >/dev/null 2>&1 && fail 'EOF 被当成安装'
+assert_clean '交互式 EOF'
 
 printf 'All hy2 tests passed.\n'

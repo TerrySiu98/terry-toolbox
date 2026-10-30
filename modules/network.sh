@@ -48,13 +48,14 @@ toolbox_network_detect_os() {
     return 1
 }
 
-# A4 is intentionally disabled: the previous installer could mistake another
-# process for its listener, leave an exposed service on failure, and accept a
-# certificate without checking its notBefore or requested hostname. Removing
-# the installer also prevents direct calls from bypassing the menu refusal.
+# A4 的安装逻辑在 modules/hy2.sh（独立模块，菜单直接调用）。这里转发，让
+# `toolbox_network A4 …` 与菜单等价；模块没加载时仍 fail closed，不假装可用。
 toolbox_network_hy2() {
-    printf 'A4 暂时禁用：监听归属、失败后服务清理及证书有效期/域名尚未安全验证；未修改系统。\n' >&2
-    printf '如曾运行旧版安装，请人工检查 toolbox-hy2.service、UDP 监听及 /etc/toolbox-hy2、/usr/local/bin/toolbox-hy2 和 systemd 单元文件；确认归属后再停止或清理。\n' >&2
+    if declare -F toolbox_hy2 >/dev/null; then
+        toolbox_hy2 "$@"
+        return
+    fi
+    printf 'A4 暂时不可用：modules/hy2.sh 未加载（缺模块）；未修改系统。\n' >&2
     return 1
 }
 
@@ -74,6 +75,14 @@ toolbox_network_xray() { toolbox_network A5 "$@" ; }
 
 net_err() { printf '%s\n' "$*" >&2; }
 net_die() { net_err "$*"; return 1; }
+
+# 常量声明成「已定义就不覆盖」：同一 shell 里重复 source 时，函数会被重新定义
+# （调用方靠这个刷新实现），而 readonly 变量二次赋值会报错并中止加载。
+net_const() { # name value
+    [[ -n ${!1+set} ]] && return 0
+    printf -v "$1" '%s' "$2"
+    readonly "$1"
+}
 
 net_require_root() {
     [[ ${TOOLBOX_NET_UID:-${EUID:-$(id -u)}} -eq 0 ]] \
@@ -284,6 +293,20 @@ net_check_cert() {
         || { net_die "证书不包含主机名 $host（SAN/CN 不匹配）。"; return 1; }
 }
 
+# 证书链能否被本机信任库验证，决定自签证书要不要在客户端链接里带 insecure。
+# 判定只看本机 CA 文件；读不到信任库时按「不信任」处理（宁多带一个 insecure）。
+# TOOLBOX_NET_CAFILE / TOOLBOX_NET_CAPATH 供隔离测试注入。
+net_tls_trusted() {
+    local cert=$1 cafile=${TOOLBOX_NET_CAFILE:-/etc/ssl/certs/ca-certificates.crt}
+    local capath=${TOOLBOX_NET_CAPATH:-/etc/ssl/certs}
+    if [[ -n $cafile && -r $cafile ]]; then
+        openssl verify -CAfile "$cafile" "$cert" >/dev/null 2>&1
+        return
+    fi
+    [[ -n $capath && -d $capath ]] || return 1
+    openssl verify -CApath "$capath" "$cert" >/dev/null 2>&1
+}
+
 # ================================================================ B12 TCP Brutal
 #
 # 固定上游 HyNetworks/tcp-brutal v2.0.1 的官方 DKMS 源码包（SHA-256 白名单），
@@ -293,12 +316,12 @@ net_check_cert() {
 # v2 起 brutal 仍是内核拥塞控制算法（tcp_congestion_ops.name = "brutal"），
 # 全局默认值改成本算法会影响本机所有新 TCP 连接，因此安装必须两次确认。
 
-readonly BRUTAL_VERSION='2.0.1'
-readonly BRUTAL_DKMS_NAME='tcp-brutal'
-readonly BRUTAL_MODULE='brutal'
-readonly BRUTAL_SHA256='64a2778f308f7684cb5a137d578bc071e373960a3b9b79f9de015b84b29a7299'
-readonly BRUTAL_MIN_MAJOR=5
-readonly BRUTAL_MIN_MINOR=10
+net_const BRUTAL_VERSION '2.0.1'
+net_const BRUTAL_DKMS_NAME 'tcp-brutal'
+net_const BRUTAL_MODULE 'brutal'
+net_const BRUTAL_SHA256 '64a2778f308f7684cb5a137d578bc071e373960a3b9b79f9de015b84b29a7299'
+net_const BRUTAL_MIN_MAJOR 5
+net_const BRUTAL_MIN_MINOR 10
 
 net_brutal_etc()    { printf '%s/terry-toolbox-brutal\n' "${TOOLBOX_NET_ETC:-/etc}"; }
 net_brutal_modload() { printf '%s/%s.conf\n' "${TOOLBOX_NET_MODLOAD_DIR:-/etc/modules-load.d}" "$BRUTAL_MODULE"; }
@@ -615,10 +638,10 @@ net_brutal_status() {
 # 客户端链接。本模块没有 TUIC 客户端可当探针，因此「服务起来、UDP 端口被本
 # 服务持有」是全部自动验证，认证是否通过需要客户端实测（报告里写明）。
 
-readonly TUIC_VERSION='1.0.0'
-readonly TUIC_BIN_NAME='terry-toolbox-tuic'
-readonly TUIC_UNIT_NAME='terry-toolbox-tuic.service'
-readonly TUIC_DEFAULT_PORT=443
+net_const TUIC_VERSION '1.0.0'
+net_const TUIC_BIN_NAME 'terry-toolbox-tuic'
+net_const TUIC_UNIT_NAME 'terry-toolbox-tuic.service'
+net_const TUIC_DEFAULT_PORT 443
 
 net_tuic_etc()  { printf '%s/terry-toolbox-tuic\n' "${TOOLBOX_NET_ETC:-/etc}"; }
 net_tuic_bin()  { printf '%s/%s\n' "${TOOLBOX_NET_BIN_DIR:-/usr/local/bin}" "$TUIC_BIN_NAME"; }
@@ -910,7 +933,7 @@ net_tuic_status() {
 #
 # 单元名带协议和本地端口，因此可以并存多个转发、逐个卸载。
 
-readonly RELAY_PREFIX='terry-toolbox-relay'
+net_const RELAY_PREFIX 'terry-toolbox-relay'
 
 net_relay_unit_dir() { printf '%s\n' "${TOOLBOX_NET_UNIT_DIR:-/etc/systemd/system}"; }
 net_relay_unit_name() { printf '%s-%s-%s.service\n' "$RELAY_PREFIX" "$1" "$2"; }
@@ -1158,12 +1181,12 @@ net_relay_status() {
 # 写盘后失败一律回滚。端口是否被自己持有只认本机事实（pidfile、/proc/<pid>/exe、
 # 内核 comm），不靠「看起来像我们的服务」。
 
-readonly NET_ALPINE_HY2_VERSION='2.13.0'
-readonly NET_ALPINE_XRAY_VERSION='26.10.29'
-readonly NET_ALPINE_HY2_NAME='terry-toolbox-hy2'
-readonly NET_ALPINE_XRAY_NAME='terry-toolbox-xray'
-readonly NET_ALPINE_DEFAULT_PORT=443
-readonly NET_ALPINE_HY2_MASQUERADE='Terry Toolbox Hysteria 2'
+net_const NET_ALPINE_HY2_VERSION '2.13.0'
+net_const NET_ALPINE_XRAY_VERSION '26.10.29'
+net_const NET_ALPINE_HY2_NAME 'terry-toolbox-hy2'
+net_const NET_ALPINE_XRAY_NAME 'terry-toolbox-xray'
+net_const NET_ALPINE_DEFAULT_PORT 443
+net_const NET_ALPINE_HY2_MASQUERADE 'Terry Toolbox Hysteria 2'
 
 net_initdir() { printf '%s\n' "${TOOLBOX_NET_INITD:-/etc/init.d}"; }
 net_rundir()  { printf '%s\n' "${TOOLBOX_NET_RUN:-/run}"; }
@@ -1209,6 +1232,22 @@ net_alpine_xray_sha256() {
         arm64) printf '%s\n' "${TOOLBOX_A2_SHA256_ARM64:-afe01f19045b05237420328028ee1ee2e1edd2100eb41a8cbbf50e683b0a6e58}" ;;
         *) return 1 ;;
     esac
+}
+
+# Xray 官方产物的架构后缀与 uname 名不同：arm64 是 arm64-v8a。
+net_xray_asset_arch() {
+    case $1 in
+        amd64) printf '64\n' ;;
+        arm64) printf 'arm64-v8a\n' ;;
+        *) return 1 ;;
+    esac
+}
+
+net_alpine_xray_url() { # arch
+    local asset
+    asset=$(net_xray_asset_arch "$1") || return 1
+    printf 'https://github.com/XTLS/Xray-core/releases/download/v%s/Xray-linux-%s.zip\n' \
+        "$NET_ALPINE_XRAY_VERSION" "$asset"
 }
 
 net_alpine_port_owned_by() { # proto port bin pidfile
@@ -1689,7 +1728,7 @@ _net_a2_install() {
     tmp=$(mktemp -d) || { net_die '无法创建临时目录'; return 1; }
     net_err '--- 开始写入 ---'
     net_alpine_fetch \
-        "https://github.com/XTLS/Xray-core/releases/download/v${NET_ALPINE_XRAY_VERSION}/Xray-linux-${arch/amd64/64}.zip" \
+        "$(net_alpine_xray_url "$arch")" \
         "$tmp/xray.zip" "$(net_alpine_xray_sha256 "$arch")" "${TOOLBOX_A2_ZIP_SRC:-}" \
         || { rm -rf -- "$tmp"; net_a2_rollback; return 1; }
 
@@ -1889,11 +1928,11 @@ net_alpine_status() { # name init bin etc proto
 #
 # 没有证书：REALITY 借用回落目标的证书，本模块不碰证书文件。
 
-readonly NET_A5_VERSION='26.10.29'
-readonly NET_A5_BIN_NAME='terry-toolbox-xray'
-readonly NET_A5_UNIT_NAME='terry-toolbox-xray.service'
-readonly NET_A5_DEFAULT_PORT=443
-readonly NET_A5_TAG='vless-in'
+net_const NET_A5_VERSION '26.10.29'
+net_const NET_A5_BIN_NAME 'terry-toolbox-xray'
+net_const NET_A5_UNIT_NAME 'terry-toolbox-xray.service'
+net_const NET_A5_DEFAULT_PORT 443
+net_const NET_A5_TAG 'vless-in'
 
 net_a5_etc()    { printf '%s/terry-toolbox-xray\n' "${TOOLBOX_NET_ETC:-/etc}"; }
 net_a5_bin()    { printf '%s/%s\n' "${TOOLBOX_NET_BIN_DIR:-/usr/local/bin}" "$NET_A5_BIN_NAME"; }
@@ -1913,8 +1952,10 @@ net_a5_sha256() {
 }
 
 net_a5_zip_url() {
+    local asset
+    asset=$(net_xray_asset_arch "$1") || return 1
     printf 'https://github.com/XTLS/Xray-core/releases/download/v%s/Xray-linux-%s.zip\n' \
-        "$NET_A5_VERSION" "${1/amd64/64}"
+        "$NET_A5_VERSION" "$asset"
 }
 
 # ---------------------------------------------------------------- 回落目标校验
@@ -2916,7 +2957,7 @@ toolbox_network() {
             esac
             return $?
             ;;
-        A4) toolbox_network_hy2; return $? ;;
+        A4) toolbox_network_hy2 "$@"; return $? ;;
         A5)
             action=${1:-}
             if [[ -z $action ]]; then

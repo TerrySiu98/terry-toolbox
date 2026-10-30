@@ -442,11 +442,15 @@ cmp -s "$work/good.key" "$TOOLBOX_A1_ETC/key.pem" || fail 'A1 私钥副本内容
 [[ -e $work/good.key ]] || fail 'A1 原始私钥被移动'
 [[ $(stat -c %a "$TOOLBOX_A1_ETC/meta") == 600 ]] || fail 'A1 meta 权限不是 600'
 grep -q 'hysteria2://' <<< "$out" || fail 'A1 未输出客户端链接'
-grep -q 'insecure=1' <<< "$out" || fail 'A1 自签证书应提示 insecure'
+grep -q 'sni=a1.example.test&insecure=1' <<< "$out" || fail 'A1 自签证书的链接应带 insecure=1'
 grep -q '\[已验证\]' <<< "$out" || fail 'A1 未报告验证结果'
 [[ -s "$work/run/terry-toolbox-hy2-verify/good.yaml" ]] || fail 'A1 探测配置未生成'
 grep -q 'FATAL' "$work/run/terry-toolbox-hy2-verify/bad.log" 2>/dev/null \
     || fail 'A1 未执行负向探测'
+# 本机信任库判定：系统信任库不认自签证书 → 明确说明并带 insecure。
+grep -q '证书链未被本机信任库验证通过' <<< "$out" || fail 'A1 未说明证书链不受信任'
+grep -q '|1|' "$TOOLBOX_A1_ETC/meta" || fail 'A1 meta 未记录 insecure=1'
+grep -q 'command not found' <<< "$out" && fail 'A1 信任判定调用了未定义的函数'
 
 # 重复安装要拒绝且不改配置
 sum=$(sha256sum "$conf" | cut -d' ' -f1)
@@ -468,7 +472,21 @@ if toolbox_network A1 status >/dev/null 2>&1; then fail 'A1 卸载后 status 仍
 if printf 'YES\n' | toolbox_network A1 uninstall >/dev/null 2>&1; then fail 'A1 未安装时卸载仍成功'; fi
 reset
 
+# 证书链被本机信任库接受（同一张自签证书当 CA 文件）→ 不带 insecure，报告「验证通过」
+printf '18443\n' > "$SD/port"
+out=$(printf 'YES\n' | TOOLBOX_NET_CAFILE=$work/good.crt \
+    toolbox_network A1 install "$work/good.crt" "$work/good.key" "$H" 18443 2>&1) \
+    || { printf '%s\n' "$out" >&2; fail 'A1 受信任证书安装失败'; }
+grep -q '证书链验证通过' <<< "$out" || fail 'A1 受信任证书未报告验证通过'
+grep -q '&insecure=1' <<< "$out" && fail 'A1 受信任证书的链接仍带 insecure=1'
+grep -q '|0|' "$TOOLBOX_A1_ETC/meta" || fail 'A1 meta 未记录 insecure=0'
+toolbox_network A1 uninstall <<< 'YES' >/dev/null 2>&1 || fail 'A1 受信任证书卸载失败'
+reset
+
 # ================================================================ A2
+# 上游产物名按架构不同：arm64 是 -arm64-v8a，写成 -arm64 会 404。
+[[ $(net_alpine_xray_url amd64) == */Xray-linux-64.zip ]] || fail "A2 amd64 产物名不对: $(net_alpine_xray_url amd64)"
+[[ $(net_alpine_xray_url arm64) == */Xray-linux-arm64-v8a.zip ]] || fail "A2 arm64 产物名不对: $(net_alpine_xray_url arm64)"
 if printf 'YES\n' | TOOLBOX_NET_OS_RELEASE=$work/os-debian toolbox_network A2 install \
     >/dev/null 2>&1; then fail 'A2 接受 Debian'; fi
 for bad in 'no-dot' 'host:0' 'host:70000' 'a_b.test'; do

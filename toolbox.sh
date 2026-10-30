@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Terry 工具箱：进入菜单不安装、不修改系统。
+# Terry 工具箱：启动检测依赖；确认后才安装，不自动升级系统。
 set -u
 TOOLBOX_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-TOOLBOX_VERSION='0.1.0-dev'
+TOOLBOX_VERSION='0.2.0-dev'
 
 # 非 root 时自动提权，便于一条命令 `bash <(curl -fsSL sh.uw.cx)` 直接可用。
 if (( EUID != 0 )) && [[ -z ${TOOLBOX_ELEVATED:-} ]]; then
@@ -33,6 +33,9 @@ if (( EUID != 0 )) && [[ -z ${TOOLBOX_ELEVATED:-} ]]; then
   esac
 fi
 
+# shellcheck source=modules/entry.sh
+source "$TOOLBOX_DIR/modules/entry.sh"
+
 show_list() {
   printf '%s\n' 'A1 A2 A3 A4 A5' 'B1 B2 B3 B4 B5 B6 B7 B8 B9 B10 B11 B12 B13 B14 B15 B16 B17 B18 B19 B20 B21 B22 B23 B24 B25 B26 B27 B28 B29 B30 B31'
 }
@@ -40,6 +43,7 @@ show_help() {
   printf 'Terry 工具箱 %s\n用法: bash toolbox.sh [--help|--list]\n--list 列出菜单编号；不带参数进入交互菜单。\n' "$TOOLBOX_VERSION"
 }
 load_modules() {
+  [[ ${TOOLBOX_MODULES_LOADED:-0} == 1 ]] && return 0
   local f
   for f in apps network system diagnostics hy2 webssh; do
     if [[ ! -r "$TOOLBOX_DIR/modules/$f.sh" ]]; then
@@ -49,6 +53,7 @@ load_modules() {
     # shellcheck source=/dev/null
     source "$TOOLBOX_DIR/modules/$f.sh"
   done
+  TOOLBOX_MODULES_LOADED=1
 }
 run_action() {
   local key=$1
@@ -65,9 +70,12 @@ run_action() {
 }
 a4_menu() {
   local c
-  printf 'A4 Hysteria 2\n 1 安装\n 2 卸载\n 3 状态\n请输入编号：'
+  printf '\n'; _tb_heading 'A4 Hysteria 2'
+  _tb_line '[1] 安装'; _tb_line '[2] 卸载'; _tb_line '[3] 状态'; _tb_line '[0] 返回'; _tb_finish
+  printf '\n请输入编号：'
   IFS= read -r c || return 1
   case "$c" in
+    0) return 0 ;;
     1) toolbox_hy2 install ;;
     2) toolbox_hy2 uninstall ;;
     3) toolbox_hy2 status ;;
@@ -75,24 +83,46 @@ a4_menu() {
   esac
 }
 menu() {
-  local choice
-  printf '\nTerry 服务器工具箱 %s\n启动不安装软件、不修改系统；功能执行前请检查提示。\n' "$TOOLBOX_VERSION"
+  local choice screen=main key
+  _tb_ui_init
+  _tb_banner
+  _tb_bootstrap || true
   while :; do
-    printf '\n网络服务\n A1 Alpine HY2  A2 Alpine Xray  A3 TUIC  A4 HY2  A5 Xray\n系统\n M1 BBR  M2 基础依赖  M3 重装系统  M4 重启\n常用工具\n B1 Docker  B2 NodeQuality  B3 Alist  B4 哪吒  B5 X-UI\n B6 swap  B7 流量限制  B8 改密码  B9 IT-Tools  B10 WebSSH\n B11 1Panel  B12 TCP Brutal  B13 MyIP  B14 回程测试\n B15 TG 流量通知  B16 网络优化  B17 Sun-panel  B18 预留\n B19 Alpine 工具  B20 Memos  B21 Nginx Proxy Manager  B22 Halo\n B23 DNS  B24 NginxWebUI  B25 Nexterm  B26 LibreTV\n B27 Stirling PDF  B28 网页验证  B29 DDNS-GO\n B30 Vaultwarden  B31 Relay\n 0 退出\n'
-    printf '\n输入 DIAG 可查看只读体检。\n请输入编号：'
-    if ! IFS= read -r choice; then printf '\n'; return 0; fi
-    choice=${choice^^}
+    TB_SKIP_BANNER=1
+    case "$screen" in main) _tb_main_screen;; network) _tb_network_screen;; apps) _tb_apps_screen;; esac
+    _tb_read_choice || return 0
+    choice=$TB_CHOICE
     case "$choice" in
-      0|Q) return 0 ;;
-      M1) choice=MAIN_BBR ;;
-      M2) choice=MAIN_DEPS ;;
-      M3) choice=MAIN_REINSTALL ;;
-      M4) choice=MAIN_REBOOT ;;
+      0|Q)
+        if [[ $screen != main ]]; then screen=main; continue; fi
+        _tb_bye; return 0 ;;
     esac
-    if [[ "$choice" != B18 ]]; then
+    key=$choice
+    if [[ $screen == main ]]; then
+      case "$choice" in
+        1) screen=network; continue;;
+        5) screen=apps; continue;;
+        2|M1) key=MAIN_BBR;;
+        3|M2) key=MAIN_DEPS;;
+        4|DD|M3) key=MAIN_REINSTALL;;
+        99|M4) key=MAIN_REBOOT;;
+      esac
+    elif [[ $screen == network && $choice =~ ^[1-5]$ ]]; then
+      key=A$choice
+    elif [[ $screen == apps && $choice =~ ^([1-9]|[12][0-9]|3[01])$ ]]; then
+      key=B$choice
+    fi
+    case "$key" in
+      DIAG|MAIN_BBR|MAIN_DEPS|MAIN_REINSTALL|MAIN_REBOOT|A[1-5]|B[1-9]|B[12][0-9]|B3[01]) ;;
+      *) printf '\n %s无效的选择，请按菜单编号输入。%s\n' "$TB_YELLOW" "$TB_RESET"; continue;;
+    esac
+    if [[ "$key" != B18 ]]; then
       if ! load_modules; then continue; fi
     fi
-    run_action "$choice" || printf '操作未完成或已取消。\n'
+    printf '\n'
+    run_action "$key" || printf '\n %s操作未完成或已取消。%s\n' "$TB_YELLOW" "$TB_RESET"
+    _tb_pause || return 0
+    TB_SKIP_BANNER=0
   done
 }
 case "${1-}" in

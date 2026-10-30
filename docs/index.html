@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Terry 工具箱：进入菜单不安装、不修改系统。
+# Terry 工具箱：启动检测依赖；确认后才安装，不自动升级系统。
 set -u
 TOOLBOX_DIR='' # No external modules in the standalone bundle.
-TOOLBOX_VERSION='0.1.0-dev'
+TOOLBOX_VERSION='0.2.0-dev'
 
 # 非 root 时自动提权，便于一条命令 `bash <(curl -fsSL sh.uw.cx)` 直接可用。
 if (( EUID != 0 )) && [[ -z ${TOOLBOX_ELEVATED:-} ]]; then
@@ -32,6 +32,244 @@ if (( EUID != 0 )) && [[ -z ${TOOLBOX_ELEVATED:-} ]]; then
     *) exec sudo -E bash "${BASH_SOURCE[0]}" "$@" ;;
   esac
 fi
+
+# shellcheck source=modules/entry.sh
+
+# BEGIN bundled module: entry
+#!/usr/bin/env bash
+# Source-only entry UI and bootstrap. Reference-style layout for SSH terminals.
+
+_tb_ui_init() {
+  TB_RESET='' TB_BOLD='' TB_CYAN='' TB_BLUE='' TB_DIM='' TB_GREEN='' TB_YELLOW='' TB_RED=''
+  if [[ -t 1 && ${TERM:-dumb} != dumb && -z ${NO_COLOR+x} ]]; then
+    TB_RESET=$'\033[0m' TB_BOLD=$'\033[1m' TB_CYAN=$'\033[96m' TB_BLUE=$'\033[94m'
+    TB_DIM=$'\033[90m' TB_GREEN=$'\033[92m' TB_YELLOW=$'\033[93m' TB_RED=$'\033[91m'
+  fi
+  local columns=${COLUMNS:-80}
+  if [[ -t 1 ]] && command -v tput >/dev/null 2>&1; then columns=$(tput cols 2>/dev/null) || columns=80; fi
+  [[ $columns =~ ^[0-9]+$ ]] || columns=80
+  (( columns > 78 )) && columns=78
+  (( columns < 32 )) && columns=32
+  TB_WIDTH=$((columns - 2))
+  TB_OS='Linux' TB_OS_ID='unknown'
+  local line val release=${TOOLBOX_OS_RELEASE:-/etc/os-release}
+  if [[ -r $release ]]; then
+    while IFS= read -r line; do
+      case "$line" in
+        PRETTY_NAME=*|ID=*)
+          val=${line#*=}; val=${val#\"}; val=${val%\"}; val=${val#\'}; val=${val%\'}
+          # OS metadata is parsed as data; strip anything that could move the cursor.
+          val=${val//[^a-zA-Z0-9 ._()\/+-]/}
+          case "$line" in PRETTY_NAME=*) TB_OS=$val;; ID=*) TB_OS_ID=$val;; esac
+          ;;
+      esac
+    done < "$release"
+  fi
+  TB_ARCH=$(uname -m 2>/dev/null) || TB_ARCH='unknown'
+  TB_TERRY_ART=(
+    '██████  █████   █████   █████   ██  ██'
+    '  ██    ██      ██  ██  ██  ██  ██  ██'
+    '  ██    ████    █████   █████    ███  '
+    '  ██    ██      ██ ██   ██ ██      ██  '
+    '  ██    █████   ██  ██  ██  ██     ██  '
+  )
+}
+_tb_display_width() {
+  local LC_ALL=C
+  local text=${1//$'\xef\xb8\x8f'/} i char n=0
+  # Byte-based so alignment holds under LC_ALL=C or a C-locale SSH login.
+  # Box drawing (U+2500 block, 3 bytes) is one column; only CJK and emoji are two.
+  for ((i=0; i<${#text}; i++)); do
+    char=${text:i:1}
+    case "$char" in
+      [$'\x80'-$'\xbf']) ;;                  # continuation byte
+      [$'\xe3'-$'\xe9']) ((n+=2));;           # CJK ideograph / CJK punctuation
+      [$'\xe2'])
+        case ${text:i+1:1} in [$'\x98'-$'\x9f']) ((n+=2));; *) ((n+=1));; esac ;;
+      [$'\xef']) ((n+=2));;                   # fullwidth forms
+      [$'\xf0'-$'\xf3']) ((n+=2));;           # emoji
+      [$'\xc2'-$'\xdf']) ((n+=1));;           # Latin-1 punctuation (·, …)
+      *) ((n+=1));;
+    esac
+  done
+  TB_TEXT_WIDTH=$n
+}
+_tb_repeat() { local n=$1 ch=$2 i; for ((i=0;i<n;i++)); do printf '%s' "$ch"; done; }
+_tb_top()  { printf ' %s%s%s' "$TB_BLUE" "$1" "$TB_RESET"; _tb_repeat "$((TB_WIDTH-2))" '═'; printf '%s%s%s\n' "$TB_BLUE" "$2" "$TB_RESET"; }
+_tb_sep()  { printf ' %s╠' "$TB_BLUE"; _tb_repeat "$((TB_WIDTH-2))" '═'; printf '╣%s\n' "$TB_RESET"; }
+_tb_bot()  { printf ' %s╚' "$TB_BLUE"; _tb_repeat "$((TB_WIDTH-2))" '═'; printf '╝%s\n' "$TB_RESET"; }
+_tb_row() {
+  local text=$1 color=${2:-$TB_RESET} padding
+  _tb_display_width "$text"
+  padding=$((TB_WIDTH - TB_TEXT_WIDTH - 4)); (( padding < 0 )) && padding=0
+  printf ' %s║%s %s%s%s' "$TB_BLUE" "$TB_RESET" "$color" "$text" "$TB_RESET"
+  _tb_repeat "$padding" ' '
+  printf ' %s║%s\n' "$TB_BLUE" "$TB_RESET"
+}
+_tb_center() {
+  local text=$1 color=${2:-$TB_RESET} left right
+  _tb_display_width "$text"
+  left=$(( (TB_WIDTH - TB_TEXT_WIDTH - 4) / 2 )); (( left < 0 )) && left=0
+  right=$(( TB_WIDTH - TB_TEXT_WIDTH - 4 - left )); (( right < 0 )) && right=0
+  printf ' %s║%s ' "$TB_BLUE" "$TB_RESET"; _tb_repeat "$left" ' '
+  printf '%s%s%s' "$color" "$text" "$TB_RESET"; _tb_repeat "$right" ' '
+  printf ' %s║%s\n' "$TB_BLUE" "$TB_RESET"
+}
+_tb_pair() {
+  local left=$1 right=${2:-} target=$(((TB_WIDTH - 8)/2)) padding text
+  if (( TB_WIDTH < 64 )) || [[ -z $right ]]; then
+    _tb_row "$left"; [[ -z $right ]] || _tb_row "$right"
+  else
+    _tb_display_width "$left"; padding=$((target-TB_TEXT_WIDTH)); (( padding < 1 )) && padding=1
+    printf -v text '%s%*s%s' "$left" "$padding" '' "$right"
+    _tb_row "$text"
+  fi
+}
+_tb_head() { printf '\n'; _tb_top '╔' '╗'; _tb_center "$1" "$TB_BOLD$TB_BLUE"; _tb_sep; }
+_tb_line() { _tb_row "$@"; }
+_tb_border() { _tb_sep; }
+_tb_finish() { _tb_bot; }
+_tb_banner() {
+  [[ ${TB_SKIP_BANNER:-0} == 1 ]] && return 0
+  if [[ -t 0 && -t 1 && ${TERM:-dumb} != dumb && -z ${TOOLBOX_NO_CLEAR:-} ]]; then printf '\033[H\033[2J'; fi
+  printf '\n'
+  _tb_top '╔' '╗'
+  local art
+  if (( TB_WIDTH >= 46 )); then
+    _tb_center ' '
+    for art in "${TB_TERRY_ART[@]}"; do _tb_center "$art" "$TB_BOLD$TB_BLUE"; done
+    _tb_center ' '
+    _tb_center 'T E R R Y   T O O L B O X' "$TB_BOLD$TB_CYAN"
+  else
+    _tb_center ' '
+    _tb_center 'TERRY TOOLBOX' "$TB_BOLD$TB_CYAN"
+  fi
+  _tb_center '服务器工具箱 · 启动先检测依赖' "$TB_DIM"
+  _tb_sep
+  if (( TB_WIDTH >= 60 )); then
+    _tb_center "$TB_OS   $TB_ARCH   $TOOLBOX_VERSION" "$TB_DIM"
+  else
+    _tb_center "$TB_ARCH   $TOOLBOX_VERSION" "$TB_DIM"
+  fi
+  _tb_bot
+  printf '\n'
+}
+_tb_main_screen() {
+  _tb_banner
+  _tb_head '请选择要执行的操作'
+  _tb_pair '🌐 1. 网络服务' '💽 4. 重装系统'
+  _tb_pair '⚡ 2. 安装 BBR' '🛠️  5. 常用工具'
+  _tb_pair '📦 3. 安装基础依赖' '🔄 99. 重新启动'
+  _tb_pair '🩺  DIAG 只读体检' '🚪 0. 退出脚本'
+  _tb_bot
+  if (( TB_WIDTH < 64 )); then
+    printf '\n %s· 输入编号回车；A1 / B9 快捷可用%s\n' "$TB_DIM" "$TB_RESET"
+    printf ' %s· 修改前会提示影响并确认%s\n\n' "$TB_DIM" "$TB_RESET"
+  else
+    printf '\n %s· 输入编号回车；完整编号 A1 / B9 也可直接输入%s\n' "$TB_DIM" "$TB_RESET"
+    printf ' %s· 安装、修改和重启前会显示影响并二次确认%s\n\n' "$TB_DIM" "$TB_RESET"
+  fi
+}
+_tb_network_screen() {
+  _tb_head '🌐 网络服务'
+  _tb_row '📡 1. Alpine 版 HY2'
+  _tb_row '📡 2. Alpine 版 Xray'
+  _tb_row '📡 3. TUIC 服务'
+  _tb_row '📡 4. HY2 服务'
+  _tb_row '📡 5. Xray 服务'
+  _tb_sep
+  _tb_row '↩️  0. 返回主菜单'
+  _tb_bot; printf '\n'
+  printf ' %sAlpine 两项仅在 Alpine + OpenRC 可用。%s\n\n' "$TB_DIM" "$TB_RESET"
+}
+_tb_apps_screen() {
+  _tb_head '🛠️  常用工具'
+  _tb_pair '🐳 1. Docker' '🧰 9. IT-Tools'
+  _tb_pair '📊 2. NodeQuality' '🔐 10. WebSSH'
+  _tb_pair '📁 3. Alist' '🧱 11. 1Panel'
+  _tb_pair '🐱 4. 哪吒面板' '⚙️  12. TCP Brutal'
+  _tb_pair '🪪 5. X-UI' '🌍 13. MyIP'
+  _tb_pair '💾 6. 虚拟内存' '🛰️  14. 回程测试'
+  _tb_pair '📈 7. 流量限制' '📨 15. TG 通知'
+  _tb_pair '🔑 8. 修改密码' '🚀 16. 网络优化'
+  _tb_sep
+  _tb_pair '🧭 17. Sun-panel' '🏔️  19. Alpine 工具'
+  _tb_pair '📝 20. Memos' '🔀 21. NPM'
+  _tb_pair '✍️  22. Halo' '🌐 23. DNS 切换'
+  _tb_pair '🧩 24. NginxWebUI' '🖥️  25. Nexterm'
+  _tb_pair '📺 26. LibreTV' '📄 27. Stirling PDF'
+  _tb_pair '✅ 28. 网页验证' '🧬 29. DDNS-GO'
+  _tb_pair '🔒 30. 密码管理器' '🔁 31. Relay 转发'
+  _tb_sep
+  _tb_pair '🕳️  18. 预留' '↩️  0. 返回主菜单'
+  _tb_bot; printf '\n'
+}
+_tb_read_choice() {
+  printf ' %s🎯%s 请输入数字选择操作：' "$TB_CYAN" "$TB_RESET"
+  IFS= read -r TB_CHOICE || { printf '\n'; return 1; }
+  TB_CHOICE=${TB_CHOICE^^}
+}
+_tb_pause() {
+  if [[ -t 0 && -t 1 ]]; then
+    local answer
+    printf '\n %s↩  操作结束，按回车返回菜单…%s' "$TB_DIM" "$TB_RESET"
+    IFS= read -r answer || return 1
+  fi
+}
+_tb_bye() {
+  printf '\n'
+  _tb_top '╔' '╗'
+  _tb_center '👋  感谢使用 Terry Toolbox' "$TB_BOLD$TB_CYAN"
+  _tb_center ' '
+  _tb_center '期待下次见，留好备用登录方式。' "$TB_DIM"
+  _tb_center ' '
+  _tb_bot
+  printf '\n'
+}
+_tb_bootstrap_has() { command -v "$1" >/dev/null 2>&1; }
+_tb_bootstrap_exec() { "$@"; }
+_tb_bootstrap() {
+  # Interactive startup only. --help, --list and piped runs never install anything.
+  [[ -t 0 && -t 1 ]] || return 0
+  local command answer missing=() manager=''
+  for command in curl wget socat sudo nano openssl tar; do
+    _tb_bootstrap_has "$command" || missing+=("$command")
+  done
+  if (( ${#missing[@]} == 0 )); then
+    if (( TB_WIDTH < 60 )); then
+      printf ' %s✓%s 基础依赖已齐全\n' "$TB_GREEN" "$TB_RESET"
+    else
+      printf ' %s✓%s 基础依赖已齐全 · %s · %s\n' "$TB_GREEN" "$TB_RESET" "$TB_OS" "$TB_ARCH"
+    fi
+    return 0
+  fi
+  case "$TB_OS_ID" in
+    alpine) manager=apk;;
+    debian|ubuntu) manager=apt-get;;
+    centos|rhel|rocky|almalinux|fedora) if _tb_bootstrap_has dnf; then manager=dnf; else manager=yum; fi;;
+  esac
+  printf ' %s⚠%s 系统 %s · %s\n' "$TB_YELLOW" "$TB_RESET" "$TB_OS" "$TB_ARCH"
+  printf ' %s缺少%s：%s\n' "$TB_YELLOW" "$TB_RESET" "${missing[*]}"
+  if [[ -z $manager ]] || ! _tb_bootstrap_has "$manager"; then
+    printf ' 未找到支持的包管理器，跳过安装；各功能会自行检查依赖。\n'
+    return 0
+  fi
+  printf ' 将用 %s 只补缺失项（不升级系统）。按 Y 安装，其他键跳过：' "$manager"
+  IFS= read -r answer || return 0
+  [[ ${answer^^} == Y ]] || { printf ' %s已跳过%s，稍后可从 [3] 安装。\n' "$TB_DIM" "$TB_RESET"; return 0; }
+  (( EUID == 0 )) || { printf ' %s安装依赖需要 root%s；未执行。\n' "$TB_RED" "$TB_RESET"; return 1; }
+  case "$manager" in
+    apt-get) _tb_bootstrap_exec apt-get update && _tb_bootstrap_exec apt-get install -y --no-upgrade -- "${missing[@]}";;
+    apk) _tb_bootstrap_exec apk add --no-cache -- "${missing[@]}";;
+    dnf|yum) _tb_bootstrap_exec "$manager" install -y -- "${missing[@]}";;
+  esac || { printf ' %s装依赖失败%s，可检查软件源后从 [3] 重试。\n' "$TB_RED" "$TB_RESET" >&2; return 1; }
+  missing=()
+  for command in curl wget socat sudo nano openssl tar; do _tb_bootstrap_has "$command" || missing+=("$command"); done
+  (( ${#missing[@]} == 0 )) || { printf ' %s仍缺少%s：%s\n' "$TB_RED" "$TB_RESET" "${missing[*]}" >&2; return 1; }
+  printf ' %s✓%s 依赖检查通过。\n' "$TB_GREEN" "$TB_RESET"
+}
+
+# END bundled module: entry
 
 show_list() {
   printf '%s\n' 'A1 A2 A3 A4 A5' 'B1 B2 B3 B4 B5 B6 B7 B8 B9 B10 B11 B12 B13 B14 B15 B16 B17 B18 B19 B20 B21 B22 B23 B24 B25 B26 B27 B28 B29 B30 B31'
@@ -325,13 +563,14 @@ toolbox_network_detect_os() {
     return 1
 }
 
-# A4 is intentionally disabled: the previous installer could mistake another
-# process for its listener, leave an exposed service on failure, and accept a
-# certificate without checking its notBefore or requested hostname. Removing
-# the installer also prevents direct calls from bypassing the menu refusal.
+# A4 的安装逻辑在 modules/hy2.sh（独立模块，菜单直接调用）。这里转发，让
+# `toolbox_network A4 …` 与菜单等价；模块没加载时仍 fail closed，不假装可用。
 toolbox_network_hy2() {
-    printf 'A4 暂时禁用：监听归属、失败后服务清理及证书有效期/域名尚未安全验证；未修改系统。\n' >&2
-    printf '如曾运行旧版安装，请人工检查 toolbox-hy2.service、UDP 监听及 /etc/toolbox-hy2、/usr/local/bin/toolbox-hy2 和 systemd 单元文件；确认归属后再停止或清理。\n' >&2
+    if declare -F toolbox_hy2 >/dev/null; then
+        toolbox_hy2 "$@"
+        return
+    fi
+    printf 'A4 暂时不可用：modules/hy2.sh 未加载（缺模块）；未修改系统。\n' >&2
     return 1
 }
 
@@ -351,6 +590,14 @@ toolbox_network_xray() { toolbox_network A5 "$@" ; }
 
 net_err() { printf '%s\n' "$*" >&2; }
 net_die() { net_err "$*"; return 1; }
+
+# 常量声明成「已定义就不覆盖」：同一 shell 里重复 source 时，函数会被重新定义
+# （调用方靠这个刷新实现），而 readonly 变量二次赋值会报错并中止加载。
+net_const() { # name value
+    [[ -n ${!1+set} ]] && return 0
+    printf -v "$1" '%s' "$2"
+    readonly "$1"
+}
 
 net_require_root() {
     [[ ${TOOLBOX_NET_UID:-${EUID:-$(id -u)}} -eq 0 ]] \
@@ -561,6 +808,20 @@ net_check_cert() {
         || { net_die "证书不包含主机名 $host（SAN/CN 不匹配）。"; return 1; }
 }
 
+# 证书链能否被本机信任库验证，决定自签证书要不要在客户端链接里带 insecure。
+# 判定只看本机 CA 文件；读不到信任库时按「不信任」处理（宁多带一个 insecure）。
+# TOOLBOX_NET_CAFILE / TOOLBOX_NET_CAPATH 供隔离测试注入。
+net_tls_trusted() {
+    local cert=$1 cafile=${TOOLBOX_NET_CAFILE:-/etc/ssl/certs/ca-certificates.crt}
+    local capath=${TOOLBOX_NET_CAPATH:-/etc/ssl/certs}
+    if [[ -n $cafile && -r $cafile ]]; then
+        openssl verify -CAfile "$cafile" "$cert" >/dev/null 2>&1
+        return
+    fi
+    [[ -n $capath && -d $capath ]] || return 1
+    openssl verify -CApath "$capath" "$cert" >/dev/null 2>&1
+}
+
 # ================================================================ B12 TCP Brutal
 #
 # 固定上游 HyNetworks/tcp-brutal v2.0.1 的官方 DKMS 源码包（SHA-256 白名单），
@@ -570,12 +831,12 @@ net_check_cert() {
 # v2 起 brutal 仍是内核拥塞控制算法（tcp_congestion_ops.name = "brutal"），
 # 全局默认值改成本算法会影响本机所有新 TCP 连接，因此安装必须两次确认。
 
-readonly BRUTAL_VERSION='2.0.1'
-readonly BRUTAL_DKMS_NAME='tcp-brutal'
-readonly BRUTAL_MODULE='brutal'
-readonly BRUTAL_SHA256='64a2778f308f7684cb5a137d578bc071e373960a3b9b79f9de015b84b29a7299'
-readonly BRUTAL_MIN_MAJOR=5
-readonly BRUTAL_MIN_MINOR=10
+net_const BRUTAL_VERSION '2.0.1'
+net_const BRUTAL_DKMS_NAME 'tcp-brutal'
+net_const BRUTAL_MODULE 'brutal'
+net_const BRUTAL_SHA256 '64a2778f308f7684cb5a137d578bc071e373960a3b9b79f9de015b84b29a7299'
+net_const BRUTAL_MIN_MAJOR 5
+net_const BRUTAL_MIN_MINOR 10
 
 net_brutal_etc()    { printf '%s/terry-toolbox-brutal\n' "${TOOLBOX_NET_ETC:-/etc}"; }
 net_brutal_modload() { printf '%s/%s.conf\n' "${TOOLBOX_NET_MODLOAD_DIR:-/etc/modules-load.d}" "$BRUTAL_MODULE"; }
@@ -892,10 +1153,10 @@ net_brutal_status() {
 # 客户端链接。本模块没有 TUIC 客户端可当探针，因此「服务起来、UDP 端口被本
 # 服务持有」是全部自动验证，认证是否通过需要客户端实测（报告里写明）。
 
-readonly TUIC_VERSION='1.0.0'
-readonly TUIC_BIN_NAME='terry-toolbox-tuic'
-readonly TUIC_UNIT_NAME='terry-toolbox-tuic.service'
-readonly TUIC_DEFAULT_PORT=443
+net_const TUIC_VERSION '1.0.0'
+net_const TUIC_BIN_NAME 'terry-toolbox-tuic'
+net_const TUIC_UNIT_NAME 'terry-toolbox-tuic.service'
+net_const TUIC_DEFAULT_PORT 443
 
 net_tuic_etc()  { printf '%s/terry-toolbox-tuic\n' "${TOOLBOX_NET_ETC:-/etc}"; }
 net_tuic_bin()  { printf '%s/%s\n' "${TOOLBOX_NET_BIN_DIR:-/usr/local/bin}" "$TUIC_BIN_NAME"; }
@@ -1187,7 +1448,7 @@ net_tuic_status() {
 #
 # 单元名带协议和本地端口，因此可以并存多个转发、逐个卸载。
 
-readonly RELAY_PREFIX='terry-toolbox-relay'
+net_const RELAY_PREFIX 'terry-toolbox-relay'
 
 net_relay_unit_dir() { printf '%s\n' "${TOOLBOX_NET_UNIT_DIR:-/etc/systemd/system}"; }
 net_relay_unit_name() { printf '%s-%s-%s.service\n' "$RELAY_PREFIX" "$1" "$2"; }
@@ -1435,12 +1696,12 @@ net_relay_status() {
 # 写盘后失败一律回滚。端口是否被自己持有只认本机事实（pidfile、/proc/<pid>/exe、
 # 内核 comm），不靠「看起来像我们的服务」。
 
-readonly NET_ALPINE_HY2_VERSION='2.13.0'
-readonly NET_ALPINE_XRAY_VERSION='26.10.29'
-readonly NET_ALPINE_HY2_NAME='terry-toolbox-hy2'
-readonly NET_ALPINE_XRAY_NAME='terry-toolbox-xray'
-readonly NET_ALPINE_DEFAULT_PORT=443
-readonly NET_ALPINE_HY2_MASQUERADE='Terry Toolbox Hysteria 2'
+net_const NET_ALPINE_HY2_VERSION '2.13.0'
+net_const NET_ALPINE_XRAY_VERSION '26.10.29'
+net_const NET_ALPINE_HY2_NAME 'terry-toolbox-hy2'
+net_const NET_ALPINE_XRAY_NAME 'terry-toolbox-xray'
+net_const NET_ALPINE_DEFAULT_PORT 443
+net_const NET_ALPINE_HY2_MASQUERADE 'Terry Toolbox Hysteria 2'
 
 net_initdir() { printf '%s\n' "${TOOLBOX_NET_INITD:-/etc/init.d}"; }
 net_rundir()  { printf '%s\n' "${TOOLBOX_NET_RUN:-/run}"; }
@@ -1486,6 +1747,22 @@ net_alpine_xray_sha256() {
         arm64) printf '%s\n' "${TOOLBOX_A2_SHA256_ARM64:-afe01f19045b05237420328028ee1ee2e1edd2100eb41a8cbbf50e683b0a6e58}" ;;
         *) return 1 ;;
     esac
+}
+
+# Xray 官方产物的架构后缀与 uname 名不同：arm64 是 arm64-v8a。
+net_xray_asset_arch() {
+    case $1 in
+        amd64) printf '64\n' ;;
+        arm64) printf 'arm64-v8a\n' ;;
+        *) return 1 ;;
+    esac
+}
+
+net_alpine_xray_url() { # arch
+    local asset
+    asset=$(net_xray_asset_arch "$1") || return 1
+    printf 'https://github.com/XTLS/Xray-core/releases/download/v%s/Xray-linux-%s.zip\n' \
+        "$NET_ALPINE_XRAY_VERSION" "$asset"
 }
 
 net_alpine_port_owned_by() { # proto port bin pidfile
@@ -1966,7 +2243,7 @@ _net_a2_install() {
     tmp=$(mktemp -d) || { net_die '无法创建临时目录'; return 1; }
     net_err '--- 开始写入 ---'
     net_alpine_fetch \
-        "https://github.com/XTLS/Xray-core/releases/download/v${NET_ALPINE_XRAY_VERSION}/Xray-linux-${arch/amd64/64}.zip" \
+        "$(net_alpine_xray_url "$arch")" \
         "$tmp/xray.zip" "$(net_alpine_xray_sha256 "$arch")" "${TOOLBOX_A2_ZIP_SRC:-}" \
         || { rm -rf -- "$tmp"; net_a2_rollback; return 1; }
 
@@ -2166,11 +2443,11 @@ net_alpine_status() { # name init bin etc proto
 #
 # 没有证书：REALITY 借用回落目标的证书，本模块不碰证书文件。
 
-readonly NET_A5_VERSION='26.10.29'
-readonly NET_A5_BIN_NAME='terry-toolbox-xray'
-readonly NET_A5_UNIT_NAME='terry-toolbox-xray.service'
-readonly NET_A5_DEFAULT_PORT=443
-readonly NET_A5_TAG='vless-in'
+net_const NET_A5_VERSION '26.10.29'
+net_const NET_A5_BIN_NAME 'terry-toolbox-xray'
+net_const NET_A5_UNIT_NAME 'terry-toolbox-xray.service'
+net_const NET_A5_DEFAULT_PORT 443
+net_const NET_A5_TAG 'vless-in'
 
 net_a5_etc()    { printf '%s/terry-toolbox-xray\n' "${TOOLBOX_NET_ETC:-/etc}"; }
 net_a5_bin()    { printf '%s/%s\n' "${TOOLBOX_NET_BIN_DIR:-/usr/local/bin}" "$NET_A5_BIN_NAME"; }
@@ -2190,8 +2467,10 @@ net_a5_sha256() {
 }
 
 net_a5_zip_url() {
+    local asset
+    asset=$(net_xray_asset_arch "$1") || return 1
     printf 'https://github.com/XTLS/Xray-core/releases/download/v%s/Xray-linux-%s.zip\n' \
-        "$NET_A5_VERSION" "${1/amd64/64}"
+        "$NET_A5_VERSION" "$asset"
 }
 
 # ---------------------------------------------------------------- 回落目标校验
@@ -3193,7 +3472,7 @@ toolbox_network() {
             esac
             return $?
             ;;
-        A4) toolbox_network_hy2; return $? ;;
+        A4) toolbox_network_hy2 "$@"; return $? ;;
         A5)
             action=${1:-}
             if [[ -z $action ]]; then
@@ -4652,12 +4931,18 @@ toolbox_diagnostics() {
 # 固定上游：HyNetworks/hysteria app/v2.13.0 官方发布二进制 + SHA-256 白名单。
 # 不使用官方一键脚本，也不从「latest」解析版本号。
 
-readonly HY2_VERSION='2.13.0'
-readonly HY2_BIN_NAME='terry-toolbox-hy2'
-readonly HY2_UNIT_NAME='terry-toolbox-hy2.service'
-readonly HY2_DEFAULT_PORT=443
-readonly HY2_MIN_VALID_DAYS=7
-readonly HY2_MASQUERADE_TEXT='Terry Toolbox Hysteria 2'
+hy2_const() { # name value
+    [[ -n ${!1+set} ]] && return 0
+    printf -v "$1" '%s' "$2"
+    readonly "$1"
+}
+
+hy2_const HY2_VERSION '2.13.0'
+hy2_const HY2_BIN_NAME 'terry-toolbox-hy2'
+hy2_const HY2_UNIT_NAME 'terry-toolbox-hy2.service'
+hy2_const HY2_DEFAULT_PORT 443
+hy2_const HY2_MIN_VALID_DAYS 7
+hy2_const HY2_MASQUERADE_TEXT 'Terry Toolbox Hysteria 2'
 
 # 测试可覆盖的路径与外部事实；默认值即真实主机路径。
 hy2_etc()      { printf '%s\n' "${TOOLBOX_HY2_ETC:-/etc/terry-toolbox-hy2}"; }
@@ -4989,9 +5274,19 @@ _hy2_install() {
     arch=$(hy2_arch) || return 1
     etc=$(hy2_etc); bin=$(hy2_bin); unit=$(hy2_unit)
 
-    [[ -n $cert ]] || { hy2_die '缺少证书路径。'; return 1; }
-    [[ -n $key ]] || { hy2_die '缺少私钥路径。'; return 1; }
-    [[ -n $host ]] || { hy2_die '缺少主机名（证书对应的域名）。'; return 1; }
+    # 菜单只传动作不传参数：缺的项逐一问，问到一半就 EOF 也算取消。
+    if [[ -z $cert ]]; then
+        printf '证书文件路径（PEM，含完整链）：'
+        IFS= read -r cert || { hy2_err '没有收到证书路径，已取消。'; return 1; }
+    fi
+    if [[ -z $key ]]; then
+        printf '私钥文件路径：'
+        IFS= read -r key || { hy2_err '没有收到私钥路径，已取消。'; return 1; }
+    fi
+    if [[ -z $host ]]; then
+        printf '证书对应的域名：'
+        IFS= read -r host || { hy2_err '没有收到域名，已取消。'; return 1; }
+    fi
     host=${host,,}
     hy2_valid_hostname "$host" || { hy2_die "主机名格式不正确：$host"; return 1; }
     if [[ -n $port ]]; then
@@ -5018,6 +5313,13 @@ _hy2_install() {
             return 1
             ;;
     esac
+
+    # 没有单元文件却已有同名二进制/配置目录：可能是别人的安装，不静默覆盖
+    # （否则回滚会把别人的文件一起删掉）。
+    if [[ -e $bin || -e $etc ]]; then
+        hy2_die "已存在 $bin 或 $etc，却没有 $unit；未覆盖，请人工确认归属。"
+        return 1
+    fi
 
     if hy2_udp_port_busy "$port"; then
         hy2_err "UDP 端口 $port 已被占用，监听它的进程："
@@ -5948,9 +6250,12 @@ run_action() {
 }
 a4_menu() {
   local c
-  printf 'A4 Hysteria 2\n 1 安装\n 2 卸载\n 3 状态\n请输入编号：'
+  printf '\n'; _tb_heading 'A4 Hysteria 2'
+  _tb_line '[1] 安装'; _tb_line '[2] 卸载'; _tb_line '[3] 状态'; _tb_line '[0] 返回'; _tb_finish
+  printf '\n请输入编号：'
   IFS= read -r c || return 1
   case "$c" in
+    0) return 0 ;;
     1) toolbox_hy2 install ;;
     2) toolbox_hy2 uninstall ;;
     3) toolbox_hy2 status ;;
@@ -5958,24 +6263,46 @@ a4_menu() {
   esac
 }
 menu() {
-  local choice
-  printf '\nTerry 服务器工具箱 %s\n启动不安装软件、不修改系统；功能执行前请检查提示。\n' "$TOOLBOX_VERSION"
+  local choice screen=main key
+  _tb_ui_init
+  _tb_banner
+  _tb_bootstrap || true
   while :; do
-    printf '\n网络服务\n A1 Alpine HY2  A2 Alpine Xray  A3 TUIC  A4 HY2  A5 Xray\n系统\n M1 BBR  M2 基础依赖  M3 重装系统  M4 重启\n常用工具\n B1 Docker  B2 NodeQuality  B3 Alist  B4 哪吒  B5 X-UI\n B6 swap  B7 流量限制  B8 改密码  B9 IT-Tools  B10 WebSSH\n B11 1Panel  B12 TCP Brutal  B13 MyIP  B14 回程测试\n B15 TG 流量通知  B16 网络优化  B17 Sun-panel  B18 预留\n B19 Alpine 工具  B20 Memos  B21 Nginx Proxy Manager  B22 Halo\n B23 DNS  B24 NginxWebUI  B25 Nexterm  B26 LibreTV\n B27 Stirling PDF  B28 网页验证  B29 DDNS-GO\n B30 Vaultwarden  B31 Relay\n 0 退出\n'
-    printf '\n输入 DIAG 可查看只读体检。\n请输入编号：'
-    if ! IFS= read -r choice; then printf '\n'; return 0; fi
-    choice=${choice^^}
+    TB_SKIP_BANNER=1
+    case "$screen" in main) _tb_main_screen;; network) _tb_network_screen;; apps) _tb_apps_screen;; esac
+    _tb_read_choice || return 0
+    choice=$TB_CHOICE
     case "$choice" in
-      0|Q) return 0 ;;
-      M1) choice=MAIN_BBR ;;
-      M2) choice=MAIN_DEPS ;;
-      M3) choice=MAIN_REINSTALL ;;
-      M4) choice=MAIN_REBOOT ;;
+      0|Q)
+        if [[ $screen != main ]]; then screen=main; continue; fi
+        _tb_bye; return 0 ;;
     esac
-    if [[ "$choice" != B18 ]]; then
+    key=$choice
+    if [[ $screen == main ]]; then
+      case "$choice" in
+        1) screen=network; continue;;
+        5) screen=apps; continue;;
+        2|M1) key=MAIN_BBR;;
+        3|M2) key=MAIN_DEPS;;
+        4|DD|M3) key=MAIN_REINSTALL;;
+        99|M4) key=MAIN_REBOOT;;
+      esac
+    elif [[ $screen == network && $choice =~ ^[1-5]$ ]]; then
+      key=A$choice
+    elif [[ $screen == apps && $choice =~ ^([1-9]|[12][0-9]|3[01])$ ]]; then
+      key=B$choice
+    fi
+    case "$key" in
+      DIAG|MAIN_BBR|MAIN_DEPS|MAIN_REINSTALL|MAIN_REBOOT|A[1-5]|B[1-9]|B[12][0-9]|B3[01]) ;;
+      *) printf '\n %s无效的选择，请按菜单编号输入。%s\n' "$TB_YELLOW" "$TB_RESET"; continue;;
+    esac
+    if [[ "$key" != B18 ]]; then
       if ! load_modules; then continue; fi
     fi
-    run_action "$choice" || printf '操作未完成或已取消。\n'
+    printf '\n'
+    run_action "$key" || printf '\n %s操作未完成或已取消。%s\n' "$TB_YELLOW" "$TB_RESET"
+    _tb_pause || return 0
+    TB_SKIP_BANNER=0
   done
 }
 case "${1-}" in

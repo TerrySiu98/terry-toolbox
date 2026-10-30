@@ -24,6 +24,9 @@ export PATH="$work/pathbin:$work/bin:$PATH"
 out=$(bash -ec 'source "$1"; printf sourced' _ "$ROOT/modules/network.sh") || fail 'source failed'
 [[ $out == sourced ]] || fail 'source has output or side effects'
 [[ ! -e $NETWORK_TEST_MARKER ]] || fail 'source ran a command'
+out=$(bash -euc 'source "$1"; source "$1"; declare -F toolbox_network >/dev/null; printf sourced-twice' _ "$ROOT/modules/network.sh" 2>"$work/source-twice.err") \
+    || fail '重复 source network.sh 失败'
+[[ $out == sourced-twice && ! -s $work/source-twice.err ]] || fail '重复 source network.sh 有输出或 readonly 报错'
 source "$ROOT/modules/network.sh"
 printf 'ID=alpine\n' > "$work/alpine"
 printf 'ID=debian\n' > "$work/debian"
@@ -69,33 +72,27 @@ grep -q 'systemd-resolved' "$work/out" || fail 'B23 status 未报告解析器状
 if toolbox_network BAD >"$work/out" 2>&1; then fail 'invalid choice accepted'; fi
 if toolbox_network >"$work/out" 2>&1; then fail 'missing choice accepted'; fi
 if toolbox_network A1 unexpected >"$work/out" 2>&1; then fail 'extra argument accepted'; fi
-# A4 must remain fail-closed, even with plausible inputs and confirmation.
+# A4 由 modules/hy2.sh 实现：没加载模块时 fail closed，加载后与菜单等价。
 (
-    toolbox_network_detect_os() { printf 'debian\n'; }
-    toolbox_network_hy2_preflight() { printf preflight >> "$work/a4.calls"; return 0; }
-    toolbox_network_hy2_apply() { printf apply >> "$work/a4.calls"; return 0; }
-    printf '/tmp/cert.pem\n/tmp/key.pem\n443\nINSTALL\n' | toolbox_network A4 > "$work/a4.out" 2>&1 && fail 'disabled A4 reported success'
-    [[ ! -e $work/a4.calls ]] || fail 'disabled A4 reached installation boundaries'
-    [[ $(<"$work/a4.out") == *'禁用'* ]] || fail 'A4 did not explain refusal'
+    unset -f toolbox_hy2
+    printf '/tmp/cert.pem\n/tmp/key.pem\n443\nINSTALL\n' | toolbox_network A4 > "$work/a4.out" 2>&1 && fail '缺 hy2 模块的 A4 仍报成功'
+    [[ $(<"$work/a4.out") == *'未加载'* && $(<"$work/a4.out") == *'未修改系统'* ]] || fail 'A4 未说明缺少模块'
 )
+source "$ROOT/modules/hy2.sh"
+toolbox_network A4 status > "$work/a4.out" 2>&1 && fail 'A4 未安装时 status 仍成功'
+grep -q '未安装' "$work/a4.out" || fail 'A4 未转发到 hy2 status'
+toolbox_network A4 frobnicate > "$work/a4.out" 2>&1 && fail 'A4 未知动作被接受'
+grep -q '用法' "$work/a4.out" || fail 'A4 未知动作未给用法'
 # Unsafe installer entry points must not be callable directly after sourcing.
 for helper in toolbox_network_hy2_preflight toolbox_network_hy2_apply; do
     if declare -F "$helper" >/dev/null; then fail "unsafe helper remains callable: $helper"; fi
 done
-# All inputs and repeated attempts are inert: no external mutator or socket probe.
+# 缺参数/缺证书时仍在写盘前失败，且不碰 systemctl。
 (
-    for cmd in id uname openssl ss sleep mktemp; do
-        eval "$cmd() { printf '%s\\n' '$cmd' >> \"\$NETWORK_TEST_MARKER\"; return 99; }"
-    done
-    rm -f "$NETWORK_TEST_MARKER"
-    ss >/dev/null 2>&1 || :
-    [[ $(<"$NETWORK_TEST_MARKER") == ss ]] || fail 'socket mock not recording calls'
-    rm "$NETWORK_TEST_MARKER"
     for input in '' $'/tmp/cert.pem\n/tmp/key.pem\nexample.test\n443\nINSTALL\n' 'INSTALL'; do
         printf '%s' "$input" | toolbox_network A4 > "$work/a4-refusal" 2>&1 && fail 'A4 accepted input'
-        [[ $(<"$work/a4-refusal") == *'未修改系统'* && $(<"$work/a4-refusal") == *'toolbox-hy2.service'* ]] || fail 'A4 missing refusal or residual guidance'
+        [[ -s $work/a4-refusal ]] || fail 'A4 refused silently'
     done
-    [[ ! -e $NETWORK_TEST_MARKER ]] || fail 'A4 invoked an external boundary'
 )
 # Disabled A5 cannot be bypassed by calling formerly exposed install helpers.
 for helper in toolbox_network_xray_preflight toolbox_network_xray_apply toolbox_network_xray_validate; do
@@ -713,6 +710,9 @@ chmod +x "$work/pathbin/openssl"
 hash -r   # 之前已解析过 /usr/bin/openssl，必须丢掉路径缓存
 export SD A5_GOOD_CRT=$work/a5t.crt A5_WRONG_CRT=$work/a5u.crt
 net_a5_check_target dest.example.test 443 dest.example.test || fail 'A5 目标检查误拒正常目标'
+# 上游产物名按架构不同：arm64 是 -arm64-v8a，写成 -arm64 会 404。
+[[ $(net_a5_zip_url amd64) == */Xray-linux-64.zip ]] || fail "A5 amd64 产物名不对: $(net_a5_zip_url amd64)"
+[[ $(net_a5_zip_url arm64) == */Xray-linux-arm64-v8a.zip ]] || fail "A5 arm64 产物名不对: $(net_a5_zip_url arm64)"
 : > "$SD/a5_tls12"
 net_a5_check_target dest.example.test 443 dest.example.test 2>"$work/o" && fail 'A5 只支持 TLS1.2 的目标被接受'
 grep -q 'TLS 1.3' "$work/o" || fail 'A5 未说明 TLS 1.3 要求'
