@@ -4,6 +4,30 @@ set -u
 TOOLBOX_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 TOOLBOX_VERSION='0.1.0-dev'
 
+# 非 root 时自动提权，便于一条命令 `bash <(curl -fsSL sh.uw.cx)` 直接可用。
+if (( EUID != 0 )) && [[ -z ${TOOLBOX_ELEVATED:-} ]]; then
+  command -v sudo >/dev/null 2>&1 || {
+    printf '需要 root 权限：请用 root 运行，或先安装 sudo。\n' >&2
+    exit 1
+  }
+  export TOOLBOX_ELEVATED=1
+  case ${BASH_SOURCE[0]:-} in
+    /dev/fd/*|/dev/stdin|/proc/self/fd/*|bash|'')
+      # 流式执行时脚本本身在已关闭/被读空的 fd 上，重新取一份完整副本再提权。
+      command -v curl >/dev/null 2>&1 || { printf '需要 curl 才能自动提权。\n' >&2; exit 1; }
+      _tb_tmp=$(mktemp "${TMPDIR:-/tmp}/toolbox.XXXXXXXX") || exit 1
+      if ! curl -fsSL --proto '=https,http' sh.uw.cx >"$_tb_tmp"; then
+        printf '下载脚本失败（sh.uw.cx）。\n' >&2
+        exit 1
+      fi
+      # 管道执行时 stdin 不是终端，菜单会读不到；能拿到终端就切回去。
+      if [[ ! -t 0 && -t 2 || -r /dev/tty ]]; then exec sudo -E bash "$_tb_tmp" "$@" </dev/tty; fi
+      exec sudo -E bash "$_tb_tmp" "$@"
+      ;;
+    *) exec sudo -E bash "${BASH_SOURCE[0]}" "$@" ;;
+  esac
+fi
+
 show_list() {
   printf '%s\n' 'A1 A2 A3 A4 A5' 'B1 B2 B3 B4 B5 B6 B7 B8 B9 B10 B11 B12 B13 B14 B15 B16 B17 B18 B19 B20 B21 B22 B23 B24 B25 B26 B27 B28 B29 B30 B31'
 }

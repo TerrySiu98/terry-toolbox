@@ -32,24 +32,30 @@ Terry Toolbox 是一个面向 Linux 服务器的中文菜单工具箱。登录�
 ### 一键入口
 
 ```bash
-curl -fsSL http://sh.uw.cx | sudo bash
+bash <(curl -fsSL sh.uw.cx)
+```
+
+非 root 用户会自动 `sudo` 提权；用 root 跑也行。没有 curl 时：
+
+```bash
+bash <(wget -qO- sh.uw.cx)
 ```
 
 想先看代码再跑：
 
 ```bash
-curl -fsSL http://sh.uw.cx -o toolbox.sh
+curl -fsSL sh.uw.cx -o toolbox.sh
 less toolbox.sh
-sudo bash toolbox.sh
+bash toolbox.sh
 ```
 
 也可以先核对哈希：
 
 ```bash
-curl -fsSL http://sh.uw.cx | sha256sum
+curl -fsSL sh.uw.cx | sha256sum
 ```
 
-与仓库 `docs/index.html` 的哈希对比，一致再执行。**当前发布版本的 SHA-256**：`46b81ffdea546e90348ae398c1d35e7d732c6c50ce3b82ec12e69bef8fcfb0e4`（每次发布后更新）。
+与仓库 `docs/index.html` 的哈希对比，一致再执行。**当前发布版本的 SHA-256**：`4eb5e324e469c44b99af3b5ee51e6bf2eca3c66e936566311e32e54da8de5dbc`（每次发布后更新）。
 
 服务端下载的是单文件版本，全部模块已经打包进去，不需要准备其他文件。Debian / Ubuntu 为当前主要支持环境，Alpine 仅部分功能。
 
@@ -139,4 +145,4 @@ curl -fsSL http://sh.uw.cx | sha256sum
 源码仍在本地开发，尚未公开。当前测试主要使用隔离模拟，**模拟测试通过不代表真实安装、重启恢复或应用访问已经通过**。源码发布后，这里会补上开发环境、测试命令与贡献说明。
 
 
-> HTTPS 证书由 GitHub Pages 自动申请，尚未就绪，目前请先用 http://sh.uw.cx。
+> 域名验证已完成，GitHub Pages 正在签发 HTTPS 证书；入口写 `sh.uw.cx` 不带协议，http 与 https 都能用，开强制 HTTPS 后自动转向 https。
