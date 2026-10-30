@@ -365,7 +365,7 @@ if toolbox_hy2 uninstall <<< 'YES' >/dev/null 2>&1; then fail '未安装时卸�
 
 # 21. 端口可省略，默认为 443
 export MOCK_PORT=443
-toolbox_hy2 install "$work/good.crt" "$work/good.key" "$GOOD_H" <<< 'YES' >/dev/null 2>&1 || fail '默认端口安装失败'
+toolbox_hy2 install "$work/good.crt" "$work/good.key" "$GOOD_H" <<< "YES" >"$work/dflt.out" 2>&1 || { cat "$work/dflt.out" >&2; fail "默认端口安装失败"; }
 grep -q '^listen: :443$' "$work/etc/terry-toolbox-hy2/config.yaml" || fail '默认端口不是 443'
 reset
 

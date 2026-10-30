@@ -76,7 +76,8 @@ hy2_official_sha256() {
 }
 
 hy2_valid_port() {
-    [[ $1 =~ ^[1-9][0-9]{0,4}$ ]] && (( $1 <= 65535 ))
+    [[ $1 =~ ^[1-9][0-9]{0,4}$ ]] || return 1
+    (( $1 <= 65535 ))
 }
 
 # 证书是用户输入，进 YAML 前先确认是可用的主机名。
@@ -93,7 +94,7 @@ hy2_udp_port_busy() {
         [[ $line =~ ^(UNCONN|ESTAB|State) ]] || continue
         read -r -a _hy2_f <<< "$line"
         local_addr=${_hy2_f[3]:-}
-        [[ ${local_addr##*:} == "$1" ]] && return 0
+        if [[ ${local_addr##*:} == "$1" ]]; then return 0; fi
     done < <(ss -lunH 2>/dev/null)
     return 1
 }
@@ -110,24 +111,25 @@ hy2_unit_state() {
     fi
 }
 
-# 端口确实由指定二进制持有：优先比对 /proc/<pid>/exe；读不到时退回进程名
-# （内核 comm 会截断到 15 字符，因此按截断前缀比）。
+# 端口是否由「本单元」持有。三层证据，任一成立即可：
+#   1) /proc/<pid>/exe 就是我们的二进制（脚本安装时 exe 是解释器，会落到下一层）；
+#   2) 该 pid 等于本单元 systemd 的 MainPID（systemd 亲自背书）；
+#   3) 进程名匹配（内核 comm 截断到 15 字符，按前缀比）。
 hy2_port_owned_by() {
-    local port=$1 bin=$2 line pid exe want
+    local port=$1 bin=$2 unit=${3:-$HY2_UNIT_NAME} line pid exe want main=''
     want=$(readlink -f -- "$bin" 2>/dev/null) || want=$bin
+    main=$(systemctl show -p MainPID --value "$unit" 2>/dev/null) || main=''
+    [[ $main =~ ^[0-9]+$ ]] || main=''
     while IFS= read -r line; do
         read -r -a _hy2_f <<< "$line"
         [[ ${_hy2_f[3]:-} == *":$port" ]] || continue
-        verified=0
         while IFS= read -r pid; do
             [[ -n $pid ]] || continue
+            if [[ -n $main && $pid == "$main" ]]; then return 0; fi
             exe=$(readlink -f "/proc/$pid/exe" 2>/dev/null) || exe=''
-            [[ -n $exe ]] || continue
-            verified=1
-            [[ $exe == "$want" ]] && return 0
+            if [[ -n $exe && $exe == "$want" ]]; then return 0; fi
         done < <(grep -o 'pid=[0-9]*' <<< "$line" | cut -d= -f2)
-        # /proc 证据不足时不致命：内核 comm 被截断，用截断前缀兜底
-        [[ $line == *"${HY2_BIN_NAME:0:15}"* ]] && return 0
+        if [[ $line == *"${HY2_BIN_NAME:0:15}"* ]]; then return 0; fi
     done < <(ss -lunpH 2>/dev/null)
     return 1
 }
@@ -224,7 +226,7 @@ hy2_rollback() {
         systemctl reset-failed "$HY2_UNIT_NAME" >/dev/null 2>&1 || true
     fi
     rm -f -- "$bin"
-    [[ -d $etc ]] && rm -rf -- "$etc"
+    if [[ -d $etc ]]; then rm -rf -- "$etc"; fi
     rm -rf -- "$(hy2_client_dir)"
     # 只认我们自己的单元名，不碰同名以外的东西。
     if systemctl is-active --quiet "$HY2_UNIT_NAME" 2>/dev/null; then
@@ -235,11 +237,23 @@ hy2_rollback() {
 
 # ---------------------------------------------------------------- 启动与验证
 
+# 写盘后、交给 systemd 之前的离线自检：配置能否被解析、证书能否加载、端口能否绑定。
+# 起后台进程看日志，成功就杀掉并等它退出，避免和随后的 systemd 启动抢端口。
 hy2_smoke() {
-    local bin=$1 conf=$2 port=$3 out rc=0
+    local bin=$1 conf=$2 port=$3 out pid i
     out=$(mktemp) || return 1
-    timeout 12 "$bin" server -c "$conf" --disable-update-check >"$out" 2>&1 || rc=$?
-    if grep -q 'server up and running' "$out"; then
+    "$bin" server -c "$conf" --disable-update-check >"$out" 2>&1 &
+    pid=$!
+    for ((i = 0; i < 60; i++)); do
+        if grep -q 'server up and running' "$out" 2>/dev/null; then break; fi
+        if grep -q 'FATAL' "$out" 2>/dev/null; then break; fi
+        kill -0 "$pid" 2>/dev/null || break
+        command sleep 0.2
+    done
+    kill "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null || true
+    # 进程可能比日志先结束，最终以日志内容为准
+    if grep -q 'server up and running' "$out" 2>/dev/null; then
         rm -f -- "$out"
         return 0
     fi
@@ -252,35 +266,51 @@ hy2_smoke() {
 # 用本模块自己的二进制当客户端，经 SOCKS5 走一遍 TLS + 认证。
 # 成功判据是客户端日志出现 connected；密码错误/SNI 错误必须分别失败，否则视为
 # 「认证没被证明」而不是默认通过。
+# quiet=1 时只在失败时输出（用于预期失败的负向探测）。
 hy2_probe() {
-    local bin=$1 host=$2 port=$3 pass=$4 insecure=$5 label=$6
-    local dir sock log rc=0 out out_dc
+    local bin=$1 host=$2 port=$3 pass=$4 insecure=$5 label=$6 quiet=${7:-0}
+    local dir sock out out_dc i
     dir=$(hy2_client_dir); mkdir -p "$dir" || return 1
     sock=$(( 39000 + RANDOM % 2000 ))
-    while hy2_udp_port_busy "$sock"; do (( sock++ )); done
+    while hy2_udp_port_busy "$sock" || ss -ltnH 2>/dev/null | grep -q ":$sock "; do (( sock++ )); done
     out="$dir/$label.log"
 
     {
         printf 'server: 127.0.0.1:%s\n' "$port"
         printf 'auth: %s\n' "$pass"
         printf 'tls:\n  sni: %s\n' "$host"
-        [[ $insecure == 1 ]] && printf '  insecure: true\n'
+        if [[ $insecure == 1 ]]; then printf '  insecure: true\n'; fi
         printf 'socks5:\n  listen: 127.0.0.1:%s\n' "$sock"
     } > "$dir/$label.yaml" || return 1
 
-    timeout 20 "$bin" client -c "$dir/$label.yaml" --disable-update-check >"$out" 2>&1 || rc=$?
-    local result=1
-    if grep -q 'connected to server' "$out"; then
-        result=0
+    # 客户端要一直活着才能做数据面测试，所以放后台，靠日志判断结果。
+    "$bin" client -c "$dir/$label.yaml" --disable-update-check >"$out" 2>&1 &
+    local cpid=$! result=1
+    for ((i = 0; i < 75; i++)); do
+        if grep -q 'connected to server' "$out" 2>/dev/null; then result=0; break; fi
+        if grep -q 'FATAL' "$out" 2>/dev/null; then break; fi
+        kill -0 "$cpid" 2>/dev/null || break
+        command sleep 0.2
+    done
+    # 进程可能比日志先结束，最终以日志内容为准
+    if (( result == 1 )) && grep -q 'connected to server' "$out" 2>/dev/null; then result=0; fi
+
+    if (( result == 0 )) && (( quiet == 0 )) && command -v curl >/dev/null 2>&1; then
         # 顺带走一次真实数据面；目标不可达时不推翻已证明的认证结果。
-        if command -v curl >/dev/null 2>&1; then
+        out_dc=''
+        for ((i = 0; i < 3; i++)); do
             out_dc=$(timeout 25 curl -fsS --max-time 20 --socks5-hostname "127.0.0.1:$sock" \
-                -o /dev/null -w '%{http_code}' https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null) || out_dc=''
-            [[ -n $out_dc ]] || hy2_err "提示：$label 隧道已通，但数据面出站未成功（可能主机无外网出口）。"
-        fi
-    else
+                -o /dev/null -w '%{http_code}' https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null) && break
+            out_dc=''
+            command sleep 1
+        done
+        [[ -n $out_dc ]] || hy2_err "提示：$label 隧道已通，但数据面出站未成功（可能主机无外网出口）。"
+    elif (( result == 1 )) && (( quiet == 0 )); then
         sed -n '1,8p' "$out" >&2
     fi
+
+    kill "$cpid" 2>/dev/null
+    wait "$cpid" 2>/dev/null || true
     return $result
 }
 
@@ -288,7 +318,7 @@ hy2_probe() {
 hy2_wait_owned() {
     local port=$1 bin=$2 i
     for ((i = 0; i < 20; i++)); do
-        hy2_port_owned_by "$port" "$bin" && return 0
+        if hy2_port_owned_by "$port" "$bin"; then return 0; fi
         sleep 0.5
     done
     return 1
@@ -297,7 +327,7 @@ hy2_wait_owned() {
 hy2_wait_active() {
     local i
     for ((i = 0; i < 20; i++)); do
-        systemctl is-active --quiet "$HY2_UNIT_NAME" 2>/dev/null && return 0
+        if systemctl is-active --quiet "$HY2_UNIT_NAME" 2>/dev/null; then return 0; fi
         sleep 0.5
     done
     return 1
@@ -458,17 +488,19 @@ EOF
 
     # 证书链不被本机信任时（自签/缺中间证书）用 insecure 探测，并明确标注。
     hy2_tls_trusted "$etc/cert.pem" || trusted=0
-    local insecure=0; [[ $trusted == 0 ]] && insecure=1
+    local insecure=0
+    if [[ $trusted == 0 ]]; then insecure=1; fi
 
     if ! hy2_probe "$bin" "$host" "$port" "$pass" "$insecure" good; then
         hy2_err '认证探测失败（正确密码未连通）。'
         rm -rf -- "$tmp"; hy2_rollback; return 1
     fi
     # 负向探测：错误密码必须被拒，否则等于没验证认证。
-    if hy2_probe "$bin" "$host" "$port" "wrong-$pass" "$insecure" bad; then
+    if hy2_probe "$bin" "$host" "$port" "wrong-$pass" "$insecure" bad 1; then
         hy2_err '错误密码也被接受，认证未生效。'
         rm -rf -- "$tmp"; hy2_rollback; return 1
     fi
+    printf '  负向探测：错误密码被拒绝 ✓\n'
 
     printf '%s|%s|%s|%s\n' "$host" "$port" "$insecure" "$HY2_VERSION" > "$etc/meta"
     chmod 0600 "$etc/meta"
@@ -479,7 +511,7 @@ EOF
 
 hy2_report() {
     local host=$1 port=$2 pass=$3 insecure=$4 qs=''
-    [[ $insecure == 1 ]] && qs='&insecure=1'
+    if [[ $insecure == 1 ]]; then qs='&insecure=1'; fi
     printf '\n安装完成，服务 %s 已设为开机自启。\n' "$HY2_UNIT_NAME"
     printf '客户端连接信息（密码只显示这一次，也已写入 %s/config.yaml）：\n' "$(hy2_etc)"
     printf '  hysteria2://%s@%s:%s/?sni=%s%s\n' "$pass" "$host" "$port" "$host" "$qs"
