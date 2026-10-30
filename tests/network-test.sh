@@ -1,17 +1,25 @@
 #!/usr/bin/env bash
 # Isolated tests: these never execute a real installer or touch system settings.
+#
+# B12/A3/B31 的边界全部指向临时目录，外部命令全部打桩（dkms/modprobe/sysctl/
+# systemctl/ss/curl/…）。真实执行的只有模块逻辑本身、openssl、tar、sha256sum、
+# install/stat 和一次真的 socat 转发（用生成的 ExecStart，跑在临时高位端口）。
 set -eu
 ROOT=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 work=$(mktemp -d "${TMPDIR:-/tmp}/toolbox-network-test.XXXXXXXX")
 trap 'rm -rf -- "$work"' EXIT
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
-mkdir -p "$work/bin"
+mkdir -p "$work/bin" "$work/pathbin"
 for cmd in curl wget apk apt apt-get systemctl rc-service rc-update sysctl; do
     printf '#!/usr/bin/env bash\nprintf "%%s\\n" invoked >> "$NETWORK_TEST_MARKER"\nexit 99\n' > "$work/bin/$cmd"
     chmod +x "$work/bin/$cmd"
 done
 export NETWORK_TEST_MARKER="$work/invoked"
-export PATH="$work/bin:$PATH"
+SD=$work/state
+mkdir -p "$SD"
+export SD
+# 打桩目录优先于兜底目录，否则 exit 99 的桩会挡住真实流程。
+export PATH="$work/pathbin:$work/bin:$PATH"
 # Source must be inert and keep the caller alive.
 out=$(bash -ec 'source "$1"; printf sourced' _ "$ROOT/modules/network.sh") || fail 'source failed'
 [[ $out == sourced ]] || fail 'source has output or side effects'
@@ -31,36 +39,37 @@ if toolbox_network_detect_os "$work/unknown" >/dev/null 2>&1; then fail 'unknown
 printf 'ID=$(touch %s)\n' "$work/pwned" > "$work/hostile"
 toolbox_network_detect_os "$work/hostile" >/dev/null 2>&1 && fail 'hostile OS accepted'
 [[ ! -e $work/pwned ]] || fail 'OS file executed'
-for choice in A1 A2 A3 A4 A5 B12 B23 B31; do
+for choice in A1 A2 A4 A5; do
     if printf 'yes\nYES\n' | toolbox_network "$choice" >"$work/out" 2>&1; then
         fail "$choice falsely reported success"
     fi
     [[ -s $work/out ]] || fail "$choice failed silently"
-    [[ ! -e $NETWORK_TEST_MARKER ]] || fail "$choice invoked an external mutator"
 done
-# B23 must fail closed even when resolvectl is installed: merely detecting it
-# does not prove exclusive DNS ownership or rule out split-DNS/fallback leaks.
-(
-    resolvectl() { printf 'called\n' >> "$work/resolvectl.calls"; return 0; }
-    printf '1.1.1.1\n8.8.8.8\nYES\n' | toolbox_network B23 >"$work/dns.out" 2>&1 && fail 'B23 unexpectedly applied DNS'
-    [[ $(<"$work/dns.out") == *'resolvectl'* ]] || fail 'B23 did not report detected resolver'
-    [[ $(<"$work/dns.out") == *'DNS'* && $(<"$work/dns.out") == *'未修改'* ]] || fail 'B23 did not explain safe refusal'
-    [[ ! -e $work/resolvectl.calls ]] || fail 'B23 called resolvectl'
-)
+# A1/A2 未安装时的入口约定（Alpine 服务由 A1/A2 自己负责，这里只验分发）
+for choice in A1 A2; do
+    printf '3\n' | toolbox_network "$choice" >"$work/out" 2>&1 && fail "$choice 未安装时 status 仍成功"
+    grep -q '未安装' "$work/out" || fail "$choice 未进入 status"
+    toolbox_network "$choice" bogus >"$work/out" 2>&1 && fail "$choice 未知动作被接受"
+    grep -q '用法' "$work/out" || fail "$choice 未知动作未给用法"
+done
+# B23：安装前置不满足时必须 fail-closed，且不改任何文件。
 (
     command() {
         if [[ ${1:-} == -v && ${2:-} == resolvectl ]]; then return 1; fi
         builtin command "$@"
     }
-    toolbox_network B23 >"$work/dns-missing.out" 2>&1 && fail 'B23 accepted missing resolver'
-    [[ $(<"$work/dns-missing.out") == *'未检测到 resolvectl'* && $(<"$work/dns-missing.out") == *'未修改'* ]] || fail 'B23 missing-resolver refusal'
-    [[ ! -e $NETWORK_TEST_MARKER ]] || fail 'B23 invoked a mutator'
+    toolbox_network B23 install 1.1.1.1 >"$work/dns-missing.out" 2>&1 && fail 'B23 accepted missing resolver'
+    [[ $(<"$work/dns-missing.out") == *'未找到 resolvectl'* ]] || fail 'B23 missing-resolver refusal'
 )
+toolbox_network B23 bogus >"$work/out" 2>&1 && fail 'B23 未知动作被接受'
+printf '9\n' | toolbox_network B23 >"$work/out" 2>&1 && fail 'B23 非法菜单编号被接受'
+# status 是只读的，任何环境都应给出可读输出
+toolbox_network B23 status >"$work/out" 2>&1 || fail 'B23 status 失败'
+grep -q 'systemd-resolved' "$work/out" || fail 'B23 status 未报告解析器状态'
 if toolbox_network BAD >"$work/out" 2>&1; then fail 'invalid choice accepted'; fi
 if toolbox_network >"$work/out" 2>&1; then fail 'missing choice accepted'; fi
 if toolbox_network A1 unexpected >"$work/out" 2>&1; then fail 'extra argument accepted'; fi
 # A4 must remain fail-closed, even with plausible inputs and confirmation.
-# Mock the formerly reachable boundaries so a regression cannot touch the host.
 (
     toolbox_network_detect_os() { printf 'debian\n'; }
     toolbox_network_hy2_preflight() { printf preflight >> "$work/a4.calls"; return 0; }
@@ -78,7 +87,7 @@ done
     for cmd in id uname openssl ss sleep mktemp; do
         eval "$cmd() { printf '%s\\n' '$cmd' >> \"\$NETWORK_TEST_MARKER\"; return 99; }"
     done
-    # Verify the mock itself before using absence of the marker as evidence.
+    rm -f "$NETWORK_TEST_MARKER"
     ss >/dev/null 2>&1 || :
     [[ $(<"$NETWORK_TEST_MARKER") == ss ]] || fail 'socket mock not recording calls'
     rm "$NETWORK_TEST_MARKER"
@@ -92,33 +101,1029 @@ done
 for helper in toolbox_network_xray_preflight toolbox_network_xray_apply toolbox_network_xray_validate; do
     if declare -F "$helper" >/dev/null; then fail "unsafe A5 helper remains callable: $helper"; fi
 done
-# Actual menu and direct entrypoint with plausible input and hostile boundary
-# mocks: repeated and concurrent attempts must never touch a boundary.
-(
-    for cmd in id uname curl sha256sum python3 systemctl ss sleep mkdir chmod rm; do
-        eval "$cmd() { printf '%s\\n' '$cmd' >> \"\$NETWORK_TEST_MARKER\"; return 99; }"
-    done
-    toolbox_network_xray_apply() { printf 'apply\n' >> "$NETWORK_TEST_MARKER"; return 99; }
-    toolbox_network_xray_preflight() { printf 'preflight\n' >> "$NETWORK_TEST_MARKER"; return 99; }
-    ss >/dev/null 2>&1 || :
-    [[ $(<"$NETWORK_TEST_MARKER") == ss ]] || fail 'A5 boundary mock not recording calls'
-    command rm "$NETWORK_TEST_MARKER"
-    for entry in menu direct; do
-        for input in '' $'443\nexample.com\nINSTALL\n' 'INSTALL'; do
-            if [[ $entry == menu ]]; then
-                printf '%s' "$input" | toolbox_network A5 > "$work/a5-refusal" 2>&1 && fail 'A5 menu accepted input'
-            else
-                printf '%s' "$input" | toolbox_network_xray 443 example.com > "$work/a5-refusal" 2>&1 && fail 'A5 direct entry accepted input'
+
+# ================================================================ 打桩环境
+# 真实命令在子 shell 里覆盖为「只记录 + 改状态文件」的函数，绝不碰本机。
+unset TOOLBOX_NET_BRUTAL_URL TOOLBOX_NET_BRUTAL_SHA256 TOOLBOX_NET_TUIC_URL
+unset TOOLBOX_NET_TUIC_SHA256 TOOLBOX_NET_TUIC_SHA256_ARM64 TOOLBOX_NET_UUID
+
+export TOOLBOX_NET_OS_RELEASE=$work/os-release
+export TOOLBOX_NET_SYSTEMD_RUN=$work/systemd-run
+export TOOLBOX_NET_ETC=$work/etc
+export TOOLBOX_NET_BIN_DIR=$work/instbin
+export TOOLBOX_NET_UNIT_DIR=$work/units
+export TOOLBOX_NET_LOCK_DIR=$work/run
+export TOOLBOX_NET_MODLOAD_DIR=$work/modules-load.d
+export TOOLBOX_NET_SYSCTL_DIR=$work/sysctl.d
+export TOOLBOX_NET_DKMS_DIR=$work/var/lib/dkms
+export TOOLBOX_NET_SRC_DIR=$work/usr/src
+export TOOLBOX_NET_MODDIR=$work/modbuild
+export TOOLBOX_NET_KERNEL_RELEASE=6.1.0-test
+export TOOLBOX_NET_SOCAT=$work/pathbin/socat
+mkdir -p "$TOOLBOX_NET_SYSTEMD_RUN" "$TOOLBOX_NET_UNIT_DIR" "$TOOLBOX_NET_LOCK_DIR" \
+    "$TOOLBOX_NET_BIN_DIR" "$work/modbuild" "$work/pkg"
+printf 'ID=debian\nVERSION_ID="13"\n' > "$TOOLBOX_NET_OS_RELEASE"
+
+# B12 源码包夹具：结构与官方 tarball 一致，哈希由测试算出后注入。
+mkdir -p "$work/pkg/src/dkms_source_tree/tools"
+printf 'PACKAGE_NAME="tcp-brutal"\nPACKAGE_VERSION="2.0.1"\nBUILT_MODULE_NAME[0]="brutal"\n' \
+    > "$work/pkg/src/dkms_source_tree/dkms.conf"
+printf 'all:\n\tmake -C $(KERNEL_DIR) M=$(PWD) modules\n' > "$work/pkg/src/dkms_source_tree/Makefile"
+printf 'brutalctl: brutalctl.c\n' > "$work/pkg/src/dkms_source_tree/tools/Makefile"
+tar -C "$work/pkg/src" -czf "$work/pkg/tcp-brutal.dkms.tar.gz" ./dkms_source_tree
+export TOOLBOX_NET_BRUTAL_TGZ=$work/pkg/tcp-brutal.dkms.tar.gz
+BRUTAL_SHA_TEST=$(sha256sum -- "$TOOLBOX_NET_BRUTAL_TGZ" | cut -d' ' -f1)
+export TOOLBOX_NET_BRUTAL_SHA256=$BRUTAL_SHA_TEST
+
+# 桩脚本：路径上的裸命令（在 shell 函数不生效的子进程里也能用）。
+mk_stub() { # <名字> <正文>
+    printf '#!/usr/bin/env bash\n%s\n' "$2" > "$work/pathbin/$1"
+    chmod +x "$work/pathbin/$1"
+}
+mk_stub socat "printf '%s\\n' \"\$*\" >> \"\$SD/socat.log\"; exit 0"
+mk_stub systemd-detect-virt "printf '%s\\n' \"\${MOCK_VIRT:-none}\"; exit 0"
+
+# sysctl：-n 读状态，-w 写状态；不可用的算法来自 cc_available。
+sysctl() {
+    local key val
+    case ${1:-} in
+        -n)
+            key=${2##*.}
+            case $key in
+                tcp_congestion_control) cat "$SD/cc_current" 2>/dev/null || printf 'cubic\n' ;;
+                tcp_available_congestion_control) cat "$SD/cc_available" 2>/dev/null || printf 'reno cubic\n' ;;
+            esac
+            return 0
+            ;;
+        -w)
+            key=${2%%=*}; val=${2#*=}
+            printf '%s\n' "${key##*.}=$val" >> "$SD/sysctl.log"
+            [[ -e $SD/sysctl_fail ]] && return 1
+            [[ $key == net.ipv4.tcp_congestion_control ]] && printf '%s\n' "$val" > "$SD/cc_current"
+            return 0
+            ;;
+        *) return 0 ;;
+    esac
+}
+modprobe() {
+    printf '%s\n' "modprobe $*" >> "$SD/mod.log"
+    [[ -e $SD/modprobe_fail ]] && return 1
+    printf '%s\n' 'brutal' > "$SD/loaded"
+    [[ -e $SD/no_register ]] || printf '%s\n' 'reno cubic brutal' > "$SD/cc_available"
+    return 0
+}
+rmmod() {
+    printf '%s\n' "rmmod $*" >> "$SD/mod.log"
+    [[ -e $SD/loaded ]] || return 1
+    rm -f "$SD/loaded"
+    printf '%s\n' 'reno cubic' > "$SD/cc_available"
+    return 0
+}
+lsmod() {
+    printf '%s\n' 'Module Size Used by'
+    [[ -e $SD/loaded ]] && printf '%s\n' 'brutal 262144 0'
+    return 0
+}
+dkms() {
+    printf '%s\n' "dkms $*" >> "$SD/dkms.log"
+    local action=${1:-} name
+    name=${2:-}; name=${name%%/*}
+    case $action in
+        add)
+            [[ -e $SD/dkms_add_fail ]] && return 1
+            mkdir -p "$TOOLBOX_NET_DKMS_DIR/$(basename -- "$2")"
+            ;;
+        build) [[ -e $SD/dkms_build_fail ]] && return 1 ;;
+        install)
+            [[ -e $SD/dkms_install_fail ]] && return 1
+            mkdir -p "$TOOLBOX_NET_DKMS_DIR/tcp-brutal"
+            ;;
+        remove) rm -rf "$TOOLBOX_NET_DKMS_DIR/${name:-tcp-brutal}" ;;
+    esac
+    return 0
+}
+make() {
+    printf '%s\n' "make $*" >> "$SD/make.log"
+    [[ -e $SD/make_fail ]] && return 1
+    local dir='' prev=''
+    for a in "$@"; do [[ $prev == -C ]] && dir=$a; prev=$a; done
+    if [[ -n $dir ]]; then
+        printf '#!/usr/bin/env bash\nexit 0\n' > "$dir/brutalctl"
+        chmod +x "$dir/brutalctl"
+    fi
+    return 0
+}
+systemctl() {
+    printf '%s\n' "systemctl $*" >> "$SD/systemctl.log"
+    case ${1:-} in
+        is-active) [[ -e $SD/active ]] && return 0 || return 3 ;;
+        enable)
+            [[ -e $SD/enable_fail ]] && return 1
+            if [[ $* == *--now* && ! -e $SD/noactivate ]]; then
+                : > "$SD/active"
+                [[ -n ${MOCK_PORT:-} && -n ${MOCK_PROTO:-} ]] && emit_port "$MOCK_PROTO" "$MOCK_PORT" '/usr/bin/tuic-stub' 4242
             fi
-            [[ $(<"$work/a5-refusal") == *'禁用'* && $(<"$work/a5-refusal") == *'未修改系统'* && $(<"$work/a5-refusal") == *'terry-toolbox-xray.service'* && $(<"$work/a5-refusal") == *'回退流量'* ]] || fail 'A5 missing refusal or residual guidance'
-        done
+            return 0
+            ;;
+        disable) [[ $* == *--now* ]] && rm -f "$SD/active"; return 0 ;;
+        show) [[ -e $SD/mainpid ]] && cat "$SD/mainpid" || printf '0\n'; return 0 ;;
+        is-active-fg) return 0 ;;
+        *) return 0 ;;
+    esac
+}
+emit_port() { # <proto> <port> <exe> <pid>
+    if [[ $1 == tcp ]]; then
+        printf 'LISTEN 0 5 0.0.0.0:%s 0.0.0.0:* users:(("socat",pid=%s,fd=5))\n' "$2" "$4" >> "$SD/ports"
+    else
+        printf 'UNCONN 0 0 0.0.0.0:%s 0.0.0.0:* users:(("tuic-server",pid=%s,fd=6))\n' "$2" "$4" >> "$SD/ports"
+    fi
+}
+ss() {
+    [[ -e $SD/ports ]] || return 0
+    # 尊重 -ltn / -lun 的协议过滤，否则 UDP 行会污染 TCP 判定。
+    case " $* " in
+        *" -ltn"*) grep '^LISTEN' "$SD/ports" || true ;;
+        *" -lun"*) grep '^UNCONN' "$SD/ports" || true ;;
+        *) cat "$SD/ports" ;;
+    esac
+    return 0
+}
+sleep() { command sleep 0.01; }
+curl() {
+    printf '%s\n' "curl $*" >> "$SD/curl.log"
+    [[ -e $SD/download_fail ]] && return 22
+    local out='' prev='' src=''
+    for a in "$@"; do [[ $prev == -o ]] && out=$a; prev=$a; done
+    [[ -n $out ]] || return 1
+    case $out in
+        *.tar.gz) src=$work/pkg/tcp-brutal.dkms.tar.gz ;;
+        *) src=$work/pkg/tuic-server ;;
+    esac
+    cp -- "$src" "$out"
+    return 0
+}
+
+# 断言工具
+reset() {
+    rm -rf "$TOOLBOX_NET_ETC" "$TOOLBOX_NET_LOCK_DIR" "$TOOLBOX_NET_MODLOAD_DIR" \
+        "$TOOLBOX_NET_SYSCTL_DIR" "$TOOLBOX_NET_DKMS_DIR" "$TOOLBOX_NET_SRC_DIR" "$work/client"
+    find "$TOOLBOX_NET_UNIT_DIR" -mindepth 1 -delete
+    find "$TOOLBOX_NET_BIN_DIR" -mindepth 1 -delete
+    rm -f "$SD"/*.log "$SD/ports" "$SD/loaded" "$SD/active" "$SD/mainpid" "$SD/mainexe" "$SD"/a5_*
+    rm -f "$SD/cc_current" "$SD/cc_available"
+    for f in "$SD"/*_fail "$SD"/noactivate "$SD"/no_register "$SD"/sysctl_fail "$SD"/tuic_badconf; do
+        [[ -e $f ]] && rm -f "$f"
     done
-    pids=()
-    for n in 1 2 3 4; do
-        (printf '443\nexample.com\nINSTALL\n' | toolbox_network A5 > "$work/a5-concurrent-$n" 2>&1 && exit 1; exit 0) &
-        pids+=("$!")
-    done
-    for job in "${pids[@]}"; do wait "$job" || fail 'concurrent A5 attempt succeeded'; done
-    [[ ! -e $NETWORK_TEST_MARKER ]] || fail 'disabled A5 invoked an installation boundary'
-)
+    unset MOCK_PORT MOCK_PROTO MOCK_VIRT TOOLBOX_NET_KERNEL_RELEASE
+    printf '4242\n' > "$SD/mainpid"
+    export TOOLBOX_NET_KERNEL_RELEASE=6.1.0-test
+    mkdir -p "$TOOLBOX_NET_LOCK_DIR"
+}
+wrote_brutal() {
+    [[ -d $TOOLBOX_NET_ETC/terry-toolbox-brutal || -e $TOOLBOX_NET_MODLOAD_DIR/brutal.conf \
+        || -e $TOOLBOX_NET_BIN_DIR/brutalctl || -d $TOOLBOX_NET_DKMS_DIR/tcp-brutal ]]
+}
+wrote_tuic() {
+    [[ -d $TOOLBOX_NET_ETC/terry-toolbox-tuic || -e $TOOLBOX_NET_BIN_DIR/terry-toolbox-tuic \
+        || -e $TOOLBOX_NET_UNIT_DIR/terry-toolbox-tuic.service ]]
+}
+wrote_a5() {
+    [[ -d $TOOLBOX_NET_ETC/terry-toolbox-xray || -e $TOOLBOX_NET_BIN_DIR/terry-toolbox-xray ]]
+}
+wrote_unit() { [[ -n $(ls "$TOOLBOX_NET_UNIT_DIR" 2>/dev/null) ]]; }
+clean() { ! wrote_brutal && ! wrote_tuic && ! wrote_a5 && ! wrote_unit; }
+assert_clean() { if ! clean; then ls -R "$TOOLBOX_NET_ETC" "$TOOLBOX_NET_UNIT_DIR" "$TOOLBOX_NET_BIN_DIR" >&2; fail "$1：留下了写入"; fi; }
+called() { grep -qF -- "$1" "$SD/$2" 2>/dev/null || fail "缺少 $2 调用: $1"; }
+
+# 证书夹具（真实 openssl）
+mk_cert() {
+    local name=$1 host=$2
+    shift 2
+    openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 30 \
+        -keyout "$work/$name.key" -out "$work/$name.crt" \
+        -subj "/CN=$host" -addext "subjectAltName=DNS:$host" "$@" >/dev/null 2>&1 \
+        || fail "无法生成测试证书 $name"
+}
+mk_cert good tuic.example.test
+mk_cert other wrong.example.test
+mkdir -p "$work/client"
+
+# ================================================================ B12 TCP Brutal
+# 全部前置条件不具备时，必须在写盘前失败。
+inst_brutal() { printf 'YES\nBRUTAL\n' | toolbox_network B12 install; }
+
+if TOOLBOX_NET_UID=1000 toolbox_network B12 install </dev/null >"$work/o" 2>&1; then fail 'B12 非 root 被接受'; fi
+grep -q 'root' "$work/o" || fail 'B12 非 root 未说明'
+assert_clean 'B12 非 root'
+TOOLBOX_NET_OS_RELEASE=$work/ubuntu toolbox_network B12 install </dev/null >"$work/o" 2>&1 && fail 'B12 Ubuntu 被接受'
+grep -q '仅支持 Debian' "$work/o" || fail 'B12 Ubuntu 未说明'
+assert_clean 'B12 Ubuntu'
+TOOLBOX_NET_OS_RELEASE=$TOOLBOX_NET_OS_RELEASE
+TOOLBOX_NET_SYSTEMD_RUN=$work/nope toolbox_network B12 install </dev/null >"$work/o" 2>&1 && fail 'B12 无 systemd 被接受'
+assert_clean 'B12 无 systemd'
+MOCK_VIRT=docker toolbox_network B12 install </dev/null >"$work/o" 2>&1 && fail 'B12 容器被接受'
+grep -q '容器' "$work/o" || fail 'B12 容器未说明'
+assert_clean 'B12 容器'
+MOCK_VIRT=none TOOLBOX_NET_KERNEL_RELEASE=5.4.0-1 toolbox_network B12 install </dev/null >"$work/o" 2>&1 && fail 'B12 老内核被接受'
+grep -q '过旧' "$work/o" || fail 'B12 老内核未说明'
+assert_clean 'B12 老内核'
+TOOLBOX_NET_MODDIR=$work/nomod toolbox_network B12 install </dev/null >"$work/o" 2>&1 && fail 'B12 缺头文件被接受'
+grep -q '内核头文件' "$work/o" || fail 'B12 缺头文件未说明'
+assert_clean 'B12 缺头文件'
+
+# 冲突：别人的 drop-in 不得覆盖
+mkdir -p "$TOOLBOX_NET_MODLOAD_DIR"
+printf 'tcp_brutal\n' > "$TOOLBOX_NET_MODLOAD_DIR/brutal.conf"
+inst_brutal >"$work/o" 2>&1 && fail 'B12 陌生 modules-load 被覆盖'
+grep -q '内容不同' "$work/o" || fail 'B12 陌生 modules-load 未说明'
+[[ $(<"$TOOLBOX_NET_MODLOAD_DIR/brutal.conf") == tcp_brutal ]] || fail 'B12 覆盖了陌生 modules-load'
+reset
+mkdir -p "$TOOLBOX_NET_SYSCTL_DIR"
+printf 'net.ipv4.tcp_congestion_control = bbr\n' > "$TOOLBOX_NET_SYSCTL_DIR/terry-toolbox-brutal.conf"
+inst_brutal >"$work/o" 2>&1 && fail 'B12 陌生 sysctl drop-in 被覆盖'
+grep -q '内容不同' "$work/o" || fail 'B12 陌生 sysctl 未说明'
+reset
+mkdir -p "$TOOLBOX_NET_BIN_DIR"
+printf '#!/bin/sh\nexit 0\n' > "$TOOLBOX_NET_BIN_DIR/brutalctl"
+inst_brutal >"$work/o" 2>&1 && fail 'B12 陌生 brutalctl 被覆盖'
+grep -q '不覆盖' "$work/o" || fail 'B12 陌生 brutalctl 未说明'
+reset
+mkdir -p "$TOOLBOX_NET_DKMS_DIR/tcp-brutal"
+inst_brutal >"$work/o" 2>&1 && fail 'B12 已有 dkms 被接管'
+grep -q 'DKMS' "$work/o" || fail 'B12 已有 dkms 未说明'
+reset
+: > "$SD/loaded"
+# 模块已载入但没有任何文件（上次卸载的残留）：提示后继续安装，不阻断。
+inst_brutal >"$work/o" 2>&1 || { cat "$work/o" >&2; fail 'B12 残留模块被误拒'; }
+grep -q '已载入' "$work/o" || { cat "$work/o" >&2; fail 'B12 已载入未说明'; }
+grep -q '继续安装' "$work/o" || fail 'B12 已载入未说明会继续'
+called 'modprobe brutal' mod.log
+toolbox_network B12 uninstall <<< 'YES' >/dev/null 2>&1 || fail 'B12 残留模块安装后无法卸载'
+assert_clean 'B12 残留模块'
+reset
+
+# 两次确认：只有 YES 或第二词不符都不得写盘
+printf 'YES\n' | toolbox_network B12 install >"$work/o" 2>&1 && fail 'B12 单次确认通过'
+grep -q '二次确认' "$work/o" || fail 'B12 未要求二次确认'
+assert_clean 'B12 单次确认'
+printf 'YES\nnope\n' | toolbox_network B12 install >"$work/o" 2>&1 && fail 'B12 错误二次确认通过'
+grep -q '二次确认不匹配' "$work/o" || fail 'B12 二次确认不匹配未说明'
+assert_clean 'B12 二次确认不符'
+printf 'no\n' | toolbox_network B12 install >"$work/o" 2>&1 && fail 'B12 取消被当成安装'
+assert_clean 'B12 取消'
+
+# 下载 / 校验 / 编译 / 载入失败都要回滚并恢复默认算法
+TOOLBOX_NET_BRUTAL_TGZ=''
+: > "$SD/download_fail"
+inst_brutal >"$work/o" 2>&1 && fail 'B12 下载失败被当成成功'
+grep -q '下载失败' "$work/o" || fail 'B12 下载失败未说明'
+assert_clean 'B12 下载失败'
+reset
+TOOLBOX_NET_BRUTAL_SHA256=0000000000000000000000000000000000000000000000000000000000000000 \
+    inst_brutal >"$work/o" 2>&1 && fail 'B12 校验和不符被接受'
+grep -q 'SHA-256 不匹配' "$work/o" || fail 'B12 校验失败未说明'
+assert_clean 'B12 校验失败'
+reset
+: > "$SD/make_fail"
+inst_brutal >"$work/o" 2>&1 && fail 'B12 brutalctl 编译失败被当成成功'
+grep -q '编译失败' "$work/o" || fail 'B12 brutalctl 编译失败未说明'
+assert_clean 'B12 make 失败'
+reset
+: > "$SD/dkms_add_fail"
+inst_brutal >"$work/o" 2>&1 && fail 'B12 dkms add 失败被当成成功'
+assert_clean 'B12 dkms add 失败'
+reset
+: > "$SD/dkms_build_fail"
+inst_brutal >"$work/o" 2>&1 && fail 'B12 dkms build 失败被当成成功'
+assert_clean 'B12 dkms build 失败'
+reset
+: > "$SD/dkms_install_fail"
+inst_brutal >"$work/o" 2>&1 && fail 'B12 dkms install 失败被当成成功'
+assert_clean 'B12 dkms install 失败'
+reset
+: > "$SD/modprobe_fail"
+inst_brutal >"$work/o" 2>&1 && fail 'B12 modprobe 失败被当成成功'
+assert_clean 'B12 modprobe 失败'
+reset
+: > "$SD/no_register"
+inst_brutal >"$work/o" 2>&1 && fail 'B12 算法未注册被当成成功'
+grep -q '未注册' "$work/o" || fail 'B12 未注册未说明'
+assert_clean 'B12 未注册'
+reset
+: > "$SD/sysctl_fail"
+inst_brutal >"$work/o" 2>&1 && fail 'B12 sysctl 失败被当成成功'
+assert_clean 'B12 sysctl 失败'
+reset
+
+# 成功路径
+inst_brutal >"$work/o" 2>&1 || { cat "$work/o" >&2; fail 'B12 正常安装失败'; }
+modload=$TOOLBOX_NET_MODLOAD_DIR/brutal.conf
+sysctldrop=$TOOLBOX_NET_SYSCTL_DIR/terry-toolbox-brutal.conf
+[[ -e $TOOLBOX_NET_BIN_DIR/brutalctl && -x $TOOLBOX_NET_BIN_DIR/brutalctl ]] || fail 'brutalctl 未安装'
+[[ $(<"$modload") == brutal ]] || fail 'modules-load 内容不对'
+grep -q '^net.ipv4.tcp_congestion_control = brutal$' "$sysctldrop" || fail 'sysctl drop-in 内容不对'
+[[ $(stat -c %a "$sysctldrop") == 644 ]] || fail 'sysctl drop-in 权限不对'
+[[ -d $TOOLBOX_NET_SRC_DIR/tcp-brutal-2.0.1/dkms_source_tree || -d $TOOLBOX_NET_SRC_DIR/tcp-brutal-2.0.1 ]] || fail '源码未落盘'
+[[ $(<"$SD/cc_current") == brutal ]] || fail '默认算法未改'
+[[ -s "$TOOLBOX_NET_ETC/terry-toolbox-brutal/meta" ]] || fail 'meta 未写'
+[[ $(stat -c %a "$TOOLBOX_NET_ETC/terry-toolbox-brutal/meta") == 600 ]] || fail 'meta 权限不对'
+grep -q '^cubic|2.0.1|' <<< "$(<"$TOOLBOX_NET_ETC/terry-toolbox-brutal/meta")" || fail 'meta 未记录安装前算法/版本'
+called 'modprobe brutal' mod.log
+called 'dkms install' dkms.log
+[[ -z $(ls "$TOOLBOX_NET_UNIT_DIR") ]] || fail 'B12 不该创建 systemd 单元'
+# 报告要如实标注已验证项和人工步骤
+grep -q '\[已验证\]' <<< "$(<"$work/o")" || fail '报告缺少验证说明'
+grep -q 'brutalctl add' <<< "$(<"$work/o")" || fail '报告缺少限速说明'
+grep -q '规则不随重启' <<< "$(<"$work/o")" || fail '报告未提醒规则不持久'
+
+# 重复安装必须拒绝且不改文件
+sum=$(sha256sum "$sysctldrop" | cut -d' ' -f1)
+inst_brutal >"$work/o" 2>&1 && fail 'B12 重复安装未拒绝'
+[[ $(sha256sum "$sysctldrop" | cut -d' ' -f1) == "$sum" ]] || fail 'B12 重复安装改了 drop-in'
+
+# status 只读
+toolbox_network B12 status >"$work/o" 2>&1 || fail 'B12 status 失败'
+grep -q '已载入' "$work/o" || fail 'status 未显示模块状态'
+grep -q 'brutal' "$work/o" || fail 'status 未显示当前算法'
+
+# 卸载：删净自己写的、恢复原算法、保留无关文件
+printf 'keep\n' > "$work/untouched"
+toolbox_network B12 uninstall <<< 'YES' >"$work/o" 2>&1 || { cat "$work/o" >&2; fail 'B12 卸载失败'; }
+assert_clean 'B12 卸载'
+[[ $(<"$SD/cc_current") == cubic ]] || fail '卸载未恢复默认算法'
+[[ -e $work/untouched ]] || fail '卸载删了无关文件'
+toolbox_network B12 status >/dev/null 2>&1 && fail '卸载后 status 仍报存在'
+printf 'YES\n' | toolbox_network B12 uninstall >/dev/null 2>&1 && fail '未安装时卸载仍成功'
+reset
+
+# 并发锁
+mkdir -p "$TOOLBOX_NET_LOCK_DIR"
+( flock 9; command sleep 30 ) 9>"$TOOLBOX_NET_LOCK_DIR/terry-toolbox-brutal.lock" &
+lockpid=$!
+command sleep 0.4
+inst_brutal >"$work/o" 2>&1 && fail 'B12 锁被占时仍安装'
+grep -q '正在进行' "$work/o" || fail 'B12 未报告并发'
+assert_clean 'B12 并发'
+kill "$lockpid" 2>/dev/null || true
+wait "$lockpid" 2>/dev/null || true
+reset
+
+# ================================================================ A3 TUIC
+inst_tuic() { printf 'YES\nTUIC\n' | toolbox_network A3 install "$@"; }
+# 服务二进制桩：解析配置、报告监听、占住端口直到被杀。
+cat > "$work/pkg/tuic-server" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$SD/tuic.log"
+conf=''
+for ((i = 1; i <= $#; i++)); do [[ ${!i} == -c ]] && { j=$((i + 1)); conf=${!j}; }; done
+[[ -e $SD/tuic_badconf ]] && { printf 'No such file or directory (os error 2)\n'; exit 1; }
+port=$(sed -n 's/.*:\([0-9]*\)".*/\1/p' "$conf" | head -n1)
+line="UNCONN 0 0 0.0.0.0:$port 0.0.0.0:* users:((\"tuic-server\",pid=$$,fd=6))"
+printf '%s\n' "$line" >> "$SD/ports"
+printf '[WARN ] server started, listening on [::]:%s\n' "$port"
+trap 'grep -v "pid=$$," "$SD/ports" > "$SD/ports.n" 2>/dev/null; mv "$SD/ports.n" "$SD/ports" 2>/dev/null' EXIT
+while :; do command sleep 1; done
+STUB
+chmod +x "$work/pkg/tuic-server"
+export TOOLBOX_NET_TUIC_BIN_SRC=$work/pkg/tuic-server
+TUIC_SHA_TEST=$(sha256sum -- "$TOOLBOX_NET_TUIC_BIN_SRC" | cut -d' ' -f1)
+export TOOLBOX_NET_TUIC_SHA256=$TUIC_SHA_TEST
+export TOOLBOX_NET_UUID=3f2a0f2e-1111-4222-8333-444455556666
+
+if TOOLBOX_NET_UID=1000 toolbox_network A3 install "$work/good.crt" "$work/good.key" tuic.example.test </dev/null >"$work/o" 2>&1; then fail 'A3 非 root 被接受'; fi
+assert_clean 'A3 非 root'
+TOOLBOX_NET_OS_RELEASE=$work/alpine toolbox_network A3 install "$work/good.crt" "$work/good.key" tuic.example.test </dev/null >"$work/o" 2>&1 && fail 'A3 Alpine 被接受'
+assert_clean 'A3 Alpine'
+for p in 0 65536 0080 abc; do
+    inst_tuic "$work/good.crt" "$work/good.key" tuic.example.test "$p" >"$work/o" 2>&1 && fail "A3 非法端口被接受: $p"
+done
+assert_clean 'A3 非法端口'
+inst_tuic "$work/good.crt" "$work/good.key" 'Bad_Host' >"$work/o" 2>&1 && fail 'A3 非法主机名被接受'
+assert_clean 'A3 非法主机名'
+inst_tuic "$work/none.crt" "$work/good.key" tuic.example.test >"$work/o" 2>&1 && fail 'A3 缺证书被接受'
+inst_tuic "$work/good.crt" "$work/other.key" tuic.example.test >"$work/o" 2>&1 && fail 'A3 不配对私钥被接受'
+inst_tuic "$work/good.crt" "$work/good.key" wrong.example.test >"$work/o" 2>&1 && fail 'A3 域名不符被接受'
+grep -q '不包含主机名' "$work/o" || fail 'A3 域名不符未说明'
+assert_clean 'A3 证书'
+
+mkdir -p "$TOOLBOX_NET_UNIT_DIR"
+printf '[Service]\nExecStart=/usr/bin/someone-else\n' > "$TOOLBOX_NET_UNIT_DIR/terry-toolbox-tuic.service"
+inst_tuic "$work/good.crt" "$work/good.key" tuic.example.test 8443 >"$work/o" 2>&1 && fail 'A3 外来单元被覆盖'
+grep -q '不是本模块生成' "$work/o" || fail 'A3 外来单元未说明'
+[[ ! -e $TOOLBOX_NET_BIN_DIR/terry-toolbox-tuic ]] || fail 'A3 外来单元仍写了二进制'
+toolbox_network A3 uninstall <<< 'YES' >"$work/o" 2>&1 && fail 'A3 卸载删了外来单元'
+[[ -e $TOOLBOX_NET_UNIT_DIR/terry-toolbox-tuic.service ]] || fail 'A3 外来单元被删'
+reset
+mkdir -p "$TOOLBOX_NET_UNIT_DIR"
+printf '[Service]\nExecStart=%s/terry-toolbox-tuic -c x\n' "$TOOLBOX_NET_BIN_DIR" > "$TOOLBOX_NET_UNIT_DIR/terry-toolbox-tuic.service"
+: > "$SD/active"
+inst_tuic "$work/good.crt" "$work/good.key" tuic.example.test 8443 >"$work/o" 2>&1 && fail 'A3 运行中未拒绝重装'
+grep -q '已在运行' "$work/o" || fail 'A3 运行中未说明'
+reset
+
+printf 'UNCONN 0 0 0.0.0.0:8443 0.0.0.0:* users:(("nginx",pid=7,fd=3))\n' > "$SD/ports"
+inst_tuic "$work/good.crt" "$work/good.key" tuic.example.test 8443 >"$work/o" 2>&1 && fail 'A3 端口占用被接受'
+grep -q '已被占用' "$work/o" || fail 'A3 端口占用未说明'
+grep -q 'nginx' "$work/o" || fail 'A3 未给出占用者'
+assert_clean 'A3 端口占用'
+reset
+
+printf 'YES\n' | toolbox_network A3 install "$work/good.crt" "$work/good.key" tuic.example.test >"$work/o" 2>&1 && fail 'A3 单次确认通过'
+assert_clean 'A3 单次确认'
+printf 'YES\nnope\n' | toolbox_network A3 install "$work/good.crt" "$work/good.key" tuic.example.test >"$work/o" 2>&1 && fail 'A3 错误二次确认通过'
+assert_clean 'A3 二次确认不符'
+reset
+
+TOOLBOX_NET_TUIC_BIN_SRC=''
+: > "$SD/download_fail"
+inst_tuic "$work/good.crt" "$work/good.key" tuic.example.test 8443 >"$work/o" 2>&1 && fail 'A3 下载失败被当成成功'
+assert_clean 'A3 下载失败'
+reset
+TOOLBOX_NET_TUIC_SHA256=0000000000000000000000000000000000000000000000000000000000000000 \
+    TOOLBOX_NET_TUIC_BIN_SRC='' inst_tuic "$work/good.crt" "$work/good.key" tuic.example.test 8443 >"$work/o" 2>&1 && fail 'A3 校验和不符被接受'
+grep -q 'SHA-256 不匹配' "$work/o" || fail 'A3 校验失败未说明'
+assert_clean 'A3 校验失败'
+reset
+: > "$SD/tuic_badconf"
+inst_tuic "$work/good.crt" "$work/good.key" tuic.example.test 8443 >"$work/o" 2>&1 && fail 'A3 冒烟失败被当成成功'
+assert_clean 'A3 冒烟失败'
+reset
+: > "$SD/enable_fail"
+inst_tuic "$work/good.crt" "$work/good.key" tuic.example.test 8443 >"$work/o" 2>&1 && fail 'A3 enable 失败被当成成功'
+assert_clean 'A3 enable 失败'
+reset
+: > "$SD/noactivate"
+inst_tuic "$work/good.crt" "$work/good.key" tuic.example.test 8443 >"$work/o" 2>&1 && fail 'A3 未 active 被当成成功'
+assert_clean 'A3 未 active'
+reset
+# 端口不是本服务持有（没有 MainPID 证据）也要回滚
+rm -f "$SD/mainpid"
+MOCK_PORT=8443 MOCK_PROTO=udp inst_tuic "$work/good.crt" "$work/good.key" tuic.example.test 8443 >"$work/o" 2>&1 \
+    && fail 'A3 端口不归本服务时仍成功'
+reset
+
+# 成功路径
+MOCK_PORT=18445 MOCK_PROTO=udp
+export MOCK_PORT MOCK_PROTO
+printf '4242\n' > "$SD/mainpid"
+inst_tuic "$work/good.crt" "$work/good.key" tuic.example.test 18445 >"$work/o" 2>&1 \
+    || { cat "$work/o" >&2; fail 'A3 正常安装失败'; }
+conf=$TOOLBOX_NET_ETC/terry-toolbox-tuic/config.json
+unit=$TOOLBOX_NET_UNIT_DIR/terry-toolbox-tuic.service
+bin=$TOOLBOX_NET_BIN_DIR/terry-toolbox-tuic
+[[ -x $bin && -s $conf && -e $unit ]] || fail 'A3 产物不全'
+[[ $(stat -c %a "$conf") == 600 ]] || fail 'A3 配置权限不是 600'
+[[ $(stat -c %a "$TOOLBOX_NET_ETC/terry-toolbox-tuic/key.pem") == 600 ]] || fail 'A3 私钥副本权限不是 600'
+cmp -s "$work/good.key" "$TOOLBOX_NET_ETC/terry-toolbox-tuic/key.pem" || fail 'A3 私钥副本不一致'
+[[ -e $work/good.key ]] || fail 'A3 移走了原始私钥'
+grep -q '"server": "\[::\]:18445"' "$conf" || fail 'A3 监听地址不对'
+grep -q '"3f2a0f2e-1111-4222-8333-444455556666"' "$conf" || fail 'A3 UUID 未写入'
+grep -qE '"(3f2a0f2e[^"]*)": "[A-Za-z0-9]{32}"' "$conf" || fail 'A3 密码格式不对'
+grep -q '"congestion_control": "bbr"' "$conf" || fail 'A3 未设置 bbr'
+grep -q '"dual_stack": true' "$conf" || fail 'A3 未开双栈'
+# 单元：绝对路径、能力最小化、沙箱
+grep -qF "ExecStart=$bin -c $conf" "$unit" || fail 'A3 ExecStart 不是精确绝对路径'
+for f in 'NoNewPrivileges=yes' 'ProtectSystem=strict' 'PrivateTmp=yes' 'CAP_NET_BIND_SERVICE' \
+    'RestrictAddressFamilies=AF_INET AF_INET6' "ReadWritePaths=$TOOLBOX_NET_ETC/terry-toolbox-tuic"; do
+    grep -qF "$f" "$unit" || fail "A3 单元缺少 $f"
+done
+! grep -qE '^(User|DynamicUser)=' "$unit" || fail 'A3 意外切换用户'
+called 'enable --now terry-toolbox-tuic.service' systemctl.log
+[[ $(stat -c %a "$TOOLBOX_NET_ETC/terry-toolbox-tuic/meta") == 600 ]] || fail 'A3 meta 权限不对'
+grep -q 'tuic://3f2a0f2e-1111-4222-8333-444455556666' <<< "$(<"$work/o")" || fail 'A3 未输出客户端链接'
+grep -q '\[未验证\] 认证' <<< "$(<"$work/o")" || fail 'A3 未标注认证未验证'
+grep -q 'UDP 18445' <<< "$(<"$work/o")" || fail 'A3 未提示放行端口'
+
+toolbox_network A3 status >"$work/o" 2>&1 || fail 'A3 status 失败'
+grep -q '由本服务持有' "$work/o" || fail 'A3 status 未识别自有监听'
+# MainPID 不符 → 不算自己的
+printf '999\n' > "$SD/mainpid"
+toolbox_network A3 status >"$work/o" 2>&1 || true
+grep -q '不是本服务' "$work/o" || fail 'A3 status 误认他人监听'
+printf '0\n' > "$SD/mainpid"
+
+toolbox_network A3 uninstall <<< "YES" >"$work/o" 2>&1 || { cat "$work/o" >&2; fail "A3 卸载失败"; }
+assert_clean 'A3 卸载'
+[[ -e $work/good.crt ]] || fail 'A3 卸载删了原始证书'
+reset
+unset MOCK_PORT MOCK_PROTO
+
+# ================================================================ A5 Xray (Debian)
+# A5 的落盘路径、systemd、冲突与回滚全部在临时目录 + 桩内完成；真实执行的只有模块
+# 逻辑、openssl、sha256sum、install/mv/stat。xray 二进制用桩（覆盖 uuid/x25519/
+# 自检/监听），探针与目标 TLS 检查各自单独测（探针见文件末尾的真实块）。
+export TOOLBOX_NET_RUN=$work/run
+export TOOLBOX_NET_UID=0
+mkdir -p "$TOOLBOX_NET_RUN"
+A5_ETC=$TOOLBOX_NET_ETC/terry-toolbox-xray
+A5_BIN=$TOOLBOX_NET_BIN_DIR/terry-toolbox-xray
+A5_UNIT=$TOOLBOX_NET_UNIT_DIR/terry-toolbox-xray.service
+export TOOLBOX_A5_LIMITS=10485760:524288:1048576:262144:524288
+
+# ---------- RSS 桩：只实现模块用到的子命令 ----------
+cat > "$work/pkg/xray-stub" <<'STUB'
+#!/usr/bin/env bash
+conf=''; test_only=0
+case ${1:-} in
+    uuid) printf '3f2a0f2e-1111-4222-8333-444455556666\n'; exit 0 ;;
+    x25519) printf 'PrivateKey: 0LHifSE0_fQEYRl_kTW3YtJRQi4J0HjJY_u0qOgKlFQ\nPassword (PublicKey): LekO3lYTCagolRongTjy_XMM5A_K_bbwLScIWEZneQE\n'; exit 0 ;;
+    run) shift ;;
+    *) exit 2 ;;
+esac
+while (( $# )); do
+    case $1 in
+        -test) test_only=1 ;;
+        -c) shift; conf=${1:-} ;;
+    esac
+    shift
+done
+if (( test_only )); then
+    [[ -e $SD/a5_badconf ]] && { printf 'failed to load config\n'; exit 1; }
+    exit 0
+fi
+[[ -r $conf ]] || exit 1
+if [[ -e $SD/a5_listen_fail ]]; then printf 'failed to listen\n'; exit 1; fi
+port=$(sed -n 's/.*"port": *\([0-9]*\),\{0,1\}$/\1/p' "$conf" | head -n1)
+printf 'transport/internet/tcp: listening tcp on 0.0.0.0:%s\n' "$port"
+trap 'grep -v "a5stub,pid=4242," "$SD/ports" > "$SD/ports.n" 2>/dev/null; mv "$SD/ports.n" "$SD/ports" 2>/dev/null' EXIT
+printf 'LISTEN 0 128 0.0.0.0:%s 0.0.0.0:* users:(("a5stub",pid=4242,fd=3))\n' "$port" >> "$SD/ports"
+while :; do
+    if [[ -e $SD/a5_hit ]]; then
+        who=$(cat "$SD/a5_hit"); rm -f "$SD/a5_hit"
+        if [[ $who == good ]]; then
+            [[ -e $SD/a5_no_accept ]] || printf 'from 127.0.0.1:5000 accepted tcp:dest.example.test:443 [vless-in >> direct]\n'
+        else
+            printf 'from 127.0.0.1:5001 rejected  proxy/vless/encoding: invalid request user id: 1111\n'
+        fi
+        : > "$SD/a5_ack"
+    fi
+    command sleep 0.02
+done
+STUB
+chmod +x "$work/pkg/xray-stub"
+python3 - "$work/pkg/xray-stub" "$work/pkg/xray.zip" <<'PY'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[2], 'w') as z:
+    z.write(sys.argv[1], 'xray')
+PY
+export TOOLBOX_A5_ZIP_SRC=$work/pkg/xray.zip
+TOOLBOX_A5_SHA256=$(sha256sum -- "$TOOLBOX_A5_ZIP_SRC" | cut -d' ' -f1)
+export TOOLBOX_A5_SHA256
+
+# 模块的探针在桩环境里换成「写命中标记 + 等 a5stub 落日志」，判据仍由模块自己算。
+net_a5_probe() { # bin port uuid pub shortid sni label
+    local who=good
+    [[ -e $SD/a5_probe_fail ]] && return 1
+    if [[ $3 == '11111111-1111-4111-8111-111111111111' ]]; then who=bad; fi
+    [[ $who == bad && -e $SD/a5_no_reject ]] || printf '%s\n' "$who" > "$SD/a5_hit"
+    local i
+    for ((i = 0; i < 200; i++)); do [[ -e $SD/a5_ack ]] && break; command sleep 0.01; done
+    rm -f -- "$SD/a5_ack" "$SD/a5_hit"
+    return 0
+}
+
+inst_a5() { printf 'YES\nXRAY\n' | toolbox_network A5 install "$@"; }
+
+# ---------- 目标能力：TLS 1.3 / h2 / 证书覆盖，缺一即拒 ----------
+openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 30 \
+    -keyout "$work/a5t.key" -out "$work/a5t.crt" -subj '/CN=dest.example.test' \
+    -addext 'subjectAltName=DNS:dest.example.test' >/dev/null 2>&1 || fail '无法生成目标证书'
+openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 30 \
+    -keyout "$work/a5u.key" -out "$work/a5u.crt" -subj '/CN=other.example.test' \
+    -addext 'subjectAltName=DNS:other.example.test' >/dev/null 2>&1 || fail '无法生成目标证书'
+# 目标握手桩：必须是脚本，模块用 `timeout openssl` 调用，函数拦截不到。
+cat > "$work/pathbin/openssl" <<'OSTUB'
+#!/usr/bin/env bash
+echo "SD=[$SD] tls12=$([[ -e $SD/a5_tls12 ]] && echo y || echo n)" >> "$SD/stub.log"
+if [[ ${1:-} == s_client ]]; then
+    printf 'CONNECTED(00000003)\n'
+    if [[ -e $SD/a5_tls12 ]]; then
+        printf 'New, TLSv1.2, Cipher is ECDHE\n    Protocol  : TLSv1.2\n'
+    else
+        printf 'New, TLSv1.3, Cipher is TLS_AES_256_GCM_SHA384\n    Protocol  : TLSv1.3\n'
+    fi
+    [[ -e $SD/a5_noalpn ]] || printf 'ALPN protocol: h2\n'
+    if [[ -e $SD/a5_wrongcert ]]; then cat "$A5_WRONG_CRT"; else cat "$A5_GOOD_CRT"; fi
+    printf '---\n'
+    exit 0
+fi
+exec /usr/bin/openssl "$@"
+OSTUB
+chmod +x "$work/pathbin/openssl"
+hash -r   # 之前已解析过 /usr/bin/openssl，必须丢掉路径缓存
+export SD A5_GOOD_CRT=$work/a5t.crt A5_WRONG_CRT=$work/a5u.crt
+net_a5_check_target dest.example.test 443 dest.example.test || fail 'A5 目标检查误拒正常目标'
+: > "$SD/a5_tls12"
+net_a5_check_target dest.example.test 443 dest.example.test 2>"$work/o" && fail 'A5 只支持 TLS1.2 的目标被接受'
+grep -q 'TLS 1.3' "$work/o" || fail 'A5 未说明 TLS 1.3 要求'
+rm -f "$SD/a5_tls12"; : > "$SD/a5_noalpn"
+net_a5_check_target dest.example.test 443 dest.example.test 2>"$work/o" && fail 'A5 无 h2 的目标被接受'
+grep -q 'h2' "$work/o" || fail 'A5 未说明 h2 要求'
+rm -f "$SD/a5_noalpn"; : > "$SD/a5_wrongcert"
+net_a5_check_target dest.example.test 443 dest.example.test 2>"$work/o" && fail 'A5 证书不覆盖 SNI 的目标被接受'
+grep -q '不覆盖' "$work/o" || fail 'A5 未说明证书覆盖'
+rm -f "$SD/a5_wrongcert"
+
+# ---------- 前置条件：全部在写盘前拒绝 ----------
+# 从这里起目标检查改为桩，避免依赖网络。
+TOOLBOX_NET_UID=1000 toolbox_network A5 install dest.example.test dest.example.test </dev/null >"$work/o" 2>&1 && fail 'A5 非 root 被接受'
+grep -q 'root' "$work/o" || fail 'A5 非 root 未说明'
+assert_clean 'A5 非 root'
+TOOLBOX_NET_OS_RELEASE=$work/ubuntu toolbox_network A5 install dest.example.test dest.example.test </dev/null >"$work/o" 2>&1 && fail 'A5 Ubuntu 被接受'
+grep -q '仅支持 Debian' "$work/o" || fail 'A5 Ubuntu 未说明'
+assert_clean 'A5 Ubuntu'
+TOOLBOX_NET_SYSTEMD_RUN=$work/nope toolbox_network A5 install dest.example.test dest.example.test </dev/null >"$work/o" 2>&1 && fail 'A5 无 systemd 被接受'
+assert_clean 'A5 无 systemd'
+net_a5_check_target() { return 0; }   # 前置条件测试不联网
+
+inst_a5 >"$work/o" 2>&1 && fail 'A5 缺目标被接受'
+grep -q '回落目标' "$work/o" || fail 'A5 缺目标未说明'
+inst_a5 dest.example.test >"$work/o" 2>&1 && fail 'A5 缺 SNI 被接受'
+grep -q 'SNI' "$work/o" || fail 'A5 缺 SNI 未说明'
+inst_a5 'dest.example.test:0' dest.example.test >"$work/o" 2>&1 && fail 'A5 目标端口非法被接受'
+inst_a5 'bad host' dest.example.test >"$work/o" 2>&1 && fail 'A5 目标主机非法被接受'
+inst_a5 dest.example.test 'Bad_SNI' >"$work/o" 2>&1 && fail 'A5 SNI 非法被接受'
+inst_a5 dest.example.test dest.example.test 0080 >"$work/o" 2>&1 && fail 'A5 监听端口非法被接受'
+TOOLBOX_A5_LIMITS=1:2:3 inst_a5 dest.example.test dest.example.test >"$work/o" 2>&1 && { cat "$work/o" >&2; fail 'A5 限速参数残缺被接受'; }
+grep -q 'TOOLBOX_A5_LIMITS' "$work/o" || { cat "$work/o" >&2; fail 'A5 限速参数残缺未说明'; }
+assert_clean 'A5 参数'
+
+# 安装路径里的目标检查：失败必须发生在写盘前
+net_a5_check_target() { net_err '模拟目标不合格'; return 1; }
+inst_a5 dest.example.test dest.example.test >"$work/o" 2>&1 && fail 'A5 目标不合格仍安装'
+assert_clean 'A5 目标不合格'
+net_a5_check_target() { return 0; }
+
+# ---------- 归属冲突 ----------
+mkdir -p "$TOOLBOX_NET_UNIT_DIR"
+printf '[Service]\nExecStart=/usr/bin/someone-else\n' > "$A5_UNIT"
+inst_a5 dest.example.test dest.example.test 8443 >"$work/o" 2>&1 && fail 'A5 外来单元被覆盖'
+grep -q '不是本模块生成' "$work/o" || fail 'A5 外来单元未说明'
+[[ ! -e $A5_BIN ]] || fail 'A5 外来单元仍写了二进制'
+toolbox_network A5 uninstall <<< 'YES' >"$work/o" 2>&1 && fail 'A5 卸载删了外来单元'
+[[ -e $A5_UNIT ]] || fail 'A5 外来单元被删'
+reset
+printf '[Service]\nExecStart=%s run -c x\n' "$A5_BIN" > "$A5_UNIT"
+: > "$SD/active"
+inst_a5 dest.example.test dest.example.test 8443 >"$work/o" 2>&1 && fail 'A5 运行中未拒绝重装'
+grep -q '已在运行' "$work/o" || fail 'A5 运行中未说明'
+rm -f "$SD/active"
+inst_a5 dest.example.test dest.example.test 8443 >"$work/o" 2>&1 && fail 'A5 残留未拒绝重装'
+grep -q '残留' "$work/o" || fail 'A5 残留未说明'
+reset
+mkdir -p "$A5_ETC"
+inst_a5 dest.example.test dest.example.test 8443 >"$work/o" 2>&1 && fail 'A5 无单元但有配置目录仍安装'
+reset
+: > "$A5_BIN"
+inst_a5 dest.example.test dest.example.test 8443 >"$work/o" 2>&1 && fail 'A5 无单元但有二进制仍安装'
+reset
+
+# ---------- 端口占用 ----------
+printf 'LISTEN 0 128 0.0.0.0:8443 0.0.0.0:* users:(("nginx",pid=7,fd=3))\n' > "$SD/ports"
+inst_a5 dest.example.test dest.example.test 8443 >"$work/o" 2>&1 && fail 'A5 端口占用被接受'
+grep -q 'nginx' "$work/o" || fail 'A5 未给出占用者'
+assert_clean 'A5 端口占用'
+reset
+
+# ---------- 确认、下载、校验 ----------
+printf 'YES\n' | toolbox_network A5 install dest.example.test dest.example.test >"$work/o" 2>&1 && fail 'A5 单次确认通过'
+assert_clean 'A5 单次确认'
+printf 'YES\nnope\n' | toolbox_network A5 install dest.example.test dest.example.test >"$work/o" 2>&1 && fail 'A5 二次确认不符通过'
+assert_clean 'A5 二次确认'
+reset
+TOOLBOX_A5_ZIP_SRC='' : > "$SD/download_fail"
+TOOLBOX_A5_ZIP_SRC='' inst_a5 dest.example.test dest.example.test 8443 >"$work/o" 2>&1 && fail 'A5 下载失败被当成成功'
+assert_clean 'A5 下载失败'
+reset
+TOOLBOX_A5_SHA256=0000000000000000000000000000000000000000000000000000000000000000 \
+    inst_a5 dest.example.test dest.example.test 8443 >"$work/o" 2>&1 && fail 'A5 校验和不符被接受'
+grep -q 'SHA-256 不匹配' "$work/o" || fail 'A5 校验失败未说明'
+assert_clean 'A5 校验失败'
+reset
+
+# ---------- 写盘后失败：一律回滚干净 ----------
+: > "$SD/a5_badconf"
+inst_a5 dest.example.test dest.example.test 8443 >"$work/o" 2>&1 && fail 'A5 配置自检失败被当成成功'
+grep -q '配置自检失败' "$work/o" || fail 'A5 自检失败未说明'
+assert_clean 'A5 自检失败'
+reset
+: > "$SD/a5_listen_fail"
+inst_a5 dest.example.test dest.example.test 8443 >"$work/o" 2>&1 && fail 'A5 冒烟不监听被当成成功'
+grep -q '冒烟启动失败' "$work/o" || fail 'A5 冒烟失败未说明'
+assert_clean 'A5 冒烟失败'
+reset
+: > "$SD/a5_probe_fail"
+inst_a5 dest.example.test dest.example.test 8443 >"$work/o" 2>&1 && fail 'A5 正向探测失败被当成成功'
+grep -q '认证探测失败' "$work/o" || fail 'A5 探测失败未说明'
+assert_clean 'A5 正向探测失败'
+reset
+# 数据面通、但服务端没有认证通过记录 → 只可能是回退转发，必须失败
+: > "$SD/a5_no_accept"
+inst_a5 dest.example.test dest.example.test 8443 >"$work/o" 2>&1 && fail 'A5 无认证记录被当成成功'
+grep -q '没有认证通过记录' "$work/o" || { cat "$work/o" >&2; fail 'A5 无认证记录未说明'; }
+assert_clean 'A5 无认证记录'
+reset
+# 错误 UUID 未被拒绝
+: > "$SD/a5_no_reject"
+inst_a5 dest.example.test dest.example.test 8443 >"$work/o" 2>&1 && fail 'A5 错误 UUID 未被拒仍成功'
+grep -q '没有被拒绝' "$work/o" || fail 'A5 错误 UUID 未被拒未说明'
+assert_clean 'A5 错误 UUID 未被拒'
+reset
+: > "$SD/enable_fail"
+inst_a5 dest.example.test dest.example.test 8443 >"$work/o" 2>&1 && fail 'A5 enable 失败被当成成功'
+assert_clean 'A5 enable 失败'
+reset
+: > "$SD/noactivate"
+inst_a5 dest.example.test dest.example.test 8443 >"$work/o" 2>&1 && fail 'A5 未 active 被当成成功'
+assert_clean 'A5 未 active'
+reset
+rm -f "$SD/mainpid"
+inst_a5 dest.example.test dest.example.test 8443 >"$work/o" 2>&1 && fail 'A5 端口不归本服务时仍成功'
+grep -q '监听进程不是' "$work/o" || fail 'A5 端口归属失败未说明'
+assert_clean 'A5 端口不归属'
+reset
+printf '4242\n' > "$SD/mainpid"
+
+# ---------- 清单回滚：只删登记过且未改动的路径，外来单元不动 ----------
+mkdir -p "$A5_ETC"
+printf 'keep-original\n' > "$A5_ETC/config.json"
+printf 'bin\n' > "$A5_BIN"
+printf '[Service]\nExecStart=/usr/bin/other\n' > "$A5_UNIT"
+# 这两个全局量由模块的 net_a5_rollback 读取，测试里只需预设。
+# shellcheck disable=SC2034
+net_a5_manifest=(); net_a5_etc_created=0
+net_a5_record "$A5_ETC/config.json"; net_a5_record "$A5_BIN"
+printf 'touched\n' >> "$A5_ETC/config.json"
+net_a5_rollback >/dev/null 2>&1
+[[ -e $A5_ETC/config.json ]] || fail 'A5 回滚删了被改动的文件'
+[[ ! -e $A5_BIN ]] || fail 'A5 回滚没删登记过的文件'
+[[ -e $A5_UNIT ]] || fail 'A5 回滚删了外来单元'
+rm -rf "$A5_ETC" "$A5_BIN" "$A5_UNIT"
+# shellcheck disable=SC2034
+net_a5_manifest=()
+
+# ---------- 并发锁 ----------
+mkdir -p "$TOOLBOX_NET_LOCK_DIR"
+( flock 9; command sleep 30 ) 9>"$TOOLBOX_NET_LOCK_DIR/terry-toolbox-a5.lock" &
+lockpid=$!
+command sleep 0.4
+inst_a5 dest.example.test dest.example.test 8443 >"$work/o" 2>&1 && fail 'A5 锁被占时仍安装'
+grep -q '正在进行' "$work/o" || fail 'A5 未报告并发'
+assert_clean 'A5 并发'
+kill "$lockpid" 2>/dev/null || true
+wait "$lockpid" 2>/dev/null || true
+reset
+
+# ---------- 成功路径 ----------
+inst_a5 dest.example.test dest.example.test 18445 >"$work/o" 2>&1 || { cat "$work/o" >&2; fail 'A5 正常安装失败'; }
+conf=$A5_ETC/config.json
+[[ -x $A5_BIN && -s $conf && -e $A5_UNIT ]] || fail 'A5 产物不全'
+[[ $(stat -c %a "$conf") == 600 ]] || fail 'A5 配置权限不是 600'
+grep -q '"target": "dest.example.test:443"' "$conf" || fail 'A5 目标未写入'
+grep -q '"serverNames": \[ "dest.example.test" \]' "$conf" || fail 'A5 serverNames 不对'
+grep -q '"port": 18445' "$conf" || fail 'A5 监听端口未写入'
+grep -q '"flow": "xtls-rprx-vision"' "$conf" || fail 'A5 未开 vision'
+grep -q '"3f2a0f2e-1111-4222-8333-444455556666"' "$conf" || fail 'A5 UUID 未写入'
+grep -q '"shortIds": \[ "[0-9a-f]\{16\}" \]' "$conf" || fail 'A5 shortId 不是 16 位十六进制'
+# 回退限速：两个方向都在，且 afterBytes/burst 有值、burst ≥ bytesPerSec
+grep -q '"limitFallbackUpload"' "$conf" || fail 'A5 缺上行限速'
+grep -q '"limitFallbackDownload"' "$conf" || fail 'A5 缺下行限速'
+for dir in Upload Download; do
+    after=$(sed -n "/limitFallback$dir/,/}/p" "$conf" | sed -n 's/.*"afterBytes": \([0-9]*\).*/\1/p')
+    bps=$(sed -n "/limitFallback$dir/,/}/p" "$conf" | sed -n 's/.*"bytesPerSec": \([0-9]*\).*/\1/p')
+    burst=$(sed -n "/limitFallback$dir/,/}/p" "$conf" | sed -n 's/.*"burstBytesPerSec": \([0-9]*\).*/\1/p')
+    [[ -n $after && -n $bps && -n $burst ]] || fail "A5 $dir 限速缺字段"
+    (( after >= 4194304 && after <= 16777216 )) || fail "A5 $dir afterBytes 不在 4-16 MiB: $after"
+    (( bps > 0 && burst >= bps )) || fail "A5 $dir 令牌桶参数不合理 bps=$bps burst=$burst"
+done
+grep -q '"limitFallbackUpload": {' "$conf" || fail 'A5 上行限速不是对象'
+grep -q '"decryption": "none"' "$conf" || fail 'A5 decryption 不对'
+grep -q '"show": false' "$conf" || fail 'A5 打开了 show'
+# 单元：精确绝对路径、沙箱、开机自启
+grep -qF "ExecStart=$A5_BIN run -c $conf" "$A5_UNIT" || fail 'A5 ExecStart 不是精确绝对路径'
+for f in 'Type=simple' 'Restart=on-failure' 'NoNewPrivileges=yes' 'ProtectSystem=strict' \
+    'PrivateTmp=yes' 'CAP_NET_BIND_SERVICE' 'RestrictAddressFamilies=AF_INET AF_INET6' "ReadWritePaths=$A5_ETC"; do
+    grep -qF "$f" "$A5_UNIT" || fail "A5 单元缺少 $f"
+done
+grep -q 'WantedBy=multi-user.target' "$A5_UNIT" || fail 'A5 未设开机自启'
+called 'enable --now terry-toolbox-xray.service' systemctl.log
+[[ $(stat -c %a "$A5_ETC/meta") == 600 ]] || fail 'A5 meta 权限不对'
+grep -q 'vless://3f2a0f2e-1111-4222-8333-444455556666' <<< "$(<"$work/o")" || fail 'A5 未输出客户端链接'
+grep -q '\[已验证\] 正确 UUID' <<< "$(<"$work/o")" || fail 'A5 未标注认证已验证'
+grep -q '\[已限制\]' <<< "$(<"$work/o")" || fail 'A5 未报告回退限速'
+! grep -q '\[未验证\]' <<< "$(<"$work/o")" || fail 'A5 仍留未验证项'
+grep -q 'TCP 18445' <<< "$(<"$work/o")" || fail 'A5 未提示放行端口'
+
+toolbox_network A5 status >"$work/o" 2>&1 || fail 'A5 status 失败'
+grep -q '由本服务持有' "$work/o" || fail 'A5 status 未识别自有监听'
+printf '999\n' > "$SD/mainpid"
+toolbox_network A5 status >"$work/o" 2>&1 || true
+grep -q '不是本服务' "$work/o" || fail 'A5 status 误认他人监听'
+printf '4242\n' > "$SD/mainpid"
+
+toolbox_network A5 uninstall <<< 'YES' >"$work/o" 2>&1 || { cat "$work/o" >&2; fail 'A5 卸载失败'; }
+assert_clean 'A5 卸载'
+reset
+
+# ---------- 真实端到端：真 xray 二进制 + 真探针 + 真回落目标 ----------
+# 本机有 xray（或 A5_REAL_XRAY 指定）且能出网时才跑；不下载就跳过。
+real_xray=${A5_REAL_XRAY:-$(command -v xray 2>/dev/null || true)}
+[[ -n $real_xray ]] || for c in /usr/local/bin/xray /usr/bin/xray; do
+    [[ -x $c ]] && { real_xray=$c; break; }
+done
+[[ -x $real_xray ]] || real_xray=''   # 指定的路径不存在就当没有
+if [[ -z $real_xray ]]; then
+    printf '（跳过真实端到端：没有 xray 二进制，设 A5_REAL_XRAY 可指定）\n'
+elif ! /usr/bin/curl -fsS --max-time 6 -o /dev/null https://www.cloudflare.com/ 2>/dev/null; then
+    printf '（跳过真实端到端：本机无出网）\n'
+else
+    realzip=$work/pkg/realxray.zip
+    if [[ ! -s $realzip ]]; then
+        /usr/bin/curl -fsSL --max-time 180 -o "$realzip" \
+            'https://github.com/XTLS/Xray-core/releases/download/v26.10.29/Xray-linux-64.zip' \
+            || { rm -f "$realzip"; printf '（跳过真实端到端：下载不到官方包）\n'; }
+    fi
+    if [[ -s $realzip ]]; then
+        # 取回真实函数（前面的桩只在该段有效）
+        source "$ROOT/modules/network.sh" 2>/dev/null || true
+        # 这一段要真实的 s_client 与 curl
+        rm -f "$work/pathbin/openssl"; mv "$work/bin/curl" "$work/bin/curl.off"
+        unset -f curl; hash -r
+        eval "a5_probe_dbg() $(declare -f net_a5_probe | tail -n +2)"
+        net_a5_probe() { a5_probe_dbg "$@"; local r=$?; cp -r "$TOOLBOX_NET_RUN/terry-toolbox-xray-verify" "$work/cli-$2" 2>/dev/null; return $r; }
+        # 绑真端口并让 systemctl 真的把 ExecStart 跑起来，别的照旧。
+        A5_REAL_PORT=$(net_alpine_free_port 18560)
+        sysfn=$(declare -f systemctl)   # 桩换掉后要还原，后面的 B31 还要用
+        systemctl() {
+            local line pid
+            case ${1:-} in
+                enable)
+                    : > "$SD/active"
+                    line=$(sed -n 's/^ExecStart=//p' \
+                        "$TOOLBOX_NET_UNIT_DIR/terry-toolbox-xray.service")
+                    ( eval "exec $line" >"$SD/real.log" 2>&1 ) 9>&- &
+                    pid=$!
+                    printf '%s\n' "$pid" > "$SD/mainpid"
+                    printf 'LISTEN 0 128 0.0.0.0:%s 0.0.0.0:* users:(("xray",pid=%s,fd=3))\n' \
+                        "$A5_REAL_PORT" "$pid" >> "$SD/ports"
+                    ;;
+                is-active) [[ -e $SD/active ]] && return 0 || return 3 ;;
+                disable)
+                    [[ $* == *--now* ]] && {
+                        rm -f "$SD/active"
+                        [[ -s $SD/mainpid ]] && kill "$(cat "$SD/mainpid")" 2>/dev/null
+                    }
+                    return 0 ;;
+                show) cat "$SD/mainpid" 2>/dev/null || printf '0\n' ;;
+                *) return 0 ;;
+            esac
+        }
+        TOOLBOX_A5_ZIP_SRC=$realzip TOOLBOX_A5_SHA256=$(sha256sum -- "$realzip" | cut -d' ' -f1) \
+            inst_a5 www.cloudflare.com www.cloudflare.com "$A5_REAL_PORT" >"$work/o" 2>&1 \
+            || { cat "$work/o" >&2; fail 'A5 真实端到端安装失败'; }
+        grep -q '\[已验证\] 正确 UUID' "$work/o" || fail 'A5 真实端到端未证明认证'
+        [[ -s $SD/real.log ]] || fail 'A5 真实服务没有日志'
+        grep -q 'accepted tcp:' "$SD/real.log" || fail 'A5 真实服务日志没有认证记录'
+        grep -q '"limitFallbackUpload"' "$A5_ETC/config.json" || fail 'A5 真实配置缺限速'
+        $real_xray run -test -c "$A5_ETC/config.json" >/dev/null 2>&1 || fail 'A5 真实配置过不了 xray 自检'
+        toolbox_network A5 uninstall <<< 'YES' >"$work/o" 2>&1 || fail 'A5 真实端到端卸载失败'
+        kill "$(cat "$SD/mainpid" 2>/dev/null)" 2>/dev/null || true
+        assert_clean 'A5 真实端到端卸载'
+        eval "$sysfn"; reset
+        printf '（真实端到端已通过）\n'
+    fi
+fi
+
+# ---------- 分发 ----------
+toolbox_network A5 bogus >"$work/o" 2>&1 && fail 'A5 未知动作被接受'
+grep -q '用法' "$work/o" || fail 'A5 未知动作未给用法'
+printf '9\n' | toolbox_network A5 >"$work/o" 2>&1 && fail 'A5 非法菜单编号被接受'
+printf '3\n' | toolbox_network A5 >"$work/o" 2>&1 && fail 'A5 未安装时 status 仍成功'
+grep -q '未安装' "$work/o" || fail 'A5 未进入 status'
+toolbox_network_xray status >"$work/o" 2>&1 && fail 'A5 别名 status 未安装仍成功'
+grep -q '未安装' "$work/o" || fail 'A5 别名未转到 status'
+
+# ================================================================ B31 Relay
+inst_relay() { printf 'YES\nRELAY\n' | toolbox_network B31 install "$@"; }
+for p in 0 70000 abc; do
+    inst_relay tcp "$p" 10.0.0.1 443 >"$work/o" 2>&1 && fail "B31 非法本地端口被接受: $p"
+done
+inst_relay sctp 8080 10.0.0.1 443 >"$work/o" 2>&1 && fail 'B31 非法协议被接受'
+inst_relay tcp 8080 'bad host' 443 >"$work/o" 2>&1 && fail 'B31 非法目标被接受'
+inst_relay tcp 8080 10.0.0.1 0 >"$work/o" 2>&1 && fail 'B31 非法目标端口被接受'
+assert_clean 'B31 参数'
+TOOLBOX_NET_SOCAT=$work/none inst_relay tcp 8080 10.0.0.1 443 >"$work/o" 2>&1 && fail 'B31 缺 socat 被接受'
+grep -q 'socat' "$work/o" || fail 'B31 缺 socat 未说明'
+MOCK_PORT=8080 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
+printf 'LISTEN 0 5 0.0.0.0:8080 0.0.0.0:* users:(("nginx",pid=7,fd=5))\n' > "$SD/ports"
+inst_relay tcp 8080 10.0.0.1 443 >"$work/o" 2>&1 && fail 'B31 端口占用被接受'
+grep -q 'nginx' "$work/o" || fail 'B31 未给出占用者'
+assert_clean 'B31 端口占用'
+reset
+MOCK_PORT=8080 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
+
+mkdir -p "$TOOLBOX_NET_UNIT_DIR"
+printf '[Service]\nExecStart=/usr/bin/socat TCP-LISTEN:8080\n' > "$TOOLBOX_NET_UNIT_DIR/terry-toolbox-relay-tcp-8080.service"
+inst_relay tcp 8080 10.0.0.1 443 >"$work/o" 2>&1 && fail 'B31 外来单元被覆盖'
+grep -q '不是本模块生成' "$work/o" || fail 'B31 外来单元未说明'
+reset
+MOCK_PORT=8080 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
+
+printf 'YES\n' | toolbox_network B31 install tcp 8080 10.0.0.1 443 >"$work/o" 2>&1 && fail 'B31 单次确认通过'
+assert_clean 'B31 单次确认'
+reset
+MOCK_PORT=8080 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
+: > "$SD/enable_fail"
+inst_relay tcp 8080 10.0.0.1 443 >"$work/o" 2>&1 && fail 'B31 enable 失败被当成成功'
+assert_clean 'B31 enable 失败'
+reset
+MOCK_PORT=8080 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
+: > "$SD/noactivate"
+inst_relay tcp 8080 10.0.0.1 443 >"$work/o" 2>&1 && fail 'B31 未 active 被当成成功'
+assert_clean 'B31 未 active'
+reset
+MOCK_PORT=8080 MOCK_PROTO=udp; export MOCK_PORT MOCK_PROTO
+rm -f "$SD/mainpid"
+inst_relay tcp 8080 10.0.0.1 443 >"$work/o" 2>&1 && fail 'B31 端口不归本服务时仍成功'
+reset
+
+# 成功：TCP 与 UDP 单元内容必须精确
+MOCK_PORT=18080 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
+inst_relay tcp 18080 relay.example.test 443 >"$work/o" 2>&1 || { cat "$work/o" >&2; fail 'B31 TCP 安装失败'; }
+tcp_unit=$TOOLBOX_NET_UNIT_DIR/terry-toolbox-relay-tcp-18080.service
+[[ -e $tcp_unit ]] || fail 'B31 未写单元'
+grep -qxF "ExecStart=$TOOLBOX_NET_SOCAT -d -d TCP-LISTEN:18080,fork,reuseaddr TCP:relay.example.test:443" "$tcp_unit" \
+    || { cat "$tcp_unit" >&2; fail 'B31 TCP ExecStart 不对'; }
+for f in 'Type=simple' 'Restart=on-failure' 'NoNewPrivileges=yes' 'ProtectSystem=strict' 'LimitNOFILE=65536'; do
+    grep -qF "$f" "$tcp_unit" || fail "B31 单元缺少 $f"
+done
+grep -q 'WantedBy=multi-user.target' "$tcp_unit" || fail 'B31 未设开机自启'
+called 'enable --now terry-toolbox-relay-tcp-18080.service' systemctl.log
+grep -q '\[未验证\] 端到端' <<< "$(<"$work/o")" || fail 'B31 未标注端到端未验证'
+
+MOCK_PORT=18081 MOCK_PROTO=udp; export MOCK_PORT MOCK_PROTO
+inst_relay udp 18081 relay.example.test 443 >"$work/o" 2>&1 || { cat "$work/o" >&2; fail 'B31 UDP 安装失败'; }
+udp_unit=$TOOLBOX_NET_UNIT_DIR/terry-toolbox-relay-udp-18081.service
+grep -qxF "ExecStart=$TOOLBOX_NET_SOCAT -d -d UDP-LISTEN:18081,reuseaddr,fork UDP:relay.example.test:443" "$udp_unit" \
+    || { cat "$udp_unit" >&2; fail 'B31 UDP ExecStart 不对'; }
+
+# 同一端口换协议允许并存
+MOCK_PORT=18081 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
+inst_relay tcp 18081 relay.example.test 443 >"$work/o" 2>&1 || { cat "$work/o" >&2; fail 'B31 同端口 TCP+UDP 并存失败'; }
+[[ $(ls "$TOOLBOX_NET_UNIT_DIR" | wc -l) -eq 3 ]] || fail 'B31 单元数不对'
+# 重复同协议同端口必须拒绝
+inst_relay tcp 18080 relay.example.test 443 >"$work/o" 2>&1 && fail 'B31 重复单元被覆盖'
+grep -q '已存在' "$work/o" || fail 'B31 重复单元未说明'
+
+toolbox_network B31 status >"$work/o" 2>&1 || fail 'B31 status 失败'
+grep -q 'terry-toolbox-relay-udp-18081.service' "$work/o" || fail 'B31 status 未列出单元'
+grep -q 'ExecStart' "$work/o" || fail 'B31 status 未显示 ExecStart'
+
+# 逐个卸载只删指定的，另一个保留
+toolbox_network B31 uninstall udp 18081 <<< 'YES' >"$work/o" 2>&1 || fail 'B31 单条卸载失败'
+[[ ! -e $udp_unit && -e $tcp_unit ]] || fail 'B31 单条卸载删错单元'
+# 参数个数不对要拒绝
+toolbox_network B31 uninstall tcp <<< 'YES' >/dev/null 2>&1 && fail 'B31 卸载参数不全被接受'
+toolbox_network B31 uninstall all <<< 'YES' >"$work/o" 2>&1 || fail 'B31 全部卸载失败'
+[[ -z $(ls "$TOOLBOX_NET_UNIT_DIR") ]] || fail 'B31 全部卸载有残留'
+toolbox_network B31 status >/dev/null 2>&1 && fail 'B31 卸载后 status 仍报存在'
+reset
+
+# 真实 socat 往返：直接用生成的 ExecStart，证明参数本身可用。
+if [[ -x /usr/bin/socat || -x /bin/socat ]]; then
+    # PATH 里的 socat 是桩，真实往返必须用真身。
+    real_socat=/usr/bin/socat
+    [[ -x $real_socat ]] || real_socat=/bin/socat
+    save_socat=$TOOLBOX_NET_SOCAT
+    TOOLBOX_NET_SOCAT=$real_socat
+    net_relay_write_unit tcp 18590 127.0.0.1 18591 || fail 'B31 真实单元生成失败'
+    exec_line=$(sed -n 's/^ExecStart=//p' "$TOOLBOX_NET_UNIT_DIR/terry-toolbox-relay-tcp-18590.service")
+    [[ -n $exec_line ]] || fail 'B31 真实单元无 ExecStart'
+    out=$(timeout 15 bash -c '
+        set -u
+        "$1" -d -d TCP-LISTEN:18591,fork,reuseaddr EXEC:/bin/cat >/dev/null 2>&1 &
+        t=$!
+        '"$exec_line"' >/dev/null 2>&1 &
+        r=$!
+        for i in $(seq 50); do ss -ltn 2>/dev/null | grep -q ":18590 " && break; sleep 0.1; done
+        exec 3<>/dev/tcp/127.0.0.1/18590 || exit 9
+        printf "relay-through\n" >&3
+        read -r -t 5 line <&3
+        printf "%s" "$line"
+        kill $r $t 2>/dev/null
+    ' _ "$real_socat" 2>&1) || true
+    [[ $out == relay-through ]] || { printf 'GOT:[%s]\n' "$out" >&2; fail 'B31 真实转发未通'; }
+    TOOLBOX_NET_SOCAT=$save_socat
+    reset
+fi
+
+# 菜单入口（无参数）走子菜单，编号 3 是状态
+printf '3\n' | toolbox_network B12 >"$work/o" 2>&1 && fail 'B12 未安装时 status 应失败'
+grep -q '未安装' "$work/o" || fail 'B12 子菜单未进入 status'
+printf '9\n' | toolbox_network B31 >"$work/o" 2>&1 && fail 'B31 子菜单非法编号被接受'
+printf '3\n' | toolbox_network B31 >"$work/o" 2>&1 && fail 'B31 未安装时 status 应失败'
+printf '3\n' | toolbox_network A3 >"$work/o" 2>&1 && fail 'A3 未安装时 status 应失败'
+printf '9\n' | toolbox_network A3 >"$work/o" 2>&1 && fail 'A3 子菜单非法编号被接受'
+printf '3\n' | toolbox_network B12 2>/dev/null | grep -q 'B12 TCP Brutal' && fail 'B12 子菜单标题漏到 stdout'
+
 printf 'network tests passed\n'

@@ -17,11 +17,16 @@ bash -s -- --list < "$artifact" > "$tmp/stdin-list" 2> "$tmp/stdin-error"
 if bash "$artifact" --unknown >"$tmp/out" 2>&1; then fail 'accepted unknown option'; fi
 out=$(printf '0\n' | bash "$artifact")
 [[ $out == *'Terry 服务器工具箱'* ]] || fail 'menu exit'
-out=$(printf 'DIAG\nB18\nA1\nB2\nB28\n0\n' | HOME="$tmp" bash "$artifact" 2>&1)
+# 每个动作单独一次运行：B2/A5 可能各自读 stdin，混在一起会互相吃掉输入。
+out=$(printf 'DIAG\n0\n' | HOME="$tmp" bash "$artifact" 2>&1)
 [[ $out == *'=== 系统 ==='* ]] || fail 'diagnostics dispatch'
+out=$(printf 'B18\n0\n' | HOME="$tmp" bash "$artifact" 2>&1)
 [[ $out == *'预留，暂未实现'* ]] || fail 'reserved B18'
-[[ $out == *'A1 (Alpine HY2): 未实现'* ]] || fail 'network dispatch'
-[[ $out == *'NodeQuality（不执行未经验证的远程脚本）'* ]] || fail 'system dispatch'
+# A5 已启用，但此环境缺依赖会先退出，没有固定文案；只要求菜单不中断。
+out=$(printf 'A5\n0\n' | HOME="$tmp" bash "$artifact" 2>&1)
+[[ $out == *'请输入编号：'* ]] || fail 'network dispatch'
+out=$(printf 'B2\nNO\n0\n' | HOME="$tmp" bash "$artifact" 2>&1)
+[[ $out == *'NodeQuality：官方综合测试'* ]] || fail 'system dispatch'
 # App dispatch needs a Docker stub: B28 prints its image and note, then the trailing "0"
 # is an invalid port, which aborts before any data directory is created.
 mkdir -p "$tmp/stub"

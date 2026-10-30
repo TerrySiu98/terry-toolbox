@@ -28,7 +28,8 @@ run_action() {
     A4) a4_menu ;;
     A1|A2|A3|A5|B12|B23|B31) toolbox_network "$key" ;;
     B3|B4|B5|B9|B13|B17|B20|B21|B22|B24|B25|B26|B27|B28|B29|B30) toolbox_app "${key#B}" ;;
-    MAIN_BBR|MAIN_DEPS|MAIN_REINSTALL|MAIN_REBOOT|B1|B2|B6|B7|B8|B10|B11|B14|B15|B16|B19) toolbox_system "$key" ;;
+    MAIN_BBR|MAIN_DEPS|MAIN_REINSTALL|MAIN_REBOOT|B1|B2|B6|B7|B8|B11|B14|B15|B16|B19) toolbox_system "$key" ;;
+    B10) toolbox_webssh ;;
     B18) printf 'B18：预留，暂未实现。\n' ; return 1 ;;
     *) printf '无效选项：%s\n' "$key" ; return 1 ;;
   esac
