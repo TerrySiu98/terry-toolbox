@@ -75,7 +75,7 @@ Terry Toolbox 是一个面向 Linux 服务器的中文菜单工具箱。登录�
 | `A2` | Alpine Xray | 计划 |
 | `A3` | TUIC | 计划 |
 | `A4` | Hysteria 2 | 计划：暂时禁用，安装安全问题修复后再启用 |
-| `A5` | Xray | 计划 |
+| `A5` | Xray | 开发中：Debian / Ubuntu systemd 的 VLESS Reality 安装流程，真实连接待验证 |
 | `B12` | TCP Brutal | 计划 |
 | `B23` | DNS 切换 | 计划：当前暂不启用 |
 | `B31` | Relay 转发 | 计划 |
