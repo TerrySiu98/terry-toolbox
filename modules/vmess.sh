@@ -160,7 +160,7 @@ def parents_match(stored):
 
 BOOTDIR = os.path.join(os.path.dirname(unit), 'multi-user.target.wants')
 BOOTLINK = os.path.join(BOOTDIR, NAME)
-SYSTEMD_ROOTS = (os.path.dirname(unit), '/etc/systemd/system', '/run/systemd/system', '/usr/local/lib/systemd/system', '/usr/lib/systemd/system', '/lib/systemd/system')
+SYSTEMD_ROOTS = tuple(dict.fromkeys((os.path.dirname(unit), '/etc/systemd/system', '/run/systemd/system', '/usr/local/lib/systemd/system', '/usr/lib/systemd/system', '/lib/systemd/system')))
 DEPDIRS = ('.wants', '.requires', '.upholds')
 def linkdata():
     fd, name = parent(BOOTLINK)
@@ -553,7 +553,7 @@ PY
 vmess_service_read() {
     local output line key value
     local -A seen=()
-    output=$(systemctl show terry-toolbox-vmess.service --no-pager \
+    output=$(systemctl show terry-toolbox-vmess.service --no-pager --all \
         -p LoadState -p ActiveState -p SubState -p MainPID -p FragmentPath -p DropInPaths -p Job 2>/dev/null) || return 1
     vmess_load='' vmess_active='' vmess_sub='' vmess_pid='' vmess_fragment='' vmess_dropins='' vmess_job=''
     while IFS= read -r line; do
@@ -633,6 +633,37 @@ vmess_certificate() {
     now=$(date +%s) || return 1
     [[ $epoch =~ ^-?[0-9]+$ && $now =~ ^[0-9]+$ ]] && (( epoch <= now )) || return 1
     net_tls_trusted "$1" || { vmess_err '证书链不被信任；没有 insecure 降级。'; return 1; }
+}
+vmess_existing_certificate() {
+    # Only the exact sealed installed pair can use expiry-independent recovery.
+    # This helper is never used for a candidate pair or the post-start TLS probe.
+    local info host port path listen hasunit cert key pub keypub start epoch now help
+    local cafile=${TOOLBOX_NET_CAFILE-/etc/ssl/certs/ca-certificates.crt}
+    local capath=${TOOLBOX_NET_CAPATH-/etc/ssl/certs}
+    local -a trust=()
+    info=$(vmess_fs verify --complete) || return 1
+    read -r host port path listen hasunit <<< "$info"
+    cert=$(vmess_etc)/cert.pem; key=$(vmess_etc)/key.pem
+    pub=$(openssl x509 -in "$cert" -pubkey -noout 2>/dev/null) || return 1
+    keypub=$(openssl pkey -in "$key" -passin pass: -pubout 2>/dev/null) || return 1
+    [[ $pub == "$keypub" ]] || return 1
+    start=$(openssl x509 -in "$cert" -startdate -noout 2>/dev/null) || return 1
+    [[ $start == notBefore=* ]] || return 1
+    epoch=$(date -d "${start#notBefore=}" +%s) || return 1
+    now=$(date +%s) || return 1
+    [[ $epoch =~ ^-?[0-9]+$ && $now =~ ^[0-9]+$ ]] && (( epoch <= now )) || return 1
+    [[ ! ${TOOLBOX_NET_CAFILE+x} || -n $cafile ]] || return 1
+    [[ ${TOOLBOX_NET_CAFILE+x} || -r $cafile ]] || cafile=''
+    if [[ -n $cafile ]]; then
+        [[ -f $cafile && -r $cafile && -s $cafile ]] || return 1
+        trust=(-CAfile "$cafile" -no-CApath)
+    else
+        [[ -n $capath && -d $capath ]] || return 1
+        trust=(-CApath "$capath" -no-CAfile)
+    fi
+    help=$(openssl verify -help 2>&1) || :
+    if [[ $help == *-no-CAstore* ]]; then trust+=(-no-CAstore); fi
+    openssl verify "${trust[@]}" -no_check_time -purpose sslserver -verify_hostname "$host" -untrusted "$cert" "$cert" >/dev/null 2>&1
 }
 vmess_fetch() { # stage: fixed official URL and whitelist, local archive is not trusted
     local arch url hash
@@ -808,7 +839,9 @@ vmess_rollback() {
     local info host port path listen hasunit
     info=$(vmess_fs verify "$vmess_stage") || { vmess_err '没有本次创建的完整可信归属清单，保留现场。'; return 1; }
     read -r host port path listen hasunit <<< "$info"
+    vmess_lock_check || return 1
     vmess_stop_gate "$port" "$hasunit" || { vmess_err '停止未确认（未知状态/任务/监听亦拒绝删除）；保留全部文件。'; return 1; }
+    vmess_lock_check || return 1
     vmess_fs remove || return 1
     systemctl daemon-reload || return 1
     vmess_removed "$port" || return 1
@@ -893,10 +926,12 @@ vmess_install() (
     vmess_fs publish "$vmess_stage" "$parents" "$host" "$port" "$path" "$listen" || return 1
     vmess_fs verify --complete "$vmess_stage" >/dev/null || return 1
     "$(vmess_bin)" run -test -config "$(vmess_etc)/config.json" >"$vmess_stage/validate.log" 2>&1 || { vmess_err 'Xray 配置校验失败。'; return 1; }
+    vmess_lock_check || return 1
     systemctl daemon-reload || return 1
     vmess_service_read || return 1
     [[ $vmess_load == loaded && $vmess_fragment == "$(vmess_unit)" && $vmess_active == inactive && $vmess_sub == dead && $vmess_pid == 0 ]] || return 1
     vmess_fs verify --complete "$vmess_stage" >/dev/null || return 1
+    vmess_lock_check || return 1
     vmess_started=1
     systemctl start terry-toolbox-vmess.service || return 1
     for i in {1..12}; do
@@ -906,6 +941,7 @@ vmess_install() (
     [[ $good == 1 ]] || { vmess_err 'service/socket/TLS 验证未通过。'; return 1; }
     vmess_fs verify --complete "$vmess_stage" >/dev/null || return 1
     vmess_running "$port" "$listen" || return 1
+    vmess_lock_check || return 1
     vmess_done=1
     vmess_err "服务状态、TCP 归属及 TLS/WS 握手已验证；VMess 认证/公网连通仍需外部验收。客户端 Xray 配置：$(vmess_etc)/client.json（本地 SOCKS 127.0.0.1:1080）；导入链接：$(vmess_etc)/vmess.txt。"
     vmess_err '凭据文件均 0600，未打印 UUID。域名需由您指向服务器；证书续期/防火墙需人工管理；自启默认关闭，可显式 enable-boot。'
@@ -947,6 +983,7 @@ vmess_uninstall() (
         vmess_stage=''; vmess_token=''; vmess_changing=0; vmess_done=0
     fi
     vmess_fs verify >/dev/null || return 1
+    vmess_lock_check || return 1
     vmess_fs remove || return 1
     systemctl daemon-reload || return 1
     vmess_removed "$port" || return 1
@@ -994,12 +1031,15 @@ vmess_start_probe() {
 vmess_cert_recover() {
     [[ -n $vmess_token && ${vmess_stop_attempted:-0} == 1 ]] || return 1
     vmess_fs transaction-check "$vmess_stage" "$vmess_token" || return 1
+    vmess_lock_check || return 1
     vmess_stop_gate "$port" 1 || return 1
     vmess_fs transaction-check "$vmess_stage" "$vmess_token" || return 1
+    vmess_lock_check || return 1
     vmess_fs restore "$vmess_stage" "$vmess_token" || return 1
     vmess_certificate "$(vmess_etc)/cert.pem" "$(vmess_etc)/key.pem" "$host" || return 1
     vmess_fs verify --complete >/dev/null || return 1
     vmess_manage_service_gate || return 1
+    vmess_lock_check || return 1
     vmess_start_probe || return 1
     vmess_err '新证书事务未完成；旧证书/私钥及原清单已恢复，原服务 TLS/WS 已复验。'
 }
@@ -1031,9 +1071,11 @@ vmess_boot_change_locked() { # enable-boot | disable-boot; caller owns lock+cons
     info=$(vmess_fs boot-info --complete) || return 1
     read -r version state <<< "$info"
     if [[ $version == 1 ]]; then
+        vmess_lock_check || return 1
         vmess_manage_stage || return 1
         vmess_changing=1; vmess_mode=migrate
         vmess_token=$(vmess_fs prepare "$vmess_stage" migrate) || return 1
+        vmess_lock_check || return 1
         vmess_fs apply "$vmess_stage" "$vmess_token" || return 1
         systemctl daemon-reload || return 1
         vmess_service_read || return 1
@@ -1058,6 +1100,7 @@ vmess_boot_change_locked() { # enable-boot | disable-boot; caller owns lock+cons
     vmess_fs apply "$vmess_stage" "$vmess_token" || return 1
     vmess_fs verify --complete >/dev/null || return 1
     vmess_manage_service_gate || return 1
+    vmess_lock_check || return 1
     # No --now: changing boot policy never starts/stops the running service.
     systemctl "${action%-boot}" terry-toolbox-vmess.service || return 1
     if [[ $action == disable-boot ]]; then
@@ -1069,6 +1112,7 @@ vmess_boot_change_locked() { # enable-boot | disable-boot; caller owns lock+cons
     vmess_service_read || return 1
     [[ $vmess_load == loaded && $vmess_fragment == "$(vmess_unit)" ]] || return 1
     vmess_fs transaction-check "$vmess_stage" "$vmess_token" || return 1
+    vmess_lock_check || return 1
     vmess_done=1
 }
 vmess_boot_manage() (
@@ -1107,7 +1151,7 @@ vmess_update_cert() (
         printf '新非加密 PEM 私钥绝对路径：'; IFS= read -r key || return 1
     fi
     vmess_fs pair-check "$cert" "$key" || return 1
-    vmess_certificate "$(vmess_etc)/cert.pem" "$(vmess_etc)/key.pem" "$host" || return 1
+    vmess_existing_certificate || return 1
     vmess_certificate "$cert" "$key" "$host" || return 1
     vmess_running "$port" "$listen" || return 1
     vmess_lock_id=$(vmess_fs lock) || return 1
@@ -1119,7 +1163,7 @@ vmess_update_cert() (
     vmess_confirm || return 1
     before=$(vmess_fs verify --complete) || return 1
     [[ $info == "$before" ]] || return 1
-    vmess_certificate "$(vmess_etc)/cert.pem" "$(vmess_etc)/key.pem" "$host" || return 1
+    vmess_existing_certificate || return 1
     vmess_manage_stage || return 1
     vmess_changing=1
     vmess_pair_token=$(vmess_fs snapshot-pair "$vmess_stage" "$cert" "$key") || return 1
@@ -1136,13 +1180,16 @@ vmess_update_cert() (
     vmess_stop_attempted=1
     vmess_stop_gate "$port" 1 || { vmess_err '停止未确认；原 pair 未替换。'; return 1; }
     vmess_fs transaction-check "$vmess_stage" "$vmess_token" || return 1
+    vmess_lock_check || return 1
     vmess_fs apply "$vmess_stage" "$vmess_token" || return 1
     vmess_certificate "$(vmess_etc)/cert.pem" "$(vmess_etc)/key.pem" "$host" || return 1
     vmess_fs verify --complete >/dev/null || return 1
     vmess_manage_service_gate || return 1
+    vmess_lock_check || return 1
     vmess_start_probe || return 1
     vmess_boot_readback || return 1
     vmess_fs transaction-check "$vmess_stage" "$vmess_token" || return 1
+    vmess_lock_check || return 1
     vmess_done=1
     vmess_err '新证书/私钥及封闭清单已更新；exact service/socket/TLS leaf+WS 复验通过，凭据未显示。'
 )

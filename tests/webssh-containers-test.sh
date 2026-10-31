@@ -1,10 +1,32 @@
 #!/usr/bin/env bash
-# Only Docker and socket boundaries are mocked; real local filesystem/ledger checks.
+# Docker/socket/available-memory boundaries are mocked; real filesystem/ledger checks.
 set -euo pipefail
 base=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 work=$(mktemp -d "${TMPDIR:?}/wsc-test.XXXXXXXX")
 trap 'rm -rf -- "$work"' EXIT
 mkdir "$work/bin" "$work/mock" "$work/home"
+real_python=$(command -v python3)
+# The Docker daemon is synthetic; host RAM contention is also an unrelated
+# fixture fact. Keep filesystem/ledger code real while providing deterministic
+# /proc/meminfo to the embedded helper only (never a product env override).
+cat > "$work/bin/python3" <<'PY'
+#!/usr/bin/env python3-real
+import pathlib,sys
+code=sys.stdin.read() if len(sys.argv)>1 and sys.argv[1]=='-' else None
+if code is not None:
+ if "label='org.terry.toolbox.wsc.'" in code:
+  original=pathlib.Path.read_text
+  def fixture_read(p,*a,**k):
+   return 'MemAvailable: 2097152 kB\n' if str(p)=='/proc/meminfo' else original(p,*a,**k)
+  pathlib.Path.read_text=fixture_read
+ sys.argv=['-',*sys.argv[2:]]
+ exec(compile(code,'<wsc-helper>','exec'))
+else:
+ import os
+ os.execv(sys.executable,[sys.executable,*sys.argv[1:]])
+PY
+ln -s "$real_python" "$work/bin/python3-real"
+chmod +x "$work/bin/python3"
 cp "$base/tests/webssh-containers-mock.py" "$work/bin/docker"
 chmod +x "$work/bin/docker"
 ln -s docker "$work/bin/ss"
@@ -16,7 +38,7 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 declare -F toolbox_webssh_container >/dev/null || fail 'B10 personal/easynode public lifecycle implementation missing'
 reset_case() {
   rm -rf -- "$HOME/.local" "${WSC_MOCK:?}"/*
-  unset MOCK_CONTEXT MOCK_ENDPOINT MOCK_VERSION MOCK_OFFLINE MOCK_ARCH MOCK_PORT MOCK_SS_FAIL MOCK_NAME MOCK_LIST_FAIL MOCK_PULL_FAIL MOCK_IMAGE_INSPECT MOCK_NETWORK_FAIL MOCK_NETWORK_READ_FAIL MOCK_CREATE_FAIL MOCK_START_FAIL MOCK_STOP_FAIL MOCK_READ_FAIL MOCK_RUNNING_READBACK MOCK_TAMPER MOCK_PEER MOCK_SIGNAL MOCK_RM_FAIL MOCK_NETWORK_RM_FAIL MOCK_POST_RM_LIST_FAIL MOCK_MEM MOCK_SECURITY MOCK_IMAGE_ARCH MOCK_IMAGE_DIGEST MOCK_STOP_ROLE
+  unset MOCK_CONTEXT MOCK_ENDPOINT MOCK_VERSION MOCK_OFFLINE MOCK_ARCH MOCK_PORT MOCK_SS_FAIL MOCK_NAME MOCK_LIST_FAIL MOCK_PULL_FAIL MOCK_IMAGE_INSPECT MOCK_NETWORK_FAIL MOCK_NETWORK_READ_FAIL MOCK_CREATE_FAIL MOCK_START_FAIL MOCK_STOP_FAIL MOCK_READ_FAIL MOCK_RUNNING_READBACK MOCK_TAMPER MOCK_PEER MOCK_SIGNAL MOCK_RM_FAIL MOCK_NETWORK_RM_FAIL MOCK_POST_RM_LIST_FAIL MOCK_MEM MOCK_SECURITY MOCK_IMAGE_ARCH MOCK_IMAGE_DIGEST MOCK_STOP_ROLE MOCK_LOG_DELAY MOCK_REPLACE_LOCK
 }
 reject() { if toolbox_webssh_container "$@" >"$work/output" 2>&1; then fail "accepted $*"; fi; }
 no_mutation() {
@@ -57,6 +79,9 @@ for branch in personal easynode; do
  python3 - "$WSC_MOCK" "$data" "$branch" "$work/output" <<'PY'
 import pathlib,json,sys,stat
 r,d,b,o=map(pathlib.Path,sys.argv[1:]);s=json.loads((r/'state.json').read_text());assert len(s['containers'])==(1 if str(b)=='personal' else 2)
+calls=[c[3:] if c[1:2]==['--host'] else c[1:] for c in map(json.loads,(r/'calls.jsonl').read_text().splitlines())]
+for call in calls:
+ if call[:1] in (['pull'],['create']):assert call[1:3]==['--platform','linux/amd64'],call
 for c in s['containers'].values():
  assert c['Config']['Image'].count('@sha256:')==1
  assert not c['HostConfig']['Privileged'];assert c['HostConfig']['NetworkMode'] in s['networks']
@@ -65,6 +90,9 @@ for c in s['containers'].values():
  if 'guacd' in c['Name']:assert not c['HostConfig']['PortBindings']
 for f in ['ledger.json','ledger.mac','seal.key']:
  assert stat.S_IMODE((d/f).stat().st_mode)==0o600
+assert stat.S_IMODE((d/'credentials.txt').stat().st_mode)==0o600
+credentials=(d/'credentials.txt').read_text()
+for line in credentials.splitlines():assert line.split('=',1)[1] not in o.read_text()
 assert 'private-fixture-password' not in o.read_text()
 if str(b)=='personal':
  creds=(d/'credentials.txt').read_text();assert creds not in o.read_text();assert stat.S_IMODE((d/'credentials.txt').stat().st_mode)==0o600
@@ -160,5 +188,18 @@ for c in map(json.loads,pathlib.Path(sys.argv[3]).read_text().splitlines()):
  a=c[1:];a=a[2:] if a[:1]==['--host'] else a
  assert a[:1] not in (['pull'],['create'],['start'],['stop'],['rm'],['logs'])
  assert a[:2] not in (['network','create'],['network','rm'])
+PY
+# Exercise native startup delay and the fd/pathname lock race with real files.
+reset_case; export MOCK_LOG_DELAY=1
+toolbox_webssh_container easynode install <<< $'YES\nYES' >"$work/output" 2>&1 || fail 'delayed native credentials'
+[[ -f $HOME/.local/share/terry-toolbox/webssh-containers/easynode/credentials.txt ]] || fail 'delayed credentials absent'
+reset_case; export MOCK_REPLACE_LOCK=1
+reject personal install <<< $'YES\nYES'
+count_state 0 1
+python3 - "$WSC_MOCK/calls.jsonl" <<'PY'
+import json,sys
+calls=[c[3:] if c[1:2]==['--host'] else c[1:] for c in map(json.loads,open(sys.argv[1]))]
+assert not any(c[:1] in (['create'],['start'],['stop'],['rm']) for c in calls)
+assert not any(c[:2]==['network','rm'] for c in calls)
 PY
 printf 'PASS: B10 failure/signal/tamper/unknown/stop-readback/data-retention/readonly regressions\n'

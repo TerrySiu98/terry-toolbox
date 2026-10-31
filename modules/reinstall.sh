@@ -14,7 +14,7 @@ _toolbox_reinstall_need() {
     (( ${#missing[@]} == 0 )) || { _toolbox_reinstall_error "缺少依赖：${missing[*]}；不会自动安装。"; return 1; }
 }
 _toolbox_reinstall_container() {
-    local r rc=0 out line
+    local r rc=0 out line vm=0
     r=$(_toolbox_reinstall_host_root)
     [[ ! -e $r/.dockerenv && ! -e $r/run/.containerenv && ! -d $r/proc/vz ]] || return 0
     # systemd-detect-virt is NOT required: Alpine/musl hosts normally lack it.
@@ -28,9 +28,12 @@ _toolbox_reinstall_container() {
         while IFS= read -r line; do
             case $line in
                 docker|podman|lxc|openvz|systemd-nspawn*|container*) return 0;;
-                kvm|vmware|virtualbox|xen|hyperv|qemu|microsoft|amazon|google|bhyve|parallels|oracle) return 1;;
+                kvm|vmware|virtualbox|xen|hyperv|qemu|microsoft|amazon|google|bhyve|parallels|oracle) vm=1;;
             esac
         done <<<"$out"
+        # virt-what may report a nested container and the underlying hypervisor.
+        # Container evidence always wins, independent of line order.
+        [[ $vm != 1 ]] || return 1
     fi
     python3 - "$r" <<'PY'
 import os, sys
@@ -80,6 +83,32 @@ PY
 _toolbox_reinstall_mounts() { findmnt --json --output TARGET,SOURCE,FSTYPE,OPTIONS; }
 _toolbox_reinstall_efi() { efibootmgr -v; }
 _toolbox_reinstall_boot_id() { local r; r=$(_toolbox_reinstall_host_root); command cat "$r/proc/sys/kernel/random/boot_id"; }
+# The lock must still be the inode held by this shell, and its directory must
+# stay at the same anchored path. Merely flocking an unlinked file is not a gate.
+_toolbox_reinstall_lock_guard() {
+    python3 - "$1" "$2" "$BASHPID" "${3:-}" <<'PY'
+import json,os,stat,sys
+state,number,pid,expected=sys.argv[1:]
+def fail(s):sys.exit(s)
+chain=[]
+p=os.path.abspath(state)
+for i in range(1,len(p.split('/'))+1):
+ q='/'.join(p.split('/')[:i]) or '/';s=os.lstat(q)
+ if not stat.S_ISDIR(s.st_mode):fail('reinstall state 祖先非普通目录')
+ if s.st_uid not in (0,os.geteuid()) or (s.st_mode&0o022 and not (q in ('/tmp','/private/tmp') and s.st_mode&stat.S_ISVTX)):fail('reinstall state 祖先可写/归属不可信')
+ chain.append([q,s.st_dev,s.st_ino,s.st_mode,s.st_uid,s.st_gid])
+s=os.lstat(state)
+if s.st_uid!=os.geteuid() or stat.S_IMODE(s.st_mode)!=0o700:fail('reinstall state 身份/权限变化')
+p=state+'/lock';s=os.lstat(p)
+if not stat.S_ISREG(s.st_mode) or s.st_nlink!=1 or s.st_uid!=os.geteuid() or stat.S_IMODE(s.st_mode)!=0o600:fail('reinstall lock 身份/权限变化')
+# /proc resolves the descriptor held by the shell, not a newly opened pathname.
+h=os.stat('/proc/'+pid+'/fd/'+number)
+if (h.st_dev,h.st_ino)!=(s.st_dev,s.st_ino):fail('reinstall lock inode 已替换；保留现场')
+record={'parents':chain,'lock':[s.st_dev,s.st_ino,s.st_mode,s.st_uid,s.st_gid,s.st_nlink]}
+if expected and json.loads(expected)!=record:fail('reinstall state/lock 路径身份已替换；保留现场')
+print(json.dumps(record,sort_keys=True))
+PY
+}
 # python is data/ledger handling ONLY: no partitioning or alternate installation.
 _toolbox_reinstall_data() {
     python3 - "$@" <<'PY'
@@ -146,6 +175,10 @@ def store(m):
         os.replace(q,p+'/'+f)
 def efi():return args[-1] if args else ''
 def efi_entries(s):return sorted(x for x in s.splitlines() if re.match(r'^Boot[0-9a-fA-F]{4}',x))
+def efi_field(s,name):
+    found=[x.split(':',1)[1].strip() for x in s.splitlines() if x.startswith(name+':')]
+    if len(found)!=1:fail('EFI 字段缺失/重复: '+name)
+    return found[0]
 def allowed(k):
     return k=='/reinstall-tmp' or k.startswith('/reinstall-tmp/') or k in ('/reinstall-vmlinuz','/reinstall-initrd','/reinstall-firmware','/etc/default/kexec','/boot/grub/custom.cfg','/boot/grub/grub.cfg','/boot/grub/grubenv','/boot/grub2/custom.cfg','/boot/grub2/grub.cfg','/boot/grub2/grubenv') or re.match(r'^/(boot/efi|efi|boot)/EFI/reinstall(/.*)?$',k)
 def checkdiff(before,after):
@@ -156,6 +189,15 @@ def checkdiff(before,after):
             # never accept replaced parent inode/mode/owner/symlink.
             if b and a and stat.S_ISDIR(b['mode']) and stat.S_ISDIR(a['mode']) and {x:v for x,v in b.items() if x!='links'}=={x:v for x,v in a.items() if x!='links'}:continue
             fail('上游触碰未审定范围: '+k)
+def cancelled_check(m):
+    if m['phase']!='cancelled':fail('已有非 cancelled plan；请 status；不接管、不重复 prepare')
+    now=snapshot()
+    if set(now)!=set(m['before']):fail('cancelled plan 后 boot 路径集合变化；保留历史')
+    for k,z in m['before'].items():
+        current=now[k]
+        if k in m['backups']:
+            if {a:v for a,v in current.items() if a not in ('ino','dev')}!={a:v for a,v in z.items() if a not in ('ino','dev')}:fail('cancelled plan 后原 boot 文件变化: '+k)
+        elif current!=z:fail('cancelled plan 后非 owned 文件变化: '+k)
 if op=='inventory':
     d=json.loads(args[0]);mount=json.loads(args[1]);arch=args[2]
     if arch not in ('x86_64','aarch64'):fail('仅 AMD64/ARM64')
@@ -221,7 +263,7 @@ elif op=='clean':
 elif op=='init':
     statecheck();p=state+'/active';anchor(p)
     before=snapshot();baseline_efi=args[4]
-    m={'schema':1,'phase':'preparing','target':args[0],'disk':json.loads(args[1]),'boot_id':args[2],'commit':args[3],'before':before,'before_efi':baseline_efi,'state_identity':[os.lstat(state).st_dev,os.lstat(state).st_ino],'plan_identity':[os.lstat(p).st_dev,os.lstat(p).st_ino],'private':{},'backups':{}}
+    m={'schema':2,'phase':'preparing','target':args[0],'host_init':args[5],'disk':json.loads(args[1]),'boot_id':args[2],'commit':args[3],'before':before,'before_efi':baseline_efi,'state_identity':[os.lstat(state).st_dev,os.lstat(state).st_ino],'plan_identity':[os.lstat(p).st_dev,os.lstat(p).st_ino],'private':{},'backups':{}}
     fd=os.open(p+'/seal.key',os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
     with os.fdopen(fd,'wb') as f:f.write(os.urandom(32))
     for k,z in before.items():
@@ -234,6 +276,15 @@ elif op=='init':
     store(m)
 elif op=='phase':
     m=load();m['phase']=args[0];m['detail']=args[1];store(m)
+elif op in ('archive-check','archive'):
+    m=load();cancelled_check(m)
+    if op=='archive':
+        name='cancelled-'+str(int(time.time()))+'-'+os.urandom(8).hex()
+        os.rename(state+'/active',state+'/'+name)
+        fd=os.open(state,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+        try:os.fsync(fd)
+        finally:os.close(fd)
+        print('已保留 cancelled plan 历史: '+state+'/'+name)
 elif op=='prepared':
     m=load();s=snapshot();checkdiff(m['before'],s)
     for k,z in s.items():
@@ -273,12 +324,12 @@ elif op=='prepared':
                 h=take(g,110)
                 if h[:6] not in (b'070701',b'070702'):fail('initrd archive 不是 newc')
                 try:
-                    mode=int(h[14:22],16);size=int(h[54:62],16);namesize=int(h[94:102],16)
+                    mode=int(h[14:22],16);links=int(h[38:46],16);size=int(h[54:62],16);namesize=int(h[94:102],16)
                 except ValueError:fail('initrd header 字段非十六进制')
                 if namesize<1 or namesize>4096:fail('initrd filename 长度无效')
                 raw=take(g,namesize)
-                if not raw.endswith(b'\0'):fail('initrd filename 未 NUL 终止')
-                try:name=raw.rstrip(b'\0').decode()
+                if not raw.endswith(b'\0') or b'\0' in raw[:-1]:fail('initrd filename NUL 终止/嵌入格式无效')
+                try:name=raw[:-1].decode()
                 except UnicodeDecodeError:fail('initrd filename 非 UTF-8')
                 pad(g,-(110+namesize)%4,'filename')
                 while name.startswith('./'):name=name[2:]
@@ -288,11 +339,17 @@ elif op=='prepared':
                     break
                 kind=kinds.get(mode&0o170000)
                 if kind is None:fail('initrd member 类型未审定: '+name)
+                # Real upstream uses `find . | cpio`, which emits one `.` root
+                # directory. It is metadata, never an executable/file alias.
+                if name=='.':
+                    if kind!='dir' or size or name in seen:fail('initrd root member 非唯一空目录')
+                    seen.add(name);continue
                 if not name or name.startswith('/') or name.endswith('/') or any(p in ('','.','..') for p in name.split('/')):fail('initrd member 路径非法: '+name)
                 if name in seen:fail('initrd member 重复（后者会静默覆盖）: '+name)
                 seen.add(name)
                 if name in wanted:
                     if kind!='file':fail('initrd 受检 member 非普通文件('+kind+'): '+name)
+                    if links!=1:fail('initrd 受检 member hardlink 未审定: '+name)
                     if size>1048576:fail('initrd member 过大: '+name)
                     found[name]=take(g,size)
                 else:
@@ -313,10 +370,16 @@ elif op=='prepared':
         if found.get(name)!=b and not (name=='configs/ssh_keys' and found.get(name,b'').strip()==b.strip()):fail('最终 initrd runtime/key pin 不匹配: '+name)
     current_efi=args[0]
     if current_efi:
-        new=set(efi_entries(current_efi))-set(efi_entries(m['before_efi']))
+        old=set(efi_entries(m['before_efi']));current=set(efi_entries(current_efi))
+        if not old.issubset(current):fail('prepared EFI 原始 entry 变化/缺失')
+        new=current-old
         if len(new)!=1 or 'reinstall ('+target+')' not in next(iter(new)):fail('EFI plan 身份未知')
         entry=next(iter(new));idx=entry[4:8]
         if 'BootNext: '+idx not in current_efi or '\\EFI\\reinstall\\' not in entry:fail('EFI BootNext 不属于本 plan')
+        if efi_field(current_efi,'BootCurrent')!=efi_field(m['before_efi'],'BootCurrent'):fail('prepared EFI BootCurrent 变化')
+        # The pinned upstream uses efibootmgr --create-only plus --bootnext;
+        # --create-only deliberately leaves the persistent BootOrder intact.
+        if efi_field(current_efi,'BootOrder')!=efi_field(m['before_efi'],'BootOrder'):fail('prepared EFI 原始 BootOrder 变化')
     else:
         env=path(os.path.dirname(cfgs[0])+'/grubenv')
         if ('next_entry=reinstall ('+target+')').encode() not in read(env):fail('GRUB next_entry 未准备')
@@ -330,7 +393,10 @@ elif op in ('status','verify'):
         if snapshot()!=m['after'] or args[1]!=m['after_efi']:fail('prepared boot/ledger 身份变化；保留现场，拒绝 reset')
         if op=='verify':
             if len(args)!=4 or json.loads(args[2])!=m['disk']:fail('cancel 当前 whole disk 身份/拓扑变化')
-            if args[3]!=('openrc' if m['target'].startswith('alpine') else 'systemd'):fail('cancel PID1 init 与 plan target 不一致: '+args[3])
+            # Legacy schema 1 admitted only matching host/target init; schema 2
+            # records the actual host. A reinstall can change distributions.
+            host_init=m.get('host_init','openrc' if m['target'].startswith('alpine') else 'systemd')
+            if args[3]!=host_init:fail('cancel PID1 init 与 prepared host 不一致: '+args[3])
     elif op=='verify':fail('非可验证 prepared 状态: '+m['phase']+'；'+m.get('detail',''))
     print('M3 phase='+m['phase']+' target='+m['target']+' disk='+m['disk']['name']+' commit='+m['commit'])
     if m.get('detail'):print(m['detail'])
@@ -341,6 +407,7 @@ elif op=='restore':
     for k,z in s.items():
         if k.endswith(('.cfg','.conf')) and 'sha' in z and b'reinstall' in read(path(k)).lower():fail('reset 后仍有 reinstall 启动项')
     if 'BootNext:' in args[0] or efi_entries(args[0])!=efi_entries(m['before_efi']):fail('reset 后 EFI 回读不等于原 entries')
+    if args[0] and any(efi_field(args[0],n)!=efi_field(m['before_efi'],n) for n in ('BootCurrent','BootOrder')):fail('reset 后 EFI BootCurrent/BootOrder 未精确恢复')
     for k in ('/boot/grub/grubenv','/boot/grub2/grubenv'):
         if os.path.exists(path(k)) and re.search(rb'next_entry=[^\n\x00]+',read(path(k))):fail('reset 后 next_entry 未清空')
     # reset may recreate config files. Only allow reviewed leaves to be restored;
@@ -374,7 +441,8 @@ else:fail('未知 data operation')
 PY
 }
 _toolbox_reinstall_preflight() {
-    # Optional target lets prepare prove PID1 init and distribution agree.
+    # Host init is reviewed independently of the future distribution. Upstream
+    # prepares the bootloader on this host and installs a different OS after boot.
     local rc=0 arch inventory mounts efi='' r disk secure init want=${1:-}
     case $want in ''|debian|ubuntu|alpine) ;; *) _toolbox_reinstall_error "preflight 目标未审定: $want"; return 1;; esac
     _toolbox_reinstall_root || return
@@ -382,10 +450,6 @@ _toolbox_reinstall_preflight() {
         grep sed awk sort head tail wc cut tr xargs find readlink fdisk gzip cpio lsmem dmidecode virt-what || return
     # Init is decided from PID1, not from an optional detector; unknown refuses.
     init=$(_toolbox_reinstall_init) || return 1
-    case $init:$want in
-        systemd:alpine|openrc:debian|openrc:ubuntu)
-            _toolbox_reinstall_error "PID1 init=$init 与 target=$want 不一致；未执行。"; return 1;;
-    esac
     _toolbox_reinstall_container || rc=$?
     case $rc in 1) ;; 0) _toolbox_reinstall_error '拒绝 container；未执行。'; return 1;; *) _toolbox_reinstall_error 'container 状态未知；未执行。'; return 1;; esac
     r=$(_toolbox_reinstall_host_root)
@@ -431,6 +495,7 @@ PY
     printf 'preflight 只读通过；不等于安装验收。上游可能补装 runtime 包、修改 boot 文件与 kexec。本阶段不重启；重启进 initrd 后由上游自动 reboot。\n'
     _toolbox_reinstall_disk=$disk
     _toolbox_reinstall_efi_before=$efi
+    _toolbox_reinstall_host_init=$init
 }
 _toolbox_reinstall_mbr_grub() {
     local name
@@ -475,7 +540,7 @@ _toolbox_reinstall_confirm() {
 }
 _toolbox_reinstall_prepare() (
     umask 077
-    local distro=${1:-debian} version=${2:-} key state r name target first efi boot rc=0 lockfd
+    local distro=${1:-debian} version=${2:-} key state r name target first efi boot rc=0 lockfd lock_identity key_digest copied_digest
     case $distro in
         debian) version=${version:-13}; [[ $version == 13 ]] || return 1;;
         ubuntu) version=${version:-24.04}; [[ $version == 24.04 ]] || return 1;;
@@ -485,13 +550,18 @@ _toolbox_reinstall_prepare() (
     [[ $# -le 2 ]] || return 1
     _toolbox_reinstall_preflight "$distro" || return
     state=$(_toolbox_reinstall_state_dir);r=$(_toolbox_reinstall_host_root)
-    [[ ! -e $state/active ]] || { _toolbox_reinstall_error '已有 owned/unknown plan；请 status；不接管、不重复 prepare'; return 1; }
+    if [[ -e $state/active || -L $state/active ]]; then
+        _toolbox_reinstall_data archive-check "$r" "$state" || return
+        printf '上次取消已验证；确认后保留其 sealed report 为 cancelled 历史，再创建新计划。\n'
+    fi
     key=${TOOLBOX_REINSTALL_SSH_KEY_FILE:-}
     if [[ -z $key ]]; then
         printf '本地 ssh-ed25519 公钥绝对路径 (.pub): ' >&2
         IFS= read -r key || { _toolbox_reinstall_error 'SSH 公钥未输入/EOF'; return 1; }
     fi
     _toolbox_reinstall_pubkey "$key" || return
+    key_digest=$(sha256sum "$key") || return
+    key_digest=${key_digest%% *}
     name=$(python3 -c 'import json,sys;print(json.loads(sys.argv[1])["name"])' "$_toolbox_reinstall_disk") || return
     target="$distro $version";first=$_toolbox_reinstall_disk
     printf 'Target: %s；上游 commit: %s\n' "$target" "$_TOOLBOX_REINSTALL_COMMIT"
@@ -522,22 +592,31 @@ except FileNotFoundError:
 PY
     exec {lockfd}<"$state/lock" || return
     flock -n "$lockfd" || { _toolbox_reinstall_error 'concurrent reinstall 操作；拒绝'; return 1; }
+    lock_identity=$(_toolbox_reinstall_lock_guard "$state" "$lockfd") || return
+    if [[ -e $state/active || -L $state/active ]]; then
+        _toolbox_reinstall_data archive "$r" "$state" || return
+    fi
     mkdir "$state/active" || { _toolbox_reinstall_error '已有 plan（竞争）；拒绝'; return 1; }
     # Keep failures/signals with reports. NEVER auto-reset an uncertain plan.
-    trap '_toolbox_reinstall_error "收到信号；保留 report，本工具不自动 reset/reboot"; if [[ -f $state/active/seal ]]; then _toolbox_reinstall_data phase "$r" "$state" interrupted "信号中断；人工检查 boot 与日志"; fi; exit 130' INT TERM HUP
+    trap '_toolbox_reinstall_error "收到信号；保留 report，本工具不自动 reset/reboot"; if _toolbox_reinstall_lock_guard "$state" "$lockfd" "$lock_identity" >/dev/null && [[ -f $state/active/seal ]]; then _toolbox_reinstall_data phase "$r" "$state" interrupted "信号中断；人工检查 boot 与日志"; fi; exit 130' INT TERM HUP
     cp -- "$key" "$state/active/key.pub" || return
     _toolbox_reinstall_pubkey "$state/active/key.pub" || return
+    copied_digest=$(sha256sum "$state/active/key.pub") || return
+    [[ ${copied_digest%% *} == "$key_digest" ]] || { _toolbox_reinstall_error '确认的 SSH 公钥在复制前发生变化；未执行上游，保留 report'; return 1; }
     _toolbox_reinstall_fetch "$state/active" || { _toolbox_reinstall_error "provenance 失败；保留 $state/active；未执行上游"; return 1; }
     # Downloads can take time. Do not adopt boot files or topology that raced in.
     _toolbox_reinstall_preflight "$distro" || return
     [[ $first == "$_toolbox_reinstall_disk" ]] || { _toolbox_reinstall_error '下载后 disk 身份变化；拒绝上游'; return 1; }
+    _toolbox_reinstall_lock_guard "$state" "$lockfd" "$lock_identity" >/dev/null || return
     boot=$(_toolbox_reinstall_boot_id) || return
-    _toolbox_reinstall_data init "$r" "$state" "$target" "$_toolbox_reinstall_disk" "$boot" "$_TOOLBOX_REINSTALL_COMMIT" "$_toolbox_reinstall_efi_before" || return
+    _toolbox_reinstall_data init "$r" "$state" "$target" "$_toolbox_reinstall_disk" "$boot" "$_TOOLBOX_REINSTALL_COMMIT" "$_toolbox_reinstall_efi_before" "$_toolbox_reinstall_host_init" || return
+    _toolbox_reinstall_lock_guard "$state" "$lockfd" "$lock_identity" >/dev/null || return
     # Print real errors to stderr as well as retain the private log, preserving rc.
     _toolbox_reinstall_run_upstream "$state/active/reinstall.sh" "$distro" "$version" \
         --username root --ssh-key "$state/active/key.pub" --target-disk "$name" \
         >"$state/active/prepare.log" 2>&1 || rc=$?
     command cat "$state/active/prepare.log" >&2
+    _toolbox_reinstall_lock_guard "$state" "$lockfd" "$lock_identity" >/dev/null || return
     if (( rc != 0 )); then
         _toolbox_reinstall_data phase "$r" "$state" failed "上游 prepare exit=$rc；不宣称 done；保留日志与现场" || return
         return "$rc"
@@ -559,7 +638,7 @@ _toolbox_reinstall_status() {
 }
 _toolbox_reinstall_cancel() (
     umask 077
-    local r state efi='' boot rc=0 lockfd init
+    local r state efi='' boot rc=0 lockfd init lock_identity
     _toolbox_reinstall_root || return
     _toolbox_reinstall_need python3 flock uname lsblk findmnt bash sha256sum || return
     init=$(_toolbox_reinstall_init) || return 1
@@ -575,6 +654,7 @@ if not stat.S_ISREG(s.st_mode) or s.st_nlink!=1 or s.st_uid!=os.geteuid() or sta
 PY
     exec {lockfd}<"$state/lock" || return
     flock -n "$lockfd" || { _toolbox_reinstall_error 'concurrent 操作；拒绝 reset'; return 1; }
+    lock_identity=$(_toolbox_reinstall_lock_guard "$state" "$lockfd") || return
     boot=$(_toolbox_reinstall_boot_id) || return
     [[ ! -d $r/sys/firmware/efi ]] || efi=$(_toolbox_reinstall_efi) || return
     local current_disk inventory mounts arch
@@ -588,10 +668,13 @@ PY
 while q:
  n=q.pop();q+=n.get("children",[])
  if n["target"].startswith("/reinstall-tmp"):sys.exit("workspace 新增 mount；拒绝 reset")' || return
-    trap '_toolbox_reinstall_data phase "$r" "$state" cancel-interrupted "reset 信号中断；保留现场"; exit 130' INT TERM HUP
+    trap 'if _toolbox_reinstall_lock_guard "$state" "$lockfd" "$lock_identity" >/dev/null; then _toolbox_reinstall_data phase "$r" "$state" cancel-interrupted "reset 信号中断；保留现场"; fi; exit 130' INT TERM HUP
+    _toolbox_reinstall_lock_guard "$state" "$lockfd" "$lock_identity" >/dev/null || return
     _toolbox_reinstall_data phase "$r" "$state" cancelling '即将仅 reset 已验证 owned plan' || return
+    _toolbox_reinstall_lock_guard "$state" "$lockfd" "$lock_identity" >/dev/null || return
     _toolbox_reinstall_run_upstream "$state/active/reinstall.sh" reset >"$state/active/cancel.log" 2>&1 || rc=$?
     command cat "$state/active/cancel.log" >&2
+    _toolbox_reinstall_lock_guard "$state" "$lockfd" "$lock_identity" >/dev/null || return
     if (( rc != 0 )); then
         _toolbox_reinstall_data phase "$r" "$state" reset-failed "上游 reset exit=$rc；不恢复/删除；保留 report" || return
         return "$rc"

@@ -70,6 +70,23 @@ elif args[:2] == ['network', 'create']:
     s['networks'][nid] = {'Id': nid, 'Name': name, 'Driver': 'bridge', 'Scope': 'local', 'Internal': False, 'Attachable': False, 'Ingress': False, 'Options': {}, 'Labels': labels, 'Containers': {}}
     save()
     print(nid)
+    if os.getenv('MOCK_REPLACE_LOCK'):
+        lock = pathlib.Path(os.environ['HOME']) / '.local/share/terry-toolbox/webssh-containers/personal/lock'
+        old = lock.stat()
+        data = lock.read_bytes()
+        lock.rename(lock.with_name('lock-old'))
+        lock.write_bytes(data)
+        lock.chmod(0o600)
+        # Simulate a competing controller that has resealed the new inode. A
+        # mere pathname/ledger check passes; the original held fd must reject.
+        import hmac
+        ledger = lock.with_name('ledger.json')
+        d = json.loads(ledger.read_text())
+        now = lock.stat()
+        d['files'][str(lock)]['stat'] = [now.st_dev, now.st_ino, 0o600, now.st_uid]
+        b = json.dumps(d, sort_keys=True, separators=(',', ':')).encode()
+        ledger.write_bytes(b)
+        lock.with_name('ledger.mac').write_text(hmac.digest(lock.with_name('seal.key').read_bytes(), b, 'sha256').hex())
 elif args[:2] == ['network', 'inspect']:
     nid = args[2]
     if nid not in s['networks'] or os.getenv('MOCK_NETWORK_READ_FAIL'):
@@ -166,6 +183,10 @@ elif args[:2] == ['network', 'rm']:
     save()
     print(nid)
 elif args[:1] == ['logs']:
+    if os.getenv('MOCK_LOG_DELAY') and not (root / 'logs-once').exists():
+        (root / 'logs-once').touch()
+        print('native key DB initialization pending')
+        sys.exit(0)
     print('EasyNode 默认登录凭据 (请及时更改):\n用户名: private-fixture-user\n密码: private-fixture-password')
 else:
     print('unsupported Docker fixture call: ' + repr(args), file=sys.stderr)

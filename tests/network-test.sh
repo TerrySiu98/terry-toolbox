@@ -7,8 +7,10 @@
 # systemctl/ss/curl/…）。真实执行的只有模块逻辑本身、openssl、tar、sha256sum、
 # install/stat 和一次真的 socat 转发（用生成的 ExecStart，跑在临时高位端口）。
 set -eu
+source "$(dirname -- "${BASH_SOURCE[0]}")/scratch-root.sh"
+toolbox_test_scratch
 ROOT=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-work=$(mktemp -d "${TMPDIR:-/root/.hermes/cache/scratch}/toolbox-network-test.XXXXXXXX")
+work=$(mktemp -d "${TMPDIR:-/root/.cache/terry-toolbox-tests}/toolbox-network-test.XXXXXXXX")
 cleanup() {
     python3 -c '
 import os, signal, time
@@ -1121,7 +1123,8 @@ for input in '' $'tcp\n' $'tcp\n18090\n' $'tcp\n18090\nrelay.example.test\n'; do
 done
 
 # 真实 socat 往返：显式启用才运行；默认隔离测试不改动真实网络。
-if [[ ${TOOLBOX_NETWORK_REAL_TESTS:-0} == 1 && ( -x /usr/bin/socat || -x /bin/socat ) ]]; then
+if [[ ${TOOLBOX_NETWORK_REAL_TESTS:-0} == 1 ]]; then
+    [[ -x /usr/bin/socat || -x /bin/socat ]] || fail '显式启用真实转发测试，但缺少 /usr/bin/socat 或 /bin/socat'
     # PATH 里的 socat 是桩，真实往返必须用真身。
     real_socat=/usr/bin/socat
     [[ -x $real_socat ]] || real_socat=/bin/socat

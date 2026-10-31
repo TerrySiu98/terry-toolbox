@@ -306,7 +306,7 @@ net_check_cert() {
 # 独立 CA 只作信任锚，证书 PEM 里的中间证书仅作 untrusted chain。
 # 显式指定但缺失的 CA 不回退系统库；验证的是服务端用途，不是「文件能解析」。
 net_tls_verify() { # cert cafile capath
-    local cert=$1 cafile=$2 capath=$3
+    local cert=$1 cafile=$2 capath=$3 verify_help
     local -a trust=()
     if [[ -n $cafile ]]; then
         [[ -f $cafile && -r $cafile && -s $cafile ]] || return 1
@@ -315,7 +315,11 @@ net_tls_verify() { # cert cafile capath
         [[ -n $capath && -d $capath ]] || return 1
         trust=(-CApath "$capath" -no-CAfile)
     fi
-    openssl verify "${trust[@]}" -no-CAstore -purpose sslserver -untrusted "$cert" "$cert" >/dev/null 2>&1
+    # OpenSSL 1.1 has no CAstore facility; OpenSSL 3 must explicitly disable it.
+    # Probe the supported option before verification; never retry a failed verify.
+    verify_help=$(openssl verify -help 2>&1) || :
+    if [[ $verify_help == *-no-CAstore* ]]; then trust+=(-no-CAstore); fi
+    openssl verify "${trust[@]}" -purpose sslserver -untrusted "$cert" "$cert" >/dev/null 2>&1
 }
 
 net_tls_trusted() {

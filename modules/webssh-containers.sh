@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # B10 two ORIGINAL container products; source-only, does not change Python WebSSH.
 # Provenance: registry-1.docker.io raw manifests + Docker-Content-Digest verified
-# 2026-10-30. All three pins below are single linux/amd64 manifests, NOT multiarch.
+# 2026-10-31. The pins are immutable OCI indexes; explicitly select linux/amd64
+# and verify native image/RepoDigests readback. The other index entries may be
+# attestations or other platforms and do not imply arm64 support here.
 # personal: github.com/jinhuaitao/WebSSH, OCI revision
 # 1fda43b09371fa24b4faf4ffc968d10529439f3f. Native cookie login + 2FA exists;
 # native config is seeded with local random credentials before first start.
@@ -17,15 +19,23 @@
 # Pins are byte reproducibility, not signature verification or a security audit.
 
 wsc_error() { printf 'B10: %s\n' "$*" >&2; return 1; }
-wsc_docker() { docker --host unix:///var/run/docker.sock "$@"; }
+wsc_docker() {
+    # flock protects an inode, not its pathname. Re-prove the held descriptor
+    # before every Docker mutation, also when a signal/failure invokes cleanup.
+    case ${1-}:${2-} in
+        pull:*|create:*|start:*|stop:*|rm:*|network:create|network:rm)
+            [[ -n ${lockfd-} ]] && wsc_python lock-check "$branch" "$HOME" || return 1 ;;
+    esac
+    docker --host unix:///var/run/docker.sock "$@"
+}
 
 # Embedded stdlib helper keeps the distributed one-file toolbox source-only.
 # No ledger is sourced as shell. Seal detects accidental/untrusted edits; a root
 # adversary controlling this private directory and key is outside this boundary.
 wsc_python() {
-    python3 - "$@" <<'PY'
+    python3 - "${lockfd-}" "$BASHPID" "$@" <<'PY'
 import hashlib,hmac,json,os,pathlib,re,secrets,shutil,stat,sys
-act,branch,home=sys.argv[1:4]; args=sys.argv[4:]
+lockfd,lockpid,act,branch,home=sys.argv[1:6]; args=sys.argv[6:]
 root=pathlib.Path(home)/'.local/share/terry-toolbox/webssh-containers'/branch
 hexid=re.compile(r'^[0-9a-f]{64}$')
 label='org.terry.toolbox.wsc.'
@@ -75,6 +85,11 @@ def load():
  for p,rec in d['files'].items():
   f=pathlib.Path(p)
   if secure(f)!=rec['stat'] or hashlib.sha256(f.read_bytes()).hexdigest()!=rec['hash']:fail('私有凭据/lock inode或内容已改变')
+ if lockfd:
+  if not lockfd.isdecimal() or not lockpid.isdecimal():fail('持有锁描述符无效')
+  held=os.stat('/proc/'+lockpid+'/fd/'+lockfd)
+  expected=d['files'][str(root/'lock')]['stat']
+  if [held.st_dev,held.st_ino,stat.S_IMODE(held.st_mode),held.st_uid]!=expected:fail('持有锁fd与ledger inode不同，拒绝变更')
  return d
 def read_one(file):
  j=json.loads(pathlib.Path(file).read_text())
@@ -157,6 +172,20 @@ try:
   seal(d);print(token)
  elif act=='load':
   d=load();print(d['port']);print(d['token'])
+ elif act=='lock-check':
+  if not lockfd:fail('生命周期独占锁未持有')
+  load()
+ elif act=='credentials-record':
+  d=load()
+  if branch!='easynode':fail('仅Easynode需要读取原生初始化凭据')
+  text=pathlib.Path(args[0]).read_text()
+  users=re.findall(r'用户名:\s*([A-Za-z0-9_-]+)',text)
+  passwords=re.findall(r'密码:\s*([A-Za-z0-9_-]+)',text)
+  if not users or not passwords:sys.exit(2) # native DB/RSA initialization is still pending
+  if len(set(users))!=1 or len(set(passwords))!=1:fail('初始化凭据不唯一，保留私有日志供检查')
+  p=root/'credentials.txt'
+  write_new(p,('username='+users[0]+'\npassword='+passwords[0]+'\n').encode())
+  d['files'][str(p)]={'stat':secure(p),'hash':hashlib.sha256(p.read_bytes()).hexdigest()};seal(d)
  elif act=='net-record':
   d=load();n=read_one(args[0]);nid=args[1]
   if not hexid.fullmatch(nid) or n.get('Id')!=nid or n.get('Name')!='terry-webssh-'+branch+'-'+d['token'] or n.get('Driver')!='bridge' or n.get('Scope')!='local' or n.get('Internal') or n.get('Ingress') or n.get('Attachable') or n.get('Options') or n.get('Containers') or n.get('Labels')!={label+'branch':branch,label+'token':d['token']}:fail('network创建读回不匹配，网络/数据保留')
@@ -294,14 +323,14 @@ wsc_cleanup() {
     done <<< "$plan"
 }
 wsc_create_start() {
-    local role=$1 image=$2 iid=$3 name cidfile cid out rc
+    local role=$1 image=$2 iid=$3 name cidfile cid out rc n native_log
     shift 3
     name="terry-webssh-$branch"; [[ $role == app ]] || name+=-guacd
     cidfile=$data/$role.cid
     # Parent directory is exclusive private; never look up/adopt by name on failure.
     cleanup_allowed=0
     wsc_python create-pending "$branch" "$HOME" || return 1
-    out=$(wsc_docker create --name "$name" --cidfile "$cidfile" --network "$network" \
+    out=$(wsc_docker create --platform linux/amd64 --name "$name" --cidfile "$cidfile" --network "$network" \
         --label "org.terry.toolbox.wsc.branch=$branch" --label "org.terry.toolbox.wsc.token=$token" --label "org.terry.toolbox.wsc.role=$role" \
         --restart unless-stopped --read-only --cap-drop ALL --security-opt no-new-privileges \
         --log-driver local --log-opt max-size=10m --log-opt max-file=3 "$@" "$image" "${command_args[@]}" 2>> "$log"); rc=$?
@@ -315,7 +344,18 @@ wsc_create_start() {
     if ! wsc_docker start "$cid" >> "$log" 2>&1; then wsc_error 'start失败；执行owned停止/读回门禁，数据保留。'; return 1; fi
     wsc_inspect "$cid" && wsc_python running "$branch" "$HOME" "$probe" "$cid" || return 1
     if [[ $role == app && $branch == easynode ]]; then
-        wsc_docker logs "$cid" >> "$log" 2>&1 || { wsc_error '初始化日志读取失败；容器状态已记录。'; return 1; }
+        native_log=$(mktemp "$data/native-init.XXXXXXXX.log") || return 1
+        # The app starts before native RSA/key DB initialization finishes. Wait
+        # for its original credentials, keeping every log byte in private files.
+        for ((n=0; n<60; n++)); do
+            wsc_resources_verify && wsc_inspect "$cid" && wsc_python running "$branch" "$HOME" "$probe" "$cid" || return 1
+            wsc_docker logs "$cid" > "$native_log" 2>&1 || { wsc_error '初始化日志读取失败；容器状态已记录。'; return 1; }
+            if wsc_python credentials-record "$branch" "$HOME" "$native_log"; then rc=0; else rc=$?; fi
+            (( rc != 0 )) || return 0
+            (( rc == 2 )) || return 1
+            sleep 1
+        done
+        wsc_error '60秒内未取得原生初始化凭据；停止仅owned资源，数据/日志保留。'; return 1
     fi
 }
 
@@ -369,7 +409,7 @@ toolbox_webssh_container() (
     if [[ $branch == personal ]]; then
         printf '个人版已有原生login/2FA；随机本地管理员将写入原生config，路径credentials.txt；密码不会回显/进入argv。原程序存明文SSH凭据和管理员密码，且不校验SSH host key，必须保护/备份数据。\n'
     else
-        printf '必要guacd: %s（内部4822，不发布宿主端口）。上游初始化会输出随机密码，仅保存私有日志；首次登录立即更换并开启MFA。仅HTTP本机/SSH隧道，外部必须TLS。\n' "$guacd_image"
+        printf '必要guacd: %s（内部4822，不发布宿主端口）。原生随机账号密码写入私有credentials.txt和初始化日志；首次登录立即更换并开启MFA。仅HTTP本机/SSH隧道，外部必须TLS。\n' "$guacd_image"
     fi
     wsc_confirm || return 1
     wsc_local_gate && wsc_python preflight "$branch" "$HOME" && wsc_name_gate && wsc_port_gate || return 1
@@ -382,9 +422,9 @@ toolbox_webssh_container() (
     trap 'trap - INT TERM; wsc_error "收到信号；停止/读回仅owned资源，保留所有数据。"; exit 130' INT TERM
     trap 'rc=$?; trap - EXIT INT TERM; if (( initialized && ! install_ok )); then wsc_cleanup || :; printf "数据/凭据/私有日志保留: %s\n" "$data" >&2; fi; rm -f -- "$probe"; exit "$rc"' EXIT
     # Pull before creating bridge/containers, no mutable fallback or automatic dependency install.
-    if ! wsc_docker pull "$app_image" >> "$log" 2>&1 || ! wsc_docker image inspect "$app_image" > "$probe" 2>> "$log" || ! app_iid=$(wsc_python image "$branch" "$HOME" "$probe" "$app_image"); then wsc_error '固定镜像拉取/arch/digest读回失败；未换产品。'; return 1; fi
+    if ! wsc_docker pull --platform linux/amd64 "$app_image" >> "$log" 2>&1 || ! wsc_docker image inspect "$app_image" > "$probe" 2>> "$log" || ! app_iid=$(wsc_python image "$branch" "$HOME" "$probe" "$app_image"); then wsc_error '固定镜像拉取/arch/digest读回失败；未换产品。'; return 1; fi
     if [[ $branch == easynode ]]; then
-        if ! wsc_docker pull "$guacd_image" >> "$log" 2>&1 || ! wsc_docker image inspect "$guacd_image" > "$probe" 2>> "$log" || ! guacd_iid=$(wsc_python image "$branch" "$HOME" "$probe" "$guacd_image"); then wsc_error 'guacd固定镜像拉取/读回失败。'; return 1; fi
+        if ! wsc_docker pull --platform linux/amd64 "$guacd_image" >> "$log" 2>&1 || ! wsc_docker image inspect "$guacd_image" > "$probe" 2>> "$log" || ! guacd_iid=$(wsc_python image "$branch" "$HOME" "$probe" "$guacd_image"); then wsc_error 'guacd固定镜像拉取/读回失败。'; return 1; fi
     fi
     # Recheck after potentially slow pulls to reject context/name/port races.
     wsc_local_gate && wsc_name_gate && wsc_port_gate || return 1
@@ -411,5 +451,5 @@ toolbox_webssh_container() (
     install_ok=1
     printf 'Docker已接受并读回运行状态：http://127.0.0.1:%s；endpoint、实际登录/SSH/SFTP仍须VM验收。\n数据/凭据: %s\n私有启动日志: %s\n' "$port" "$data" "$log"
     [[ $branch != personal ]] || printf '原生登录随机凭据仅见: %s/credentials.txt；首次登录立即修改并开启2FA。\n' "$data"
-    [[ $branch != easynode ]] || printf '如日志尚未出现初始化凭据，请把owned app ID的docker logs重定向到该目录新建0600文件；不要把完整日志打印/分享。\n'
+    [[ $branch != easynode ]] || printf '原生随机登录凭据仅见: %s/credentials.txt；初始化日志保存在同一私有目录。\n' "$data"
 )

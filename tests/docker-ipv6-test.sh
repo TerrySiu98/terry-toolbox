@@ -5,8 +5,18 @@ set -euo pipefail
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 export IPV6_MODULE=$repo/modules/docker-ipv6.sh
 python3 - "$@" <<'PY'
-import json, os, pathlib, signal, subprocess, sys, tempfile, time
-BASE=pathlib.Path('/root/.hermes/cache/scratch')
+import json, os, pathlib, signal, stat, subprocess, sys, tempfile, time
+if sys.platform != 'linux' or os.geteuid() != 0:
+ print('B1 fixture suite requires Linux root (/proc and root-owned private paths); no service/network changes performed.',file=sys.stderr)
+ sys.exit(77)
+BASE=pathlib.Path(os.environ.get('TOOLBOX_TEST_TMPDIR','/root/.cache/terry-toolbox-tests'))
+if not BASE.is_absolute() or str(BASE)!=os.path.normpath(str(BASE)):
+ raise RuntimeError('TOOLBOX_TEST_TMPDIR must be a protected absolute directory')
+for part in reversed((BASE,*BASE.parents)):
+ if not part.exists():part.mkdir(mode=0o700)
+ s=part.lstat()
+ if not stat.S_ISDIR(s.st_mode) or s.st_uid!=0 or s.st_mode&0o022:
+  raise RuntimeError('unsafe fixture parent: '+str(part))
 E=pathlib.Path(tempfile.mkdtemp(prefix='docker-ipv6-evidence-',dir=BASE)); os.chmod(E,0o700)
 selected=set(sys.argv[1:]); results=[]; processes=[]
 MOCK=r'''#!/usr/bin/python3
@@ -15,12 +25,15 @@ r=pathlib.Path(os.environ['TOOLBOX_DOCKER_IPV6_TEST_ROOT']); a=sys.argv[1:]; nam
 with (r/'calls').open('a') as f:f.write(json.dumps([name]+a)+'\n')
 def flag(n):return (r/n).exists()
 def get(n,d=''):return (r/n).read_text().strip() if (r/n).exists() else d
+def swaplock():
+ p=r/'replacement-lock';p.write_bytes(b'');os.chmod(p,0o600);p.replace(r/'lock')
 def bridge():
  c=json.loads((r/'etc/docker/daemon.json').read_text()) if (r/'etc/docker/daemon.json').exists() else {}
  return {'Id':'b'*64,'Name':'bridge','Driver':'bridge','EnableIPv6':(c.get('ipv6',False) and not flag('badbridge')) or flag('bridgewrong'),'IPAM':{'Config':[{'Subnet':c['fixed-cidr-v6']}] if c.get('ipv6') else [{'Subnet':'172.17.0.0/16'}]}}
 if name=='dockerd-validate':
  count=int(get('validations','0'))+1;(r/'validations').write_text(str(count))
  if flag('rollbackvalidationfail') and count>1:sys.exit(1)
+ if flag('racelock') or flag('rollbackvalidationlock') and count>1:swaplock()
  if flag('raceconfig'): (r/'etc/docker/daemon.json').write_text('{"foreign":"race"}')
  if flag('raceparent'):
   (r/'etc/docker').rename(r/'etc/old-docker'); (r/'etc/docker').mkdir(); (r/'etc/docker/daemon.json').write_text('{"foreign":"parent"}')
@@ -58,10 +71,20 @@ elif name=='systemctl':
   socket='docker.socket' in a
   state=get('socket-stopped-state','inactive') if socket and not active else 'active' if active else 'inactive'
   substate=get('socket-substate','listening') if socket and active else get('socket-stopped-substate','dead') if socket else 'running' if active else 'dead'
-  print('LoadState=loaded\nActiveState='+state+'\nSubState='+substate+'\nMainPID='+('0' if socket else pid)+'\nFragmentPath='+str(r/'socket-unit' if socket else r/'unit')+'\nDropInPaths=\nJob='+('42' if flag('pending') else '')+'\n')
+  # Native socket units have no MainPID property. Empty values must be explicitly
+  # requested, and unknown/missing properties are never synthesized as safe.
+  values={'LoadState':'loaded','ActiveState':state,'SubState':substate,
+          'FragmentPath':str(r/'socket-unit' if socket else r/'unit'),
+          'DropInPaths':get('socket-dropins') if socket else '',
+          'Job':'42' if flag('pending') or socket and flag('socketpending') else ''}
+  if not socket:values['MainPID']=get('servicepid',pid)
+  if socket and flag('socketmissing'):del values['Job']
+  for k,v in values.items():
+   if v or '--all' in a:print(k+'='+v)
  elif a[0] in ('restart','stop','start'):
   if flag(a[0]+'fail'):sys.exit(1)
   (r/'service').write_text('inactive' if a[0]=='stop' else 'active')
+  if flag(a[0]+'lock'):swaplock()
   if a[0]=='restart':(r/'restarted').touch()
   if flag(a[0]+'inject') and (a[0]=='restart' or (r/'restarted').exists()):
    try:os.kill(int(get('pid')),signal.SIGTERM)
@@ -74,7 +97,7 @@ elif name=='systemctl':
   if a[0]=='restart' and flag('restartunit'):(r/'unit').write_text('unknown service resource');sys.exit(1)
   if a[0]=='restart' and flag('restartsnapshotfail'):(r/'pending').touch();sys.exit(1)
   if a[0]=='start' and flag('startreadfail'):(r/'pending').touch()
-  if a[0]=='restart' and flag('restartslow'):time=__import__('time'); (r/'restarting').touch();time.sleep(1)
+  if a[0]=='restart' and flag('restartslow'):time=__import__('time'); (r/'restarting').touch();time.sleep(20)
   if a[0]=='stop' and flag('stopreadfail'):(r/'pending').touch()
  else:raise RuntimeError(a)
 elif name=='rc-service':
@@ -92,7 +115,20 @@ elif name=='ss':
   if flag('fdactivation'):print('u_str LISTEN 0 4096 /run/docker.sock 123 * 0 users:(("systemd",pid=1,fd=5))')
 elif name=='ip':
  if flag('ipreadfail'):sys.exit(1)
- if 'route' in a:print(json.dumps([{'dst':'fd00:1234::/64','dev':'eth0'}] if flag('routeconflict') else [{'dst':'default','dev':'eth0'}]))
+ if flag('lifetimecountdowns'):
+  n=int(get('ip-probes','0'))
+  if 'route' in a:n+=1;(r/'ip-probes').write_text(str(n))
+  if 'route' in a:
+   row={'dst':'fd99::/64','dev':'eth0','gateway':'fe80::1','expires':86400-n}
+   if n>1 and flag('routeidentityrace'):row['gateway']='fe80::2'
+   if n>1 and flag('routeconflictrace'):row['dst']='fd00:1234::/64'
+   print(json.dumps([row]))
+  else:
+   addr={'family':'inet6','local':'fd99::1','prefixlen':64,'valid_life_time':86400-n,'preferred_life_time':14400-n}
+   if n>1 and flag('addridentityrace'):addr['local']='fd99::2'
+   if n>1 and flag('addrconflictrace'):addr['local']='fd00:1234::1'
+   print(json.dumps([{'ifname':'eth0','addr_info':[addr]}]))
+ elif 'route' in a:print(json.dumps([{'dst':'fd00:1234::/64','dev':'eth0'}] if flag('routeconflict') else [{'dst':'default','dev':'eth0'}]))
  else:print(json.dumps([{'ifname':'eth0','addr_info':[{'family':'inet6','local':'fd00:1234::1','prefixlen':64}]}] if flag('addrconflict') else []))
 else:raise RuntimeError(name)
 '''
@@ -129,7 +165,14 @@ def fixture(alpine=False):
  return r,env
 
 def invoke(r,env,action='apply',data='YES\nYES\n',extra=()):
- p=subprocess.run(['bash','-c','source "$IPV6_MODULE"; toolbox_docker_ipv6 "$@"','b1',action,*extra],env=env,input=data,text=True,capture_output=True,timeout=15)
+ p=subprocess.Popen(['bash','-c','source "$IPV6_MODULE"; toolbox_docker_ipv6 "$@"','b1',action,*extra],env=env,
+                    stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,start_new_session=True)
+ try:out,err=p.communicate(data,timeout=60)
+ except subprocess.TimeoutExpired:
+  os.killpg(p.pid,signal.SIGKILL);out,err=p.communicate()
+  (r/'timeout.json').write_text(json.dumps({'action':action,'limit_seconds':60,'stdout':out,'stderr':err},ensure_ascii=False,indent=2))
+  raise
+ p.stdout=out;p.stderr=err
  n=len(list(r.glob('result-*.json')));(r/f'result-{n}.json').write_text(json.dumps({'action':action,'rc':p.returncode,'stdout':p.stdout,'stderr':p.stderr},ensure_ascii=False,indent=2))
  return p
 
@@ -302,7 +345,7 @@ def concurrent_and_confirm_race():
  while '确认 (1/2): ' not in prefix:
   ch=p.stdout.read(1);assert ch,(prefix,p.stderr.read());prefix+=ch
  (r/'containers').write_text('d'*64)
- out,err=p.communicate('YES\nYES\n',timeout=15)
+ out,err=p.communicate('YES\nYES\n',timeout=60)
  assert p.returncode!=0 and '容器' in err and not mutations(r) and not (r/'state').exists()
  (r/'confirm-race-output').write_text(prefix+out+err)
 
@@ -312,17 +355,27 @@ def concurrent_and_confirm_race():
   original=(r/'etc/docker/daemon.json').read_bytes()
   p=subprocess.Popen(['bash','-c','source "$IPV6_MODULE"; toolbox_docker_ipv6 apply'],env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,start_new_session=True)
   p.stdin.write('YES\nYES\n');p.stdin.flush()
-  deadline=time.monotonic()+10
-  while not (r/'restarting').exists() and time.monotonic()<deadline:
-   assert p.poll() is None;time.sleep(0.01)
-  assert (r/'restarting').exists()
-  # Deliver SIGTERM to the real Python controller, not the mock daemon.
-  def descendants(pid):
-   children=pathlib.Path('/proc/'+str(pid)+'/task/'+str(pid)+'/children').read_text().split()
-   return [int(c) for c in children]+[d for c in children for d in descendants(int(c))]
-  targets=[pid for pid in descendants(p.pid) if pathlib.Path('/proc/'+str(pid)+'/cmdline').read_bytes().startswith(b'python3\0-c\0')]
-  assert len(targets)==1,targets;os.kill(targets[0],signal.SIGTERM)
-  out,err=p.communicate(timeout=15);(r/'signal-output').write_text(out+err)
+  try:
+   deadline=time.monotonic()+90
+   while not (r/'restarting').exists() and time.monotonic()<deadline:
+    assert p.poll() is None;time.sleep(0.01)
+   assert (r/'restarting').exists()
+   # Deliver SIGTERM to the real Python controller, not the mock daemon.
+   def descendants(pid):
+    try:children=pathlib.Path('/proc/'+str(pid)+'/task/'+str(pid)+'/children').read_text().split()
+    except FileNotFoundError:return []
+    return [int(c) for c in children]+[d for c in children for d in descendants(int(c))]
+   targets=[]
+   for pid in descendants(p.pid):
+    try:cmdline=pathlib.Path('/proc/'+str(pid)+'/cmdline').read_bytes()
+    except FileNotFoundError:continue
+    if cmdline.startswith(b'python3\0-c\0'):targets.append(pid)
+   assert len(targets)==1,targets;os.kill(targets[0],signal.SIGTERM)
+   out,err=p.communicate(timeout=90);(r/'signal-output').write_text(out+err)
+  except BaseException:
+   if p.poll() is None:os.killpg(p.pid,signal.SIGKILL)
+   out,err=p.communicate();(r/'signal-harness-failure').write_text(out+err)
+   raise
   assert p.returncode!=0 and 'signal' in err
   if stopfail:assert json.loads((r/'etc/docker/daemon.json').read_text())['ipv6'] is True and '保守保留' in err
   else:assert (r/'etc/docker/daemon.json').read_bytes()==original and json.loads((r/'state/record.json').read_text())['phase']=='rolled-back'
@@ -363,6 +416,28 @@ def native_socket_refusals():
   p=invoke(r,env);reason='listener 不属于实际 dockerd PID' if noactualpid else 'docker.socket pending/状态/drop-in'
   assert p.returncode!=0 and reason in p.stderr,(substate,noactualpid,p.stdout,p.stderr)
   assert not mutations(r) and not (r/'state').exists() and (r/'etc/docker/daemon.json').read_bytes()==original
+ for flag in ('socketpending','socketdropin','socketmissing','badpid'):
+  r,env=nativefdactivation('running');original=(r/'etc/docker/daemon.json').read_bytes()
+  if flag=='socketdropin':(r/'socket-dropins').write_text('/etc/systemd/system/docker.socket.d/foreign.conf')
+  elif flag=='badpid':(r/'servicepid').write_text('../1')
+  else:(r/flag).touch()
+  p=invoke(r,env)
+  assert p.returncode!=0,(flag,p.stdout,p.stderr)
+  assert not mutations(r) and not (r/'state').exists() and (r/'etc/docker/daemon.json').read_bytes()==original
+
+def lock_inode_boundaries():
+ for flag in ('racelock','restartlock','stoplock','rollbackvalidationlock'):
+  r,env=fixture();original=(r/'etc/docker/daemon.json').read_bytes();(r/flag).touch()
+  if flag in ('stoplock','rollbackvalidationlock'):(r/'restartfail').touch()
+  p=invoke(r,env)
+  assert p.returncode!=0 and '锁 inode/内容' in p.stderr,(flag,p.stdout,p.stderr)
+  m=json.loads((r/'state/record.json').read_text())
+  if flag=='racelock':
+   assert not mutations(r) and (r/'etc/docker/daemon.json').read_bytes()==original
+   assert m['phase']=='prepared'
+  else:
+   assert m['phase']=='retained' and json.loads((r/'etc/docker/daemon.json').read_text())['ipv6'] is True
+   assert [c[1] for c in mutations(r)]==(['restart','stop'] if flag=='stoplock' else ['restart'])
 
 def native_socket_stopped_gate():
  for state,substate in [('inactive','running'),('inactive','listening'),('active','dead'),('active','running'),('active','listening')]:
@@ -463,6 +538,15 @@ def safety_switch_parity():
   assert not mutations(r) and not (r/'state').exists()
  r,env=fixture();(r/'etc/docker/daemon.json').write_text('{"icc":true,"ip-masq":true,"ip-forward":true}\n');assert_ok(invoke(r,env))
 
+def lifetime_countdowns():
+ r,env=fixture();(r/'lifetimecountdowns').touch();original=(r/'etc/docker/daemon.json').read_bytes()
+ assert_ok(invoke(r,env));assert_ok(invoke(r,env,'restore'))
+ assert (r/'etc/docker/daemon.json').read_bytes()==original
+ for flag,reason in [('routeidentityrace','race'),('addridentityrace','race'),('routeconflictrace','路由冲突'),('addrconflictrace','地址冲突')]:
+  r,env=fixture();(r/'lifetimecountdowns').touch();(r/flag).touch();original=(r/'etc/docker/daemon.json').read_bytes()
+  p=invoke(r,env);assert p.returncode!=0 and reason in p.stderr,(flag,p.stdout,p.stderr)
+  assert not mutations(r) and not (r/'state').exists() and (r/'etc/docker/daemon.json').read_bytes()==original
+
 try:
  case('readonly-status',readonly)
  case('apply-preserve',apply)
@@ -484,6 +568,7 @@ try:
  case('restore-trust-failures',restore_refusals)
  case('native-socket-active-running',native_socket_running)
  case('native-socket-state-pid-refusals',native_socket_refusals)
+ case('lock-inode-boundaries',lock_inode_boundaries)
  case('native-socket-stopped-gate',native_socket_stopped_gate)
  case('native-fd-openrc-layout',native_fd_and_openrc)
  case('unknown-state-retention',additional_failure_boundaries)
@@ -492,6 +577,7 @@ try:
  case('generator-dependencies',generator_dependencies)
  case('firewall-dependencies',firewall_dependencies)
  case('safety-switch-parity',safety_switch_parity)
+ case('native-ipv6-lifetime-countdowns',lifetime_countdowns)
 finally:
  for p in processes:
   p.terminate()

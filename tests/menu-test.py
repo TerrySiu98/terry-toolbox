@@ -114,7 +114,7 @@ toolbox_webssh_container() {{ printf 'MOCK_WEBSSH_CONTAINER:%s\\n' "$*"; }}
 toolbox_tls_acme() {{ printf 'MOCK_TLS:%s\\n' "$*"; }}
 _toolbox_system_docker() {{ printf 'MOCK_DOCKER:install\\n'; }}
 _toolbox_system_docker_ipv6() {{ printf 'MOCK_DOCKER_IPV6:%s\\n' "$1"; }}
-_toolbox_system_reinstall() {{ printf 'MOCK_REINSTALL:%s\\n' "$1"; }}
+_toolbox_system_reinstall() {{ printf 'MOCK_REINSTALL:%s\\n' "$*"; }}
 _toolbox_system_netopt_apply() {{ printf 'MOCK_NETOPT:apply\\n'; }}
 _toolbox_system_netopt_rollback() {{ printf 'MOCK_NETOPT:rollback\\n'; }}
 _toolbox_system_alpine_webtop() {{ printf 'MOCK_ALPINE:webtop\\n'; }}
@@ -160,12 +160,13 @@ for action in ('install-ws', 'uninstall-ws', 'status-ws'):
 assert vmess_out.count('操作结束') == 3, 'VMess actions have extra or missing pauses'
 assert '操作未完成或已取消' not in vmess_out, vmess_out
 assert vmess_out.count('Alpine 版 HY2') == 2, 'VMess page return skipped the network level'
-remaining_out = run_tty('B1\n2\n\n3\n\n4\n\n0\nB10\n4\n\n5\n\n6\n\n7\n\n8\n\n9\n\n0\nM3\n1\n\n3\n\n4\n\n0\nTLS\n1\n\n2\n\n3\n\n4\n\n5\n\n6\n\n0\nA5\n7\n\n8\n\n9\n\n0\n0\n')
+# M3 preflight reads the Debian target before the action-completion pause.
+remaining_out = run_tty('B1\n2\n\n3\n\n4\n\n0\nB10\n4\n\n5\n\n6\n\n7\n\n8\n\n9\n\n0\nM3\n1\n1\n\n3\n\n4\n\n0\nTLS\n1\n\n2\n\n3\n\n4\n\n5\n\n6\n\n0\nA5\n7\n\n8\n\n9\n\n0\n0\n')
 for marker in ('MOCK_DOCKER_IPV6:apply', 'MOCK_DOCKER_IPV6:status', 'MOCK_DOCKER_IPV6:restore',
                'MOCK_WEBSSH_CONTAINER:personal install', 'MOCK_WEBSSH_CONTAINER:personal uninstall',
                'MOCK_WEBSSH_CONTAINER:personal status', 'MOCK_WEBSSH_CONTAINER:easynode install',
                'MOCK_WEBSSH_CONTAINER:easynode uninstall', 'MOCK_WEBSSH_CONTAINER:easynode status',
-               'MOCK_REINSTALL:preflight', 'MOCK_REINSTALL:status', 'MOCK_REINSTALL:cancel',
+               'MOCK_REINSTALL:preflight debian', 'MOCK_REINSTALL:status', 'MOCK_REINSTALL:cancel',
                'MOCK_TLS:issue', 'MOCK_TLS:status', 'MOCK_TLS:renew', 'MOCK_TLS:enable-renewal',
                'MOCK_TLS:disable-renewal', 'MOCK_TLS:deploy-vmess',
                'MOCK_NETWORK:A5 enable-boot-ws', 'MOCK_NETWORK:A5 disable-boot-ws', 'MOCK_NETWORK:A5 boot-status-ws'):

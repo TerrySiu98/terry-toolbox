@@ -4,6 +4,8 @@
 # Real dd writes only an already-open fixture fd. No namespaces pretend to isolate
 # swap. Evidence is retained; fixture data is removed after each individual case.
 set -euo pipefail
+source "$(dirname -- "${BASH_SOURCE[0]}")/scratch-root.sh"
+toolbox_test_scratch
 ROOT=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 export ALPINE_SWAP_TEST_REPO=$ROOT
 python3 - <<'PY'
@@ -19,7 +21,7 @@ import time
 
 repo = Path(os.environ['ALPINE_SWAP_TEST_REPO'])
 module = repo/'modules/alpine-swap.sh'
-work = Path(tempfile.mkdtemp(prefix='alpine-swap-test.', dir=os.environ.get('TMPDIR','/root/.hermes/cache/scratch')))
+work = Path(tempfile.mkdtemp(prefix='alpine-swap-test.', dir=os.environ.get('TMPDIR','/root/.cache/terry-toolbox-tests')))
 os.chmod(work, 0o700)
 print('EVIDENCE='+str(work), flush=True)
 results = work/'results.log'

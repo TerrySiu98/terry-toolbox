@@ -1,12 +1,8 @@
 #!/usr/bin/env bash
 set -eu
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-# All fixtures, HOME, downloads and evidence live under Hermes scratch, never /tmp.
-export TMPDIR=${TMPDIR:-/root/.hermes/cache/scratch}
-case $TMPDIR in /root/.hermes/cache/scratch|/root/.hermes/cache/scratch/*) ;; *) printf 'unsafe TMPDIR\n' >&2; exit 1;; esac
-mkdir -p "$TMPDIR"
-TMPDIR=$(cd "$TMPDIR" && pwd -P)
-case $TMPDIR in /root/.hermes/cache/scratch|/root/.hermes/cache/scratch/*) ;; *) printf 'unsafe resolved TMPDIR\n' >&2; exit 1;; esac
+source "$ROOT/tests/scratch-root.sh"
+toolbox_test_scratch
 safetyroot=$(mktemp -d "$TMPDIR/toolbox-system-safety.XXXXXX")
 export HOME="$safetyroot/home"
 mkdir -p "$HOME" "$safetyroot/bin"

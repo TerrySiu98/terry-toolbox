@@ -65,12 +65,22 @@ webssh_require_systemd() {
     [[ -d $run_dir ]] || webssh_die 'systemd 未作为 init 运行（缺少 /run/systemd/system）。'
 }
 
+webssh_require_python() {
+    python3 -c '# webssh-python-capabilities
+import ctypes, inspect, shutil, sys
+assert sys.version_info >= (3, 11)
+assert "dir_fd" in inspect.signature(shutil.rmtree).parameters and shutil.rmtree.avoids_symlink_attacks
+assert hasattr(ctypes.CDLL(None), "renameat2")
+' >/dev/null 2>&1 || { webssh_die '需要 Python 3.11+ 及安全 dir_fd/renameat2 支持；请预先配置，未修改安装。'; return 1; }
+}
+
 webssh_require_tools() {
     local missing=() c
     for c in openssl sha256sum curl flock ss awk sed mktemp install python3 getent; do
         command -v "$c" >/dev/null 2>&1 || missing+=("$c")
     done
     (( ${#missing[@]} == 0 )) || { webssh_die "缺少必需命令：${missing[*]}"; return 1; }
+    webssh_require_python || return 1
     # venv 模块可能缺（python3-venv 未装），交给 ensure_packages 补装后再复查。
     getent passwd "$WEBSSH_WEB_USER" >/dev/null 2>&1 \
         || webssh_die "缺少系统用户 $WEBSSH_WEB_USER（nginx 工作进程用它降权）。"
@@ -890,6 +900,7 @@ _webssh_uninstall() {
     local -A WEBSSH_OWNED=()
     webssh_require_root || return 1
     webssh_require_systemd || return 1
+    webssh_require_python || return 1
     etc=$(webssh_etc); opt=$(webssh_opt); lib=$(webssh_lib); log=$(webssh_log); run=$(webssh_run)
     state=$(webssh_unit_state "$(webssh_unit)" "ExecStart=$(webssh_wssh)")
     if [[ $state == absent && ! -e $(webssh_nginx_unit) && ! -d $etc && ! -d $opt ]]; then

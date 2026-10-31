@@ -3,8 +3,10 @@
 # /proc ownership checks use a real task-owned ELF process, not an ss name fallback.
 # shellcheck disable=SC2317,SC2016,SC1090
 set -uo pipefail
+source "$(dirname -- "${BASH_SOURCE[0]}")/scratch-root.sh"
+toolbox_test_scratch
 ROOT=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-work=$(mktemp -d "${TMPDIR:-/root/.hermes/cache/scratch}/network-alpine-feedback.XXXXXXXX") || exit 1
+work=$(mktemp -d "${TMPDIR:-/root/.cache/terry-toolbox-tests}/network-alpine-feedback.XXXXXXXX") || exit 1
 cleanup() {
     if [[ -s $work/children ]]; then
         while IFS= read -r child; do

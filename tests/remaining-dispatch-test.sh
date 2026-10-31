@@ -59,9 +59,18 @@ _tb_service_choice_valid TLS 6 || fail 'TLS deploy selection'
 )
 (
     toolbox_reinstall() { printf 'reinstall:%s\n' "$*"; return 7; }
-    for pair in '1 preflight' '2 prepare' '3 status' '4 cancel'; do
-        read -r number action <<< "$pair"; rc=0; out=$(run_service_action MAIN_REINSTALL "$number") || rc=$?
+    for pair in '1 preflight debian' '2 prepare debian 13' '3 status' '4 cancel'; do
+        read -r number action <<< "$pair"; rc=0; out=$(run_service_action MAIN_REINSTALL "$number" <<< '1') || rc=$?
         [[ $rc == 7 && $out == "reinstall:$action" ]] || fail "M3-$number"
+    done
+    for pair in '1 debian 13' '2 ubuntu 24.04' '3 alpine 3.24'; do
+        read -r selection distro version <<< "$pair"
+        rc=0; out=$(run_service_action MAIN_REINSTALL 2 <<< "$selection") || rc=$?
+        [[ $rc == 7 && $out == "reinstall:prepare $distro $version" ]] || fail "M3-target-$selection"
+    done
+    for input in '' 0 invalid; do
+        rc=0; out=$(run_service_action MAIN_REINSTALL 2 <<< "$input") || rc=$?
+        [[ $rc == 1 && -z $out ]] || fail 'M3 cancelled target reached adapter'
     done
 )
 (

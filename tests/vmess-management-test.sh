@@ -19,7 +19,7 @@ fixture() {
     # The real lock sits on tmpfs (/run): keep it under the fixture's /run stand-in
     # so a simulated reboot can change only its parent inode.
     export TOOLBOX_VM_WS_LOCK="$C/run/lock"
-    unset BOOT_FAIL BOOT_STATE BOOT_SWAP BOOT_READBACK_FAIL BOOT_SIGNAL ROLLBACK_STOP_FAIL START_ONCE_FAIL TLS_ONCE_FAIL SIGNAL_ONCE_START SWAP_AT_START VMESS_MANAGEMENT_VALIDATE_FAIL DISABLE_FOREIGN
+    unset BOOT_FAIL BOOT_STATE BOOT_SWAP BOOT_READBACK_FAIL BOOT_SIGNAL ROLLBACK_STOP_FAIL START_ONCE_FAIL TLS_ONCE_FAIL SIGNAL_ONCE_START SWAP_AT_START VMESS_MANAGEMENT_VALIDATE_FAIL DISABLE_FOREIGN SWAP_LOCK_AT
     rm -f "$T/inject/sitecustomize.py" "$T/inject/__pycache__/sitecustomize.cpython-313.pyc"
     vmess_confirm() { vmess_real_confirm; }
     vmess_certificate() { printf 'certificate-check\n' >> "$C/log"; [[ ${CERT_FAIL:-0} != 1 ]]; }
@@ -56,6 +56,7 @@ systemctl() {
                 elif grep -q '^\[Install\]' "$(vmess_unit)"; then printf 'UnitFileState=disabled\n'; else printf 'UnitFileState=static\n'; fi
             else vmess_fixture_systemctl "$@"; fi ;;
         start)
+            if [[ ${SWAP_LOCK_AT:-} == start ]]; then swap_lock; fi
             if [[ ${START_ONCE_FAIL:-0} == 1 && ! -e $C/failed-once ]]; then
                 [[ ${ROLLBACK_STOP_FAIL:-0} != 1 ]] || STOP_FAIL=1
                 : > "$C/failed-once"; printf 'failed\n' > "$C/state"; printf 'systemctl start once-failed\n' >> "$C/log"; return 1
@@ -65,6 +66,9 @@ systemctl() {
             if [[ ${TLS_ONCE_FAIL:-0} == 1 ]]; then
                 if [[ ! -e $C/started-once ]]; then : > "$C/started-once"; : > "$C/tls-new-fail"; else rm -f "$C/tls-new-fail"; fi
             fi
+            vmess_fixture_systemctl "$@" ;;
+        stop)
+            if [[ ${SWAP_LOCK_AT:-} == stop ]]; then swap_lock; fi
             vmess_fixture_systemctl "$@" ;;
         *) vmess_fixture_systemctl "$@" ;;
     esac
@@ -246,6 +250,19 @@ vmess_confirm() { swap_lock; }
 reject update_yes
 old_intact; no_manage_mutation
 pass 'lock swapped before a certificate update refuses to stop/exchange'
+for action in uninstall cert-stop cert-start; do
+    fixture "lock-during-$action"
+    install_yes || fail 'lock during lifecycle setup'; old=$(snapshot); : > "$C/log"
+    SWAP_LOCK_AT=stop
+    if [[ $action == cert-start ]]; then SWAP_LOCK_AT=start; fi
+    if [[ $action == uninstall ]]; then reject uninstall_yes; else reject update_yes; fi
+    [[ -f $(vmess_etc)/manifest.json && -f $(vmess_bin) && -d $(vmess_lock) ]] || fail 'lost lock discarded owned resources'
+    if [[ $action != cert-start ]]; then
+        old_intact
+        ! grep -q 'systemctl start' "$C/log" || fail 'started service after losing the lock at stop'
+    fi
+done
+pass 'lock replaced during service stop/start prevents deletion, exchange, or successful commit'
 # boot-status is a read-only dispatch that consumes no confirmation input.
 fixture boot-status-dispatch
 install_yes || fail 'boot-status setup'; : > "$C/log"; old=$(snapshot)
@@ -290,6 +307,41 @@ cmp -s "$T/new.pem" "$(vmess_etc)/cert.pem" && cmp -s "$T/new.key" "$(vmess_etc)
 vmess_fs verify --complete >/dev/null || fail 'updated ledger'; [[ $(vmess_fs boot-info) == '2 enabled' ]] || fail 'update changed boot'
 uninstall_yes || fail 'cert teardown'; empty_targets
 pass 'new pair + sealed ledger transaction preserves config/UUID/client/boot'
+# Simulate elapsed validity after installation by resealing a fixture-only pair.
+# Candidate verification stays real; service execution/transport remain mocked.
+for old_kind in expired near-expiry; do
+    fixture "cert-recovery-$old_kind"; install_yes || fail 'recovery install setup'
+    python3 - "$ROOT/tests/certificate-fixture.py" "$C" "$old_kind" <<'PY'
+import datetime,hashlib,json,subprocess,sys
+script,p,kind=sys.argv[1:];now=datetime.datetime.now(datetime.timezone.utc)
+end=now+datetime.timedelta(minutes=30) if kind=='near-expiry' else now-datetime.timedelta(days=1)
+fmt=lambda v:v.strftime('%Y%m%d%H%M%SZ')
+subprocess.run([sys.executable,script,p+'/old.pem',p+'/old.key',fmt(now-datetime.timedelta(days=3)),fmt(end)],check=True)
+root=p+'/etc';m=json.load(open(root+'/manifest.json'))
+for dest,src in [('cert.pem','old.pem'),('key.pem','old.key')]:
+ data=open(p+'/'+src,'rb').read();path=root+'/'+dest
+ with open(path,'wb') as f:f.write(data)
+ m['entries'][path]['sha256']=hashlib.sha256(data).hexdigest()
+raw=(json.dumps(m,sort_keys=True)+'\n').encode()
+with open(root+'/manifest.json','wb') as f:f.write(raw)
+with open(root+'/manifest.sha256','w') as f:f.write(hashlib.sha256(raw).hexdigest()+'\n')
+with open(p+'/trust.pem','wb') as f:f.write(open(p+'/old.pem','rb').read()+open(sys.argv[2]+'/../new.pem','rb').read())
+PY
+    export TOOLBOX_NET_CAFILE="$C/trust.pem"
+    vmess_certificate() { vmess_real_certificate "$@"; }
+    vmess_existing_certificate || fail 'expired/near-expiry owned identity'
+    old=$(snapshot); : > "$C/log"
+    if [[ $old_kind == expired ]]; then
+        reject toolbox_vmess update-cert "$C/old.pem" "$C/old.key" <<< $'YES\nYES' > "$C/update-output" 2>&1
+        old_intact; no_manage_mutation
+    fi
+    update_yes || fail 'cannot replace expired/near-expiry owned pair'
+    cmp -s "$T/new.pem" "$(vmess_etc)/cert.pem" || fail 'recovery did not deploy valid new pair'
+    vmess_fs verify --complete >/dev/null || fail 'recovery ownership changed'
+    uninstall_yes || fail 'recovery teardown'; empty_targets
+    export TOOLBOX_NET_CAFILE="$T/cert.pem"
+done
+pass 'expired/near-expiry owned pair recovers via update-cert; expired new candidate still refuses before stop'
 for fault in validation stop start tls signal start-stop-fail tamper-start race-confirm; do
     fixture "cert-$fault"; install_yes || fail 'fault cert setup'; old=$(snapshot); : > "$C/log"
     case $fault in validation) export VMESS_MANAGEMENT_VALIDATE_FAIL=1 ;; stop) STOP_FAIL=1 ;; start) START_ONCE_FAIL=1 ;; tls) TLS_ONCE_FAIL=1 ;;
@@ -380,7 +432,7 @@ for kind in hostname key trust expired future encrypted; do
         key) key="$T/key.pem" ;;
         trust) TOOLBOX_NET_CAFILE="$T/cert.pem" ;;
         expired|future) if [[ $kind == expired ]]; then start=20200101000000Z; end=20200102000000Z; else start=20990101000000Z; end=20990102000000Z; fi
-            openssl req -x509 -newkey rsa:2048 -nodes -subj /CN=example.com -addext subjectAltName=DNS:example.com -not_before "$start" -not_after "$end" -keyout "$C/$kind.key" -out "$C/$kind.pem" >/dev/null 2>&1; cert="$C/$kind.pem"; key="$C/$kind.key" ;;
+            python3 "$ROOT/tests/certificate-fixture.py" "$C/$kind.pem" "$C/$kind.key" "$start" "$end"; cert="$C/$kind.pem"; key="$C/$kind.key" ;;
         encrypted) openssl pkey -in "$T/new.key" -aes-256-cbc -passout pass:test-only -out "$C/encrypted.key" >/dev/null 2>&1; key="$C/encrypted.key" ;;
     esac
     reject toolbox_vmess update-cert "$cert" "$key" <<< $'YES\nYES' > "$C/update-output" 2>&1

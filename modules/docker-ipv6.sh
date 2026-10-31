@@ -8,7 +8,7 @@
 # Debian/Ubuntu systemd and booted Alpine OpenRC are implementation targets, NOT
 # real-distro/data-plane acceptance claims. Rootless/custom/Swarm daemons refused.
 # The ONLY path override is TOOLBOX_DOCKER_IPV6_TEST_ROOT, restricted to private
-# /root/.hermes/cache/scratch/docker-ipv6-* trees; it is NOT daemon isolation.
+# root-owned docker-ipv6-* trees with protected parents; it is NOT daemon isolation.
 # Dirfd anchoring, protected parents, exact inode/content records and flock defend
 # against unprivileged races. Concurrent hostile root is outside the guarantee.
 # Failed attempts retain private evidence; never silently adopt/reuse that state.
@@ -55,6 +55,7 @@ M = None
 MSNAP = None
 PUBLISHED = False
 ATTEMPTED = False
+LOCK = None
 
 class Refusal(Exception):
     pass
@@ -176,6 +177,17 @@ def readleaf(path):
         return l.read()
     finally:
         l.close()
+
+def lock_check():
+    # A flock only protects its inode. Replacing the name would let a second
+    # controller acquire a different lock, so re-prove fd/name/parent identity
+    # immediately before configuration or service mutations, including rollback.
+    need(LOCK is not None, '事务独占锁未持有')
+    leaf, fd, expected = LOCK
+    leaf.stable()
+    actual=attrs(os.fstat(fd))
+    need(actual == {k:expected[k] for k in actual}
+         and leaf.read()[0] == expected, '锁 inode/内容已改变；拒绝变更并保留证据')
 
 def config_snapshot():
     parent = os.path.dirname(C['config'])
@@ -315,16 +327,24 @@ def executable(pid):
         os.close(fd); l.close()
     return dict(pid=pid, start=start, exe=s, argv=argv)
 
+def systemd_properties(unit):
+    text = run('systemctl', 'show', unit, '--no-pager', '--all',
+               '--property=LoadState,ActiveState,SubState,MainPID,FragmentPath,DropInPaths,Job')[0]
+    vals = {}
+    for row in text.splitlines():
+        need('=' in row, unit+' readback 无效')
+        k, v = row.split('=', 1)
+        need(k not in vals, unit+' duplicate property')
+        vals[k] = v
+    required=('LoadState','ActiveState','SubState','FragmentPath','DropInPaths','Job')
+    if unit.endswith('.service'): required+=('MainPID',)
+    need(all(k in vals for k in required),
+         unit+' readback 缺字段')
+    return vals
+
 def service(init, running=True, before_stop=False, probe=False):
     if init == 'systemd':
-        text = run('systemctl', 'show', 'docker.service', '--no-pager',
-                   '--property=LoadState,ActiveState,SubState,MainPID,FragmentPath,DropInPaths,Job')[0]
-        vals = {}
-        for row in text.splitlines():
-            need('=' in row, 'systemd readback 无效')
-            k, v = row.split('=', 1); need(k not in vals, 'systemd duplicate property'); vals[k] = v
-        need(all(k in vals for k in ('LoadState','ActiveState','SubState','MainPID','FragmentPath','DropInPaths','Job')),
-             'systemd readback 缺字段')
+        vals = systemd_properties('docker.service')
         need(vals['LoadState'] == 'loaded' and vals['Job'] == '' and vals['DropInPaths'] == '',
              'systemd 未 loaded/pending job/drop-in 冲突')
         fragment = vals['FragmentPath']
@@ -335,6 +355,7 @@ def service(init, running=True, before_stop=False, probe=False):
                  'custom systemd fragment 不支持')
         snap, data = readleaf(fragment)
         need(snap['exists'], 'systemd fragment 缺失')
+        need(re.fullmatch(r'\d+', vals['MainPID']), 'systemd MainPID 无效')
         active = vals['ActiveState'] == 'active' and vals['SubState'] == 'running'
         socket_fragment = None
         # The upstream unit uses socket activation. PID 1 also owns its fd;
@@ -342,12 +363,7 @@ def service(init, running=True, before_stop=False, probe=False):
         activation = active and b'fd://' in pathlib.Path('/proc/'+vals['MainPID']+'/cmdline').read_bytes()
         activation = activation or not active and M is not None and 'socket' in M['init']['resources']
         if activation:
-            socktext=run('systemctl','show','docker.socket','--no-pager',
-                         '--property=LoadState,ActiveState,SubState,MainPID,FragmentPath,DropInPaths,Job')[0]
-            sv={}
-            for row in socktext.splitlines():
-                need('=' in row,'docker.socket readback 无效');k,v=row.split('=',1)
-                need(k not in sv,'docker.socket duplicate property');sv[k]=v
+            sv=systemd_properties('docker.socket')
             socket_active=sv.get('ActiveState')=='active' and sv.get('SubState') in ('listening','running')
             socket_stopped=sv.get('ActiveState')=='inactive' and sv.get('SubState')=='dead'
             need(sv.get('LoadState')=='loaded' and sv.get('DropInPaths')=='' and sv.get('Job')==''
@@ -490,6 +506,12 @@ def topology(subnet, owned=False):
     need(isinstance(routes,list) and isinstance(addrs,list), 'IPv6 路由/地址读取不完整')
     for row in routes:
         need(isinstance(row,dict) and isinstance(row.get('dst'),str), 'IPv6 route 数据无效')
+        # RA expiry is a kernel countdown, not route identity. Keep its
+        # presence in the fingerprint but not its naturally changing value;
+        # every probe still checks the actual destination for overlap below.
+        if 'expires' in row:
+            need(type(row['expires']) is int and row['expires'] >= 0, 'IPv6 route expires 无效')
+            row['expires'] = None
         dst = row['dst']
         if dst in ('default','::/0'): continue
         other = ipaddress.IPv6Network(dst, strict=False)
@@ -500,6 +522,10 @@ def topology(subnet, owned=False):
             if a.get('family') != 'inet6': continue
             other = ipaddress.IPv6Network(str(a.get('local'))+'/'+str(a.get('prefixlen')), strict=False)
             need(not net.overlaps(other) or owned and row.get('ifname') == 'docker0', 'IPv6 host 地址冲突')
+            for key in ('valid_life_time','preferred_life_time'):
+                if key in a:
+                    need(type(a[key]) is int and a[key] >= 0, 'IPv6 地址 lifetime 无效')
+                    a[key] = None
     return dict(networks=networks, routes=routes, addrs=addrs)
 
 def preflight(subnet, owned=False):
@@ -630,6 +656,7 @@ def verify_runtime(p, svc, phase):
     a changed unit or wrapper (e.g. --host=tcp://...) must fail, not pass on a
     stale pre-restart snapshot.
     """
+    lock_check()
     need(svc['active'], phase+' 后服务不是 running')
     resources_match(M, svc)
     snap, data, unused = config_snapshot()
@@ -648,6 +675,7 @@ def restart_and_verify(p, target):
     no_containers()
     resources_match(M, service(p['identity']['init']))
     need(config_snapshot()[0] == M['current'], 'restart 前 precise owned 配置已改变')
+    lock_check()
     ATTEMPTED = True
     if p['identity']['init'] == 'systemd': run('systemctl', 'restart', 'docker.service')
     else: run('rc-service', 'docker', 'restart')
@@ -662,15 +690,18 @@ def restart_and_verify(p, target):
              for x in b.get('IPAM',{}).get('Config',[])), 'bridge IPv6/subnet readback 失败')
     else:
         need(b.get('EnableIPv6') is False, '原始 bridge readback 未恢复')
+    lock_check()
 
 def rollback(p, previous, data, phase):
     # Never stop or restore when either the exact target or trusted init changed.
     global ATTEMPTED
+    lock_check()
     need(config_snapshot()[0] == M['current'], 'rollback：未知配置改变；不 stop、不覆盖')
     svc = service(p['identity']['init'], running=False, before_stop=True); resources_match(M, svc)
     if svc['active']: no_containers()
     validate(data if previous['exists'] else b'{}\n', p)
     need(config_snapshot()[0] == M['current'], 'rollback validate 后未知配置改变')
+    lock_check()
     if ATTEMPTED:
         if p['identity']['init'] == 'systemd':
             targets=['docker.service']+(['docker.socket'] if 'socket' in M['init']['resources'] else [])
@@ -680,6 +711,7 @@ def rollback(p, previous, data, phase):
         need(not stopped['active'], 'rollback stop readback 未 stopped；保留')
     leaf = Leaf(C['config'])
     try:
+        lock_check()
         if previous['exists']:
             M['current'] = leaf.replace(M['current'], data, previous['mode'], previous['uid'], previous['gid'])
         else:
@@ -689,6 +721,7 @@ def rollback(p, previous, data, phase):
     record()
     if ATTEMPTED:
         # Original daemon was running; successful stop is a prerequisite to start.
+        lock_check()
         if p['identity']['init'] == 'systemd': run('systemctl', 'start', 'docker.service')
         else: run('rc-service', 'docker', 'start')
         verify_runtime(p, service(p['identity']['init']), 'rollback start')
@@ -697,6 +730,7 @@ def rollback(p, previous, data, phase):
         expect = phase == 'applied'
         need(isinstance(bridge,list) and len(bridge)==1 and bridge[0].get('EnableIPv6') is expect,
              'rollback bridge readback 失败')
+    lock_check()
     M['phase'] = phase
     if phase == 'applied': M['owned'] = M['current']
     M['rollback'] = dict(configuration=True, service_readback=ATTEMPTED, target_phase=phase)
@@ -705,6 +739,7 @@ def rollback(p, previous, data, phase):
 def transaction(action, subnet, p):
     global M, MSNAP, LOG, PUBLISHED
     before = p['snapshot']; olddata = p['original']
+    lock_check()
     if action == 'apply':
         need(not os.path.lexists(C['state']), '已有事务/证据目录；不会接管或覆盖，请人工检查')
         parents = mkdir_safe(C['state'])
@@ -728,12 +763,14 @@ def transaction(action, subnet, p):
         # This full recheck catches service/config/topology/container races inside lock.
         check = preflight(subnet, owned=action=='restore')
         need(check == p, '锁内 validate 后复检发现 race/配置/网络/服务改变')
+        lock_check()
         parent = os.path.dirname(C['config'])
         if not os.path.exists(parent):
             M['created_config_parent'] = mkdir_safe(parent)
             record()
         leaf = Leaf(C['config'])
         try:
+            lock_check()
             if action=='restore' and not M['original']['exists']:
                 M['current'] = leaf.remove(before)
             else:
@@ -780,8 +817,10 @@ def status():
     print('只读；不联网、不写文件、不查询 Docker、不启动 daemon。')
 
 def main():
+    global LOCK
     if TEST:
-        need(os.path.normpath(TEST)==TEST and TEST.startswith('/root/.hermes/cache/scratch/docker-ipv6-'),
+        need(os.path.normpath(TEST)==TEST and TEST.startswith('/')
+             and re.fullmatch(r'docker-ipv6-[A-Za-z0-9_-]+', os.path.basename(TEST)),
              '测试路径只允许 private scratch docker-ipv6-*')
         chain = pathchain(TEST)
         need(chain[-1][3] == 0o700, '测试 root 必须 root-owned 0700')
@@ -813,10 +852,15 @@ def main():
             try: fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
             except BlockingIOError: raise Refusal('concurrent：另一事务持有独占锁')
             lock.stable()
-            need(lock.read()[0]['ino']==s.st_ino, '锁 inode 已改变')
+            expected=lock.read()[0]
+            need(expected['dev']==s.st_dev and expected['ino']==s.st_ino, '锁 inode 已改变')
+            LOCK=(lock,fd,expected)
+            lock_check()
             need(preflight(subnet, owned=action=='restore')==p, '锁内复检发现 race；未变更')
             transaction(action,subnet,p)
-        finally: os.close(fd)
+        finally:
+            LOCK=None
+            os.close(fd)
     finally: lock.close()
 
 def interrupt(signum, frame):

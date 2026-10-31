@@ -12,10 +12,10 @@ set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 [[ ${1:-} == prepare && $# == 6 ]] || { printf 'Usage: %s prepare /root/.../tls-acme-fixture-NAME HOST HTTPS_CA_DIR REQUESTS_CA_PEM CERT_CA_PEM\n' "$0" >&2; exit 2; }
 shift
-python3 - "$@" "${TOOLBOX_TLS_ACME_INTEGRATION_SYSTEMD_UNITS:-0}" <<'PY'
+python3 - "$@" "${TOOLBOX_TLS_ACME_INTEGRATION_SYSTEMD_UNITS:-0}" "${TOOLBOX_TLS_ACME_INTEGRATION_TIMER_SECONDS:-}" <<'PY'
 import sys,os,stat,re,json,hashlib,socket,ipaddress,subprocess
 from urllib.parse import urlsplit
-base,host,server,requests_ca,cert_ca,systemd_units=sys.argv[1:]
+base,host,server,requests_ca,cert_ca,systemd_units,timer_seconds=sys.argv[1:]
 unitdir='/etc/systemd/system' if systemd_units=='1' else base+'/units'
 if systemd_units not in ('0','1'): raise SystemExit('SYSTEMD_UNITS must be explicitly 0 or 1')
 if os.geteuid()!=0: raise SystemExit('root required inside disposable VM')
@@ -47,6 +47,9 @@ put('requests-ca.pem',anchors[0]);put('certificate-ca.pem',anchors[1])
 addresses=sorted({x[4][0] for x in socket.getaddrinfo(host,80,type=socket.SOCK_STREAM)})
 if not addresses:raise SystemExit('no guest domain fixture A/AAAA')
 d={'version':1,'root':base+'/owned','units':unitdir,'server':server,'requests_ca':base+'/requests-ca.pem','cert_ca':base+'/certificate-ca.pem','host':host,'addresses':addresses,'mock_systemd':False}
+if timer_seconds:
+    if systemd_units!='1' or not timer_seconds.isdigit() or not 60<=int(timer_seconds)<=600:raise SystemExit('native timer interval must be 60..600 seconds with real systemd units')
+    d['timer_seconds']=int(timer_seconds)
 b=(json.dumps(d,sort_keys=True)+'\n').encode();put('fixture.json',b);put('fixture.json.sha256',(hashlib.sha256(b).hexdigest()+'\n').encode())
 print('Created isolated fixture: '+base+'/fixture.json')
 PY

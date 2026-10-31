@@ -6,7 +6,9 @@ set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 source "$ROOT/modules/network.sh"
 source "$ROOT/modules/vmess.sh"
-T=$(mktemp -d "${TMPDIR:-/run}/vmess-test.XXXXXXXX")
+test_tmp=${TOOLBOX_TEST_TMPDIR:-${TMPDIR:-/root/.cache/terry-toolbox-tests}}
+mkdir -p -- "$test_tmp"
+T=$(mktemp -d "$test_tmp/vmess-test.XXXXXXXX")
 export T
 cleanup() {
     python3 - "$T" <<'PY'
@@ -24,7 +26,10 @@ shutil.rmtree(root)
 PY
 }
 trap cleanup EXIT
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+fail() {
+    [[ -z ${C:-} || ! -f $C/output ]] || command cat "$C/output" >&2
+    printf 'FAIL: %s\n' "$*" >&2; exit 1;
+}
 pass() { printf 'PASS: %s\n' "$*"; }
 reject() { if "$@"; then fail "unexpected success: $*"; fi; }
 vmess_valid_input example.com 443 /vmess || fail 'valid VMess parameters rejected'
@@ -346,11 +351,9 @@ openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$C/wrong-key.
 reject vmess_real_certificate "$T/cert.pem" "$C/wrong-key.pem" example.com >/dev/null 2>&1
 pass 'real cert trust/hostname/key-pair checks (local fixture CA only)'
 # Certificate validity, key encryption and a real intermediate chain.
-openssl req -x509 -newkey rsa:2048 -nodes -subj /CN=example.com -addext subjectAltName=DNS:example.com \
-    -not_before 20200101000000Z -not_after 20200102000000Z -keyout "$C/expired.key" -out "$C/expired.pem" >/dev/null 2>&1
+python3 "$ROOT/tests/certificate-fixture.py" "$C/expired.pem" "$C/expired.key" 20200101000000Z 20200102000000Z
 TOOLBOX_NET_CAFILE="$C/expired.pem" reject vmess_real_certificate "$C/expired.pem" "$C/expired.key" example.com >/dev/null 2>&1
-openssl req -x509 -newkey rsa:2048 -nodes -subj /CN=example.com -addext subjectAltName=DNS:example.com \
-    -not_before 20990101000000Z -not_after 20990102000000Z -keyout "$C/future.key" -out "$C/future.pem" >/dev/null 2>&1
+python3 "$ROOT/tests/certificate-fixture.py" "$C/future.pem" "$C/future.key" 20990101000000Z 20990102000000Z
 TOOLBOX_NET_CAFILE="$C/future.pem" reject vmess_real_certificate "$C/future.pem" "$C/future.key" example.com >/dev/null 2>&1
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -aes-256-cbc -pass pass:secret -out "$C/enc.key" >/dev/null 2>&1
 reject vmess_real_certificate "$T/cert.pem" "$C/enc.key" example.com >/dev/null 2>&1

@@ -45,7 +45,7 @@ tls_acme_require() {
 # no eval/source of metadata or renewal hooks, no recursive cleanup on any failure.
 tls_acme_fs() {
     python3 - "$1" "$(tls_acme_root)" "$(tls_acme_units)" "${TOOLBOX_TLS_ACME_TEST_FIXTURE:-}" "${@:2}" <<'PY'
-import os, sys, stat, json, hashlib, re, socket, ipaddress, configparser, subprocess, tempfile, time
+import os, sys, stat, json, hashlib, re, socket, ssl, ipaddress, configparser, subprocess, tempfile, time
 from urllib.parse import urlsplit
 op, root, units, fixture, *args = sys.argv[1:]
 CA='https://acme-v02.api.letsencrypt.org/directory'
@@ -77,9 +77,13 @@ def directory(p,native=False):
 def account_rel(rel):
     # Exact native Certbot account shape: <CA netloc>/<dir|directory>/<32 hex>/...
     # Empty directories are included because os.walk reports ancestors.
-    if not F: return False
-    m=re.fullmatch(r'config/accounts/([^/]+)/(dir|directory)(/[a-f0-9]{32}(/(meta|regr|private_key)\.json)?)?',rel)
-    return bool(m) and m[1]==urlsplit(F['server']).netloc
+    server=urlsplit(F['server'] if F else CA)
+    base='config/accounts/'+server.netloc
+    if rel==base: return True
+    directory_name=server.path.strip('/')
+    if directory_name not in ('dir','directory'): return False
+    m=re.fullmatch(re.escape(base+'/'+directory_name)+r'(/[a-f0-9]{32}(/(meta|regr|private_key)\.json)?)?',rel)
+    return bool(m)
 def parent(p,native=False): path(p,native=native); return directory(os.path.dirname(p),native=native),os.path.basename(p)
 def record(p,read=True,private=True,native=False):
     fd,n=parent(p,native=native)
@@ -131,7 +135,9 @@ def fixture_data():
     r,b=record(fixture); sr,s=record(fixture+'.sha256')
     if s != (r['sha256']+'\n').encode(): raise ValueError('fixture seal mismatch')
     d=json.loads(b)
-    if set(d)!={'version','root','units','server','requests_ca','cert_ca','host','addresses','mock_systemd'} or d['version']!=1: raise ValueError('invalid fixture schema')
+    required={'version','root','units','server','requests_ca','cert_ca','host','addresses','mock_systemd'}
+    if set(d) not in (required,required|{'timer_seconds'}) or d['version']!=1: raise ValueError('invalid fixture schema')
+    if 'timer_seconds' in d and (type(d['timer_seconds']) is not int or not 60<=d['timer_seconds']<=600 or d['mock_systemd']): raise ValueError('invalid native fixture timer interval')
     base=os.path.dirname(fixture)
     if root!=d['root'] or units!=d['units'] or not root.startswith(base+'/') or not (units.startswith(base+'/') or (units=='/etc/systemd/system' and d['mock_systemd'] is False)): raise ValueError('fixture target escapes isolated root/systemd unit scope')
     from urllib.parse import urlsplit
@@ -148,6 +154,7 @@ def fixture_data():
     if not isinstance(d['mock_systemd'],bool) or not re.fullmatch(r'[a-z0-9.-]+',d['host']): raise ValueError('invalid fixture values')
     for a in d['addresses']: ipaddress.ip_address(a)
     return d
+path(root); path(units)
 F=fixture_data()
 def parent_ids():
     out={}
@@ -167,6 +174,8 @@ def tree():
             if rel in ('metadata.json','metadata.sha256','.lock'): continue
             allowed = rel in ('config','work','logs','runtime.sh','cli.ini','vmess-source.sh','network-source.sh','vmess-hook.sh') or re.fullmatch(r'logs/(action-[0-9]+\.log|letsencrypt\.log(\.[0-9]+)?|\.certbot\.lock)',rel) or re.fullmatch(r'(work|config)/\.certbot\.lock',rel) or re.fullmatch(r'config/(accounts|archive|live|renewal|renewal-hooks)',rel) or re.fullmatch(r'config/renewal-hooks/(pre|deploy|post)',rel) or re.fullmatch(r'config/(live|archive)/[a-z0-9.-]+',rel) or re.fullmatch(r'config/live/(README|[a-z0-9.-]+/(README|cert\.pem|chain\.pem|fullchain\.pem|privkey\.pem))',rel) or re.fullmatch(r'config/archive/[a-z0-9.-]+/(cert|chain|fullchain|privkey)[1-9][0-9]*\.pem',rel) or re.fullmatch(r'config/renewal/[a-z0-9.-]+\.conf',rel) or re.fullmatch(r'config/accounts/[A-Za-z0-9_.:-]+(/dir(ectory)?(/[a-f0-9]{32}(/(meta|regr|private_key)\.json)?)?)?',rel)
             if not allowed: raise ValueError('unknown native resource: '+rel)
+            if rel.startswith('config/accounts/') and not account_rel(rel):
+                raise ValueError('account differs from sealed CA/shape: '+rel)
             s=os.lstat(p)
             native=rel.startswith('config/accounts/')
             if s.st_uid!=0: raise ValueError('foreign owner: '+rel)
@@ -268,9 +277,11 @@ def renewal(m):
         generations.setdefault(match[2],set()).add(match[1])
     if any(v!={'cert','chain','fullchain','privkey'} for v in generations.values()): raise ValueError('incomplete archive generation')
 
-def certcheck(m):
+def certcheck(m, existing=False):
     renewal(m); h=m['host']; live=root+'/config/live/'+h
-    # openssl checks exact hostname, PKIX trust, notBefore/notAfter and key match.
+    # Existing sealed pairs may have expired while the host was offline. Their
+    # ownership, chain signatures, purpose, hostname and key still gate recovery;
+    # newly issued/deployed pairs always require the normal time checks too.
     def cmd(a):
         r=subprocess.run(['openssl']+a,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=15)
         if r.returncode: raise ValueError('certificate time/trust/hostname/keypair check failed')
@@ -280,9 +291,20 @@ def certcheck(m):
     if fb!=cb+ch: raise ValueError('fullchain is not exact cert+chain')
     if cb.count(b'-----BEGIN CERTIFICATE-----')!=1 or not ch.count(b'-----BEGIN CERTIFICATE-----'): raise ValueError('invalid leaf/intermediate chain')
     a=['verify','-purpose','sslserver','-verify_hostname',h]
-    if F: a+=['-CAfile',F['cert_ca'],'-no-CApath','-no-CAstore']
+    if existing: a+=['-no_check_time']
+    if F:
+        a+=['-CAfile',F['cert_ca'],'-no-CApath']
+        # OpenSSL 1.1 has no CAstore. Disable it when the installed version has it;
+        # a certificate verification failure is never retried with weaker trust.
+        helptext=subprocess.run(['openssl','verify','-help'],stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=15).stdout
+        if b'-no-CAstore' in helptext: a+=['-no-CAstore']
     a+=['-untrusted',chain,cert]; cmd(a)
-    cmd(['x509','-in',cert,'-checkend','3600','-noout'])
+    if existing:
+        start=cmd(['x509','-in',cert,'-startdate','-noout']).decode().strip()
+        if not start.startswith('notBefore=') or ssl.cert_time_to_seconds(start[10:])>time.time():
+            raise ValueError('owned certificate has not become valid')
+    else: cmd(['x509','-in',cert,'-checkend','3600','-noout'])
     pub=cmd(['x509','-in',cert,'-pubkey','-noout'])
     kp=cmd(['pkey','-in',key,'-passin','pass:','-pubout'])
     if pub!=kp: raise ValueError('certificate/private key mismatch')
@@ -302,11 +324,14 @@ def unit_conflicts(m=None):
             if os.path.lexists(p) and p not in expected: raise ValueError('foreign systemd unit')
         for n in (SVC+'.d',TIMER+'.d','service.d','timer.d','terry-.service.d','terry-toolbox-.service.d','terry-.timer.d','terry-toolbox-.timer.d'):
             if os.path.lexists(u+'/'+n): raise ValueError('systemd drop-in conflict')
+        targets={os.path.realpath(units+'/'+n) for n in (SVC,TIMER)}
         for ent in os.scandir(u):
-            if ent.name.endswith(('.wants','.requires')) and ent.is_dir(follow_symlinks=False):
-                for n in (SVC,TIMER):
-                    p=ent.path+'/'+n
-                    if os.path.lexists(p) and (not m or p!=units+'/timers.target.wants/'+TIMER or m['link'] is None): raise ValueError('foreign systemd dependency link')
+            if not ent.name.endswith(('.wants','.requires','.upholds')): continue
+            if ent.is_symlink() or not ent.is_dir(follow_symlinks=False): raise ValueError('untrusted systemd dependency directory')
+            for dep in os.scandir(ent.path):
+                owned=m and dep.path==units+'/timers.target.wants/'+TIMER and m['link'] is not None
+                if dep.name in (SVC,TIMER) or (dep.is_symlink() and os.path.realpath(dep.path) in targets):
+                    if not owned: raise ValueError('foreign systemd dependency link')
     for p,r in expected.items():
         rr,_=record(p,private=False)
         if rr!=r: raise ValueError('unit content/inode changed')
@@ -382,6 +407,11 @@ try:
             if ident(os.stat('.lock',dir_fd=fd,follow_symlinks=False))!=args[0]: raise ValueError('lock changed; retained')
             os.rmdir('.lock',dir_fd=fd)
         finally: os.close(fd)
+    elif op=='lock-check':
+        verify(skip_tree=len(args)>1 and args[1]=='--native-changed'); fd=directory(root+'/.lock')
+        try:
+            if ident(os.fstat(fd))!=args[0] or os.listdir(fd): raise ValueError('lock replaced; refusing mutation')
+        finally: os.close(fd)
     elif op=='log':
         verify(); p=root+'/logs/action-'+str(time.time_ns())+'.log'; create(p,b''); m=verify(True); save(m); print(p)
     elif op=='runtime':
@@ -407,14 +437,20 @@ try:
     elif op=='cert':
         m=verify()
         if m['state']!='ready': raise ValueError('certificate operation incomplete')
-        for p in certcheck(m): print(p)
+        if args not in ([],['--existing']): raise ValueError('invalid certificate check mode')
+        for p in certcheck(m,existing=bool(args)): print(p)
     elif op=='authorize':
         m=verify(); unit_conflicts(m)
         if m['state']!='ready': raise ValueError('not ready')
         certcheck(m)
         if not m['units']:
             service=('[Unit]\nDescription=Terry Toolbox controlled Certbot renewal\n[Service]\nType=oneshot\nUMask=0077\nExecStart=/bin/bash '+root+'/runtime.sh _renew '+m['host']+'\nTimeoutStartSec=600\n').encode()
-            timer=('[Unit]\nDescription=Terry Toolbox authorized ACME timer\n[Timer]\nOnCalendar=*-*-* 03,15:00:00\nRandomizedDelaySec=1800\nPersistent=true\nUnit='+SVC+'\n').encode()
+            schedule='OnCalendar=*-*-* 03,15:00:00\nRandomizedDelaySec=1800\nPersistent=true\n'
+            if F and 'timer_seconds' in F:
+                # Only the root-owned sealed native fixture may accelerate the
+                # timer. Its exact bytes remain in the normal ownership ledger.
+                schedule='OnActiveSec='+str(F['timer_seconds'])+'s\nOnUnitInactiveSec=600s\nAccuracySec=1s\n'
+            timer=('[Unit]\nDescription=Terry Toolbox authorized ACME timer\n[Timer]\n'+schedule+'Unit='+SVC+'\n').encode()
             # Intentionally no [Install]. Only the exact owned wants link is made.
             for n,b in ((SVC,service),(TIMER,timer)): create(units+'/'+n,b,0o644); m['units'][units+'/'+n]=record(units+'/'+n,private=False)[0]
             save(m)
@@ -496,10 +532,15 @@ tls_acme_info() {
 }
 tls_acme_cleanup() {
     local rc=$?
+    trap - EXIT INT TERM HUP
     if [[ -n ${tls_acme_lock_id:-} ]]; then
         tls_acme_fs unlock "$tls_acme_lock_id" || rc=1
     fi
-    return "$rc"
+    exit "$rc"
+}
+tls_acme_lock_check() {
+    [[ -n ${tls_acme_lock_id:-} ]] || return 1
+    tls_acme_fs lock-check "$tls_acme_lock_id"
 }
 tls_acme_runtime() {
     local text f
@@ -513,12 +554,14 @@ tls_acme_runtime() {
 }
 tls_acme_call() {
     local mode=$1 root log out server bundle
+    tls_acme_lock_check || return 1
     tls_acme_fs binding "$tls_acme_binary" "$tls_acme_version" && tls_acme_port || return 1
     root=$(tls_acme_root) || return 1
     out=$(tls_acme_fs fixture) || return 1
     mapfile -t tls_acme_ca <<< "$out"
     server=${tls_acme_ca[0]}; bundle=${tls_acme_ca[1]:-}
     log=$(tls_acme_fs log) || return 1
+    tls_acme_lock_check || return 1
     tls_acme_fs begin "$mode" || return 1
     tls_acme_err "Certbot 私有日志：$log（失败保留，不输出账户/私钥）。"
     local -a argv=(--config "$root/cli.ini" --config-dir "$root/config" --work-dir "$root/work" --logs-dir "$root/logs" --server "$server" --non-interactive --no-directory-hooks --standalone --preferred-challenges http --http-01-port 80 --cert-name "$tls_acme_host")
@@ -532,11 +575,15 @@ tls_acme_call() {
         fi
     fi
     # No --no-verify-ssl/insecure fallback. Neutralize inherited proxies/config CA.
+    tls_acme_lock_check || return 1
     if [[ -n $bundle ]]; then
         ( umask 077; unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy CURL_CA_BUNDLE; export REQUESTS_CA_BUNDLE="$bundle"; timeout 540 "$tls_acme_binary" "${argv[@]}" ) >"$log" 2>&1 || { tls_acme_err 'Certbot 失败/超时；保留私有现场，未宣称申请成功。'; return 1; }
     else
         ( umask 077; unset REQUESTS_CA_BUNDLE CURL_CA_BUNDLE HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; timeout 540 "$tls_acme_binary" "${argv[@]}" ) >"$log" 2>&1 || { tls_acme_err 'Certbot 失败/超时；保留私有现场，未宣称申请成功。'; return 1; }
     fi
+    # Certbot has legitimately changed the native tree; verify the lock's inode
+    # independently, then finish validates the new tree and certificate.
+    tls_acme_fs lock-check "$tls_acme_lock_id" --native-changed || return 1
     tls_acme_fs finish || { tls_acme_err 'Certbot 返回成功但证书/ownership 验证失败；保留现场。'; return 1; }
     tls_acme_fs cert >/dev/null || return 1
 }
@@ -568,7 +615,7 @@ tls_acme_renew() (
     local background=$1 host=${2:-} tls_acme_lock_id='' tls_acme_version='' tls_acme_binary='' tls_acme_host='' tls_acme_email=''
     tls_acme_require && tls_acme_info "$host" || return 1
     [[ ${tls_acme_meta[2]} == ready ]] || { tls_acme_err '上次操作未完成，需检查私有日志；拒绝自动重试。'; return 1; }
-    tls_acme_fs cert >/dev/null || return 1
+    tls_acme_fs cert --existing >/dev/null || return 1
     if [[ ${TOOLBOX_TLS_ACME_TEST_FORCE_RENEWAL:-0} == 1 && -z ${TOOLBOX_TLS_ACME_TEST_FIXTURE:-} ]]; then
         tls_acme_err 'force renewal 只允许 sealed fixture。'; return 1
     fi
@@ -585,6 +632,7 @@ tls_acme_renew() (
     trap 'exit 130' INT; trap 'exit 143' TERM HUP
     tls_acme_info "$host" || return 1
     [[ $background != yes || ${tls_acme_meta[3]} == yes ]] || return 1
+    tls_acme_fs cert --existing >/dev/null || return 1
     tls_acme_fs dns "$tls_acme_host" && tls_acme_port || return 1
     tls_acme_call renew || return 1
     if [[ ${tls_acme_meta[4]} == yes ]]; then tls_acme_deploy_internal authorized || return 1; fi
@@ -592,22 +640,22 @@ tls_acme_renew() (
 )
 # Exact systemd snapshots. Unknown states/jobs/drop-ins never mean success.
 tls_acme_timer_read() {
-    local expected=$1 n out line k v active load sub fragment drops job pid
+    local expected=$1 n out line k v active load sub fragment drops job pid timer_running=0 service_owned=0
     for n in terry-toolbox-acme.timer terry-toolbox-acme.service; do
-        out=$(systemctl show "$n" -p LoadState -p ActiveState -p SubState -p FragmentPath -p DropInPaths -p Job -p MainPID 2>/dev/null) || return 1
+        out=$(systemctl show "$n" --all -p LoadState -p ActiveState -p SubState -p FragmentPath -p DropInPaths -p Job -p MainPID 2>/dev/null) || return 1
         active='' load='' sub='' fragment='' drops='' job='' pid=''; local -A seen=()
         while IFS= read -r line; do
             k=${line%%=*}; v=${line#*=}; [[ $line == *=* && -z ${seen[$k]:-} ]] || return 1; seen[$k]=1
             case $k in LoadState) load=$v;; ActiveState) active=$v;; SubState) sub=$v;; FragmentPath) fragment=$v;; DropInPaths) drops=$v;; Job) job=$v;; MainPID) pid=$v;; *) return 1;; esac
         done <<< "$out"
-        # systemd omits MainPID entirely for a never-loaded (not-found) unit;
-        # loaded units always report it. Only that exact shape may lack it.
         # systemd omits MainPID for timer units and never-loaded units; a loaded
         # service always reports it. Only those two shapes may lack it.
         [[ ${#seen[@]} == 7 && $pid =~ ^[0-9]+$ || ${#seen[@]} == 6 && -z $pid && ( $load == not-found || $n == *.timer ) ]] || return 1
+        [[ -z $drops ]] || { tls_acme_err '发现非受控 systemd drop-in；拒绝。'; return 1; }
         if [[ $expected == background && $n == *.service && $active == activating && $sub == start ]]; then
             [[ $pid == "$$" ]] || { tls_acme_err '续期服务 MainPID 不属于本 owned runtime；拒绝。'; return 1; }
             [[ -z $job || $job =~ ^[1-9][0-9]*(\ /org/freedesktop/systemd1/job/[1-9][0-9]*)?$ ]] || return 1
+            service_owned=1
         else
             [[ -z $job && ( $pid == 0 || -z $pid ) ]] || return 1
         fi
@@ -616,7 +664,9 @@ tls_acme_timer_read() {
         else
             [[ $load == loaded && $fragment == "$(tls_acme_units)/$n" ]] || return 1
             if [[ $n == *.timer && ( $expected == active || $expected == background ) ]]; then
-                [[ $active == active && $sub == waiting ]] || return 1
+                [[ $active == active ]] || return 1
+                if [[ $expected == background && $sub == running ]]; then timer_running=1
+                else [[ $sub == waiting ]] || return 1; fi
             elif [[ $n == *.service && $expected == background ]]; then
                 [[ ( $active == activating && $sub == start ) || ( $active == inactive && $sub == dead ) ]] || return 1
             else
@@ -624,18 +674,20 @@ tls_acme_timer_read() {
             fi
         fi
     done
+    [[ $timer_running == 0 || $service_owned == 1 ]]
 }
 tls_acme_timer() (
     local action=$1 host=${2:-} tls_acme_lock_id='' tls_acme_version='' tls_acme_binary='' tls_acme_host='' tls_acme_email=''
     tls_acme_require && tls_acme_info "$host" || return 1
     [[ ${tls_acme_meta[2]} == ready ]] || return 1
-    tls_acme_fs cert >/dev/null || return 1
     if [[ $action == enable-renewal ]]; then
+        tls_acme_fs cert >/dev/null || return 1
         if [[ ${tls_acme_meta[3]} == yes ]]; then tls_acme_timer_read active && tls_acme_err '自动续期已授权且 timer readback OK。'; return; fi
         # No units on first enable; retained owned units after disable are supported.
         if [[ -e $(tls_acme_units)/terry-toolbox-acme.timer ]]; then tls_acme_timer_read inactive || return 1; else tls_acme_timer_read absent || return 1; fi
         tls_acme_err '预览：预授权每天 03/15 点 + 随机延迟自动 standalone HTTP-01；80 忙即失败，不停其他服务；只 owned unit/runtime/link。VMess 仅另行 deploy-vmess 授权后同步。'
     else
+        tls_acme_fs cert --existing >/dev/null || return 1
         tls_acme_timer_read active || { tls_acme_err 'timer/service 未处于明确受控静止/等待状态；保留。'; return 1; }
         tls_acme_err '预览：撤销自动续期授权；仅停止 owned timer，并移除精确 owned wants link；保留证书/日志/unit。'
     fi
@@ -645,19 +697,26 @@ tls_acme_timer() (
     trap 'exit 130' INT; trap 'exit 143' TERM HUP
     tls_acme_info "$host" || return 1
     if [[ $action == enable-renewal ]]; then
+        tls_acme_lock_check || return 1
         tls_acme_fs authorize || return 1
-        systemctl daemon-reload && systemctl start terry-toolbox-acme.timer || { tls_acme_err '开启失败；保留 owned unit/link/授权现场，不宣称成功。'; return 1; }
+        tls_acme_lock_check || return 1
+        systemctl daemon-reload && tls_acme_lock_check && systemctl start terry-toolbox-acme.timer || { tls_acme_err '开启失败；保留 owned unit/link/授权现场，不宣称成功。'; return 1; }
+        tls_acme_lock_check || return 1
         tls_acme_info "$host" && tls_acme_timer_read active || { tls_acme_err 'timer readback 失败，保留现场。'; return 1; }
     else
+        tls_acme_lock_check || return 1
         tls_acme_timer_read active && tls_acme_fs unauthorize || return 1
+        tls_acme_lock_check || return 1
         systemctl stop terry-toolbox-acme.timer || { tls_acme_err '停止失败；保留 link/unit（授权已撤销）。'; return 1; }
         tls_acme_timer_read inactive || { tls_acme_err '停止 readback 未确认；保留 link/unit。'; return 1; }
+        tls_acme_lock_check || return 1
         tls_acme_fs unlink && systemctl daemon-reload && tls_acme_info "$host" && tls_acme_timer_read inactive || return 1
     fi
     tls_acme_err "$action: owned resources + systemd readback OK。"
 )
 tls_acme_deploy_internal() (
     local mode=$1 root info out
+    tls_acme_lock_check || return 1
     root=$(tls_acme_root) || return 1
     if [[ $mode == authorized ]]; then
         tls_acme_fs hook ready || return 1
@@ -730,9 +789,11 @@ tls_acme_deploy() (
     trap tls_acme_cleanup EXIT
     trap 'exit 130' INT; trap 'exit 143' TERM HUP
     tls_acme_info "$host" || return 1
+    tls_acme_lock_check || return 1
     if [[ ${tls_acme_meta[4]} != yes ]]; then
         tls_acme_hook_install && tls_acme_fs vmess || return 1
     fi
+    tls_acme_lock_check || return 1
     tls_acme_deploy_internal authorized || { tls_acme_err 'VMess deployment 失败；保留授权/source/日志，VMess API 自行保守回滚。'; return 1; }
     tls_acme_info "$host" && tls_acme_fs hook ready || return 1
     tls_acme_err 'VMess 证书 update-cert API 完成；ownedhook/manifest readback OK，后续成功续期已预授权同步。'

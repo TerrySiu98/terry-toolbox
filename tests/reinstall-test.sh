@@ -2,9 +2,10 @@
 # Real code and pinned source, MOCKED destructive entry; no host boot writes.
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-export TMPDIR=${TMPDIR:-/root/.hermes/cache/scratch}
-case "$TMPDIR" in /root/.hermes/cache/scratch|/root/.hermes/cache/scratch/*) ;; *) exit 99;; esac
-case_root=$(mktemp -d "$TMPDIR/reinstall-tests.XXXXXX")
+if (( BASH_VERSINFO[0] < 4 )); then
+    printf 'reinstall fixtures require Bash 4+ and Linux /proc; no host mutation performed.\n' >&2; exit 99
+fi
+case_root=$(mktemp -d "${TMPDIR:-/tmp}/reinstall-tests.XXXXXX")
 chmod 0700 "$case_root"
 export HOME="$case_root/home"
 mkdir -p "$HOME" "$case_root/deny"
@@ -23,8 +24,18 @@ source "$ROOT/modules/reinstall.sh"
 declare -F toolbox_reinstall >/dev/null || { printf 'FAIL: M3 interface absent\n' >&2; exit 1; }
 # Upstream fixtures must be REAL downloaded bytes, explicitly verified by the
 # production fetch/derive helper. Default cached evidence; override for CI cache.
-upstream=${REINSTALL_TEST_UPSTREAM:-/root/.hermes/cache/scratch/reinstall-m3}
-case $upstream in /root/.hermes/cache/scratch/*) ;; *) printf 'fixture cache must live in scratch\n' >&2; exit 99;; esac
+upstream=${REINSTALL_TEST_UPSTREAM:-$case_root/upstream}
+python3 - "$upstream" <<'PY'
+import os,stat,sys
+p=os.path.abspath(sys.argv[1])
+for i in range(1,len(p.split('/'))+1):
+ q='/'.join(p.split('/')[:i]) or '/'
+ if os.path.lexists(q) and stat.S_ISLNK(os.lstat(q).st_mode):sys.exit('fixture cache symlink refused')
+if os.path.exists(p):
+ s=os.lstat(p)
+ if not stat.S_ISDIR(s.st_mode) or s.st_uid!=os.geteuid() or s.st_mode&0o022:sys.exit('fixture cache directory ownership/mode refused')
+else:os.makedirs(p,mode=0o700)
+PY
 for f in reinstall.sh trans.sh initrd-network.sh; do
     # Download REAL immutable fixtures on cache miss, with normal TLS; never run
     # upstream --help/entry. Cached files still pass production SHA verification.
@@ -41,6 +52,18 @@ real_fetch=$(declare -f _toolbox_reinstall_fetch)
 count=0
 pass() { count=$((count+1)); printf 'PASS %02d %s\n' "$count" "$1"; }
 fail() { printf 'FAIL: %s; evidence=%s\n' "$*" "$case_root" >&2; exit 1; }
+_toolbox_reinstall_derive "$upstream/reinstall.sh" "$case_root/derived-reviewed.sh" || fail 'reviewed derivation'
+python3 - "$case_root/derived-reviewed.sh" <<'PY' || fail 'boot executable transport'
+import sys
+s=open(sys.argv[1]).read()
+assert 'mirror=http://mirror.nju.edu.cn/alpine/v$releasever' not in s
+assert 'mirror=http://dl-cdn.alpinelinux.org/alpine/v$releasever' not in s
+assert 'local url=http://$mirror/dists/$nextos_codename/' not in s
+assert 'curl -Lo $tmp/tmp.deb http://$mirror/' not in s
+assert 'is_in_china && mirror=http://mirror.nju.edu.cn/alpine' not in s
+assert 'command curl --insecure --connect-timeout' not in s
+PY
+pass 'reviewed source digest and HTTPS boot images/injected packages'
 _toolbox_reinstall_root() { return 0; }
 _toolbox_reinstall_has() { [[ $1 != "${MISSING:-}" && $1 != "${MISSING2:-}" ]]; }
 # Capture the production detector BEFORE mocking it (Alpine/musl path is real).
@@ -81,6 +104,7 @@ setup() {
 }
 # Only task-owned local key creation, no password/default credentials anywhere.
 ssh-keygen -q -t ed25519 -N '' -f "$case_root/key"
+ssh-keygen -q -t ed25519 -N '' -f "$case_root/other-key"
 _toolbox_reinstall_run_upstream() {
     printf '%q ' "$@" >> "$fixture/calls"; printf '\n' >> "$fixture/calls"
     [[ $1 == "$fixture/state/active/reinstall.sh" ]] || return 99
@@ -112,6 +136,7 @@ _toolbox_reinstall_run_upstream() {
         mkdir -p "$fixture/root/boot/efi/EFI/reinstall"
         cfg="$fixture/root/boot/efi/EFI/reinstall/grub.cfg"
         printf 'owned-fixture-efi\n' > "$fixture/root/boot/efi/EFI/reinstall/grubx64.efi"
+        # Pinned upstream uses --create-only, so BootOrder stays unchanged.
         printf 'BootCurrent: 0000\nBootOrder: 0000\nBootNext: 0001\nBoot0000* original HD(...)\\EFI\\debian\\grubx64.efi\nBoot0001* reinstall (%s %s) HD(...)\\EFI\\reinstall\\grubx64.efi\n' "$1" "$2" > "$fixture/efi"
     fi
     [[ ${CFG_BAD:-0} != 1 ]] || pin=main
@@ -133,14 +158,17 @@ _toolbox_reinstall_run_upstream() {
     python3 - "$fixture/root" "${fixture_archive:-plain}" <<'PY'
 import gzip,sys
 p,mode=sys.argv[1:]
-def member(b,name,data,kind=0o100644):
- n=name.encode()+b'\0';fields=[1,kind,0,0,1,0,len(data),0,0,0,0,len(n),0]
+def member(b,name,data,kind=0o100644,links=1):
+ n=name.encode()+b'\0';fields=[1,kind,0,0,links,0,len(data),0,0,0,0,len(n),0]
  b.extend(b'070701'+b''.join(('%08x'%v).encode() for v in fields));b.extend(n);b.extend(b'\0'*(-len(b)%4));b.extend(data);b.extend(b'\0'*(-len(b)%4))
 def body(extra=()):
  b=bytearray()
+ if mode in ('rootdir','rootfile','duproot'):
+  member(b,'.',b'',0o040755 if mode!='rootfile' else 0o100644)
+  if mode=='duproot':member(b,'.',b'',0o040755)
  for n in ('trans.sh','initrd-network.sh','configs/ssh_keys'):
   data=open(p+'/reinstall-tmp/initrd/'+n,'rb').read()
-  member(b,n,data,0o040000 if (n=='trans.sh' and mode=='dirwanted') else 0o100644)
+  member(b,n,data,0o040000 if (n=='trans.sh' and mode=='dirwanted') else 0o100644,2 if (n=='trans.sh' and mode=='hardwanted') else 1)
   if n=='trans.sh' and mode=='dup':member(b,n,data)
  for kind,name in extra:member(b,name,b'x',kind)
  member(b,'TRAILER!!!',b'')
@@ -172,6 +200,8 @@ CONTAINER_RC=2; reject toolbox_reinstall preflight; no_calls; pass 'container an
 # Container classification must not depend on systemd-detect-virt (absent on Alpine).
 setup; eval "$real_container"; MISSING=systemd-detect-virt; VIRTWHAT=docker; reject toolbox_reinstall preflight; no_calls
 pass 'container refused via virt-what without systemd-detect-virt'
+setup; eval "$real_container"; MISSING=systemd-detect-virt; VIRTWHAT=$'kvm\nlxc'; reject toolbox_reinstall preflight; no_calls
+pass 'nested container evidence wins over earlier hypervisor line'
 setup; eval "$real_container"; MISSING=systemd-detect-virt; VIRTWHAT=kvm; toolbox_reinstall preflight > "$fixture/output" 2>&1 || fail 'VM without detector'
 pass 'VM accepted via virt-what fallback'
 setup; eval "$real_container"; MISSING=systemd-detect-virt; VIRTWHAT=''
@@ -180,16 +210,18 @@ pass 'bare metal accepted from DMI when virt-what is silent'
 setup; eval "$real_container"; MISSING=systemd-detect-virt; VIRTWHAT=''; rm -rf "$fixture/root/sys/class"; reject toolbox_reinstall preflight; no_calls
 pass 'no detector + silent virt-what + no DMI stays unknown'
 _toolbox_reinstall_container() { return "${CONTAINER_RC:-1}"; }
-# PID1 init gate: systemd (Debian/Ubuntu) or OpenRC (Alpine) only, matched to target.
+# PID1 init gate reviews the existing host, independent of the target system.
 INIT_MODE=runit setup; reject toolbox_reinstall preflight; no_calls
 [[ ! -e $fixture/state ]] || fail 'unknown init wrote state'
 pass 'unknown PID1 init refuses before any write'
 INIT_MODE=openrc setup; toolbox_reinstall preflight > "$fixture/output" 2>&1 || fail 'OpenRC host rejected'
 pass 'OpenRC/Alpine PID1 accepted on bare metal regardless of detector'
-INIT_MODE=openrc setup; reject prep debian 13; no_calls
-[[ ! -e $fixture/state ]] || fail 'init mismatch wrote state'
-pass 'OpenRC host + debian target refused'
-setup; reject prep alpine 3.24; no_calls; pass 'systemd host + alpine target refused'
+INIT_MODE=openrc setup; prep debian 13 || fail 'OpenRC to Debian prepare'
+toolbox_reinstall cancel > "$fixture/cancel" 2>&1 || fail 'OpenRC to Debian cancel'
+pass 'OpenRC host prepares/cancels Debian using sealed host init'
+setup; prep alpine 3.24 || fail 'systemd to Alpine prepare'
+toolbox_reinstall cancel > "$fixture/cancel" 2>&1 || fail 'systemd to Alpine cancel'
+pass 'systemd host prepares/cancels Alpine using sealed host init'
 INIT_MODE=openrc setup; prep alpine 3.24 || fail 'alpine on openrc'
 pass 'openrc host + alpine target accepted'
 # ptuuid / read-only root are named refusals before state, downloads and upstream.
@@ -216,7 +248,9 @@ ARCHIVE_MODE=zero_tail setup; prep || fail 'zero tail archive'
 pass 'NUL padded tail after TRAILER accepted'
 ARCHIVE_MODE=fifo setup; prep || fail 'fifo member'
 pass 'valid extra member type (fifo) accepted'
-for mode in junk_tail second_archive dup dotdot badtype dirwanted; do
+ARCHIVE_MODE=rootdir setup; prep || fail 'real cpio root directory'
+pass 'real upstream find-dot cpio root directory accepted'
+for mode in junk_tail second_archive dup dotdot badtype dirwanted rootfile duproot hardwanted; do
     ARCHIVE_MODE=$mode setup; reject prep; pass "archive $mode refused"
 done
 # Reboot semantics must be stated exactly: adapter never reboots, upstream does.
@@ -237,6 +271,14 @@ PY
 reject toolbox_reinstall preflight; no_calls; pass 'crypt/unsupported topology'
 setup; TOOLBOX_REINSTALL_SSH_KEY_FILE="$case_root/key"; reject prep; no_calls; pass 'private key rejected'
 setup; printf 'ssh-ed25519 AAAA\n' > "$fixture/bad.pub"; TOOLBOX_REINSTALL_SSH_KEY_FILE="$fixture/bad.pub"; reject prep; no_calls; pass 'pubkey wire format validation'
+setup; cp "$case_root/key.pub" "$fixture/input.pub"; TOOLBOX_REINSTALL_SSH_KEY_FILE="$fixture/input.pub"
+real_confirm=$(declare -f _toolbox_reinstall_confirm)
+_toolbox_reinstall_confirm() {
+    eval "$real_confirm"; _toolbox_reinstall_confirm "$@" || return
+    cp "$case_root/other-key.pub" "$fixture/input.pub"
+}
+reject prep; no_calls; pass 'SSH public key changed after confirmation refuses before upstream'
+eval "$real_confirm"
 setup
 # shellcheck disable=SC2317 # Invoked indirectly by production fetch helper.
 _toolbox_reinstall_download() { cp "$upstream/$1" "$2"; [[ $1 != reinstall.sh ]] || printf 'tamper\n' >> "$2"; }
@@ -265,6 +307,24 @@ for pair in 'debian 13' 'ubuntu 24.04' 'alpine 3.24'; do
     [[ $(command cat "$fixture/root/boot/grub/grub.cfg") == 'menuentry original {}' ]] || fail 'boot original differs'
 done
 pass 'all fixed target prepare -> readonly status -> owned reset -> exact restore'
+setup; prep || fail prepare; toolbox_reinstall cancel > "$fixture/cancel" 2>&1 || fail cancel
+old_plan=$(python3 -c 'import os,sys;print(os.stat(sys.argv[1]).st_ino)' "$fixture/state/active")
+prep ubuntu 24.04 || fail 'prepare after verified cancel'
+python3 - "$fixture/state" "$old_plan" <<'PY' || fail 'cancelled report not preserved'
+import json,os,sys
+p,ino=sys.argv[1:];names=[x for x in os.listdir(p) if x.startswith('cancelled-')]
+assert len(names)==1
+q=p+'/'+names[0]
+assert os.stat(q).st_ino==int(ino)
+assert json.load(open(q+'/metadata.json'))['phase']=='cancelled'
+assert json.load(open(p+'/active/metadata.json'))['target']=='ubuntu 24.04'
+PY
+pass 'new prepare after cancelled preserves sealed history without deleting files'
+setup; prep || fail prepare; toolbox_reinstall cancel > "$fixture/cancel" 2>&1 || fail cancel
+printf '# changed after cancel\n' >> "$fixture/root/boot/grub/grub.cfg"
+before=$(sha256sum "$fixture/calls"); reject prep
+[[ $before == "$(sha256sum "$fixture/calls")" ]] || fail 'changed cancelled baseline ran upstream'
+pass 'changed cancelled boot baseline refuses recycling'
 setup; prep || fail prepare; printf '# boot tamper\n' >> "$fixture/root/boot/grub/custom.cfg"
 before=$(sha256sum "$fixture/calls"); reject toolbox_reinstall cancel
 [[ $before == "$(sha256sum "$fixture/calls")" ]] || fail 'tamper called reset'; pass 'boot identity tamper rejects cancel'
@@ -285,6 +345,36 @@ printf 'original EFI\n' > "$fixture/root/boot/efi/EFI/debian/grubx64.efi"
 printf 'BootCurrent: 0000\nBootOrder: 0000\nBoot0000* original HD(...)\\EFI\\debian\\grubx64.efi\n' > "$fixture/efi"
 printf '{"filesystems":[{"target":"/","source":"/dev/vda1","fstype":"ext4","options":"rw"},{"target":"/boot/efi","source":"/dev/vda1","fstype":"vfat","options":"rw"}]}\n' > "$fixture/mounts.json"
 prep ubuntu 24.04 || fail 'UEFI prepare'; toolbox_reinstall cancel > "$fixture/cancel" 2>&1 || fail 'UEFI cancel'; pass 'UEFI BootNext/entry identity + restore'
+# --create-only must never silently reorder persistent boot entries.
+setup; mkdir -p "$fixture/root/boot/efi/EFI/debian" "$fixture/root/sys/firmware/efi"
+printf 'original EFI\n' > "$fixture/root/boot/efi/EFI/debian/grubx64.efi"
+printf 'BootCurrent: 0000\nBootOrder: 0000\nBoot0000* original HD(...)\\EFI\\debian\\grubx64.efi\n' > "$fixture/efi"
+printf '{"filesystems":[{"target":"/","source":"/dev/vda1","fstype":"ext4","options":"rw"},{"target":"/boot/efi","source":"/dev/vda1","fstype":"vfat","options":"rw"}]}\n' > "$fixture/mounts.json"
+real_runner=$(declare -f _toolbox_reinstall_run_upstream)
+_toolbox_reinstall_run_upstream() {
+    eval "$real_runner"; _toolbox_reinstall_run_upstream "$@" || return
+    sed -i 's/BootOrder: 0000/BootOrder: 0001,0000/' "$fixture/efi"
+}
+reject prep ubuntu 24.04
+[[ $(toolbox_reinstall status) == *phase=failed* ]] || fail 'EFI prepare order regression not retained'
+pass 'UEFI create-only changed BootOrder rejects prepared success'
+eval "$real_runner"
+# Even with matching entry text, reset may not silently reorder unrelated EFI
+# entries. Run the real fixture reset, then inject a firmware-order regression.
+setup; mkdir -p "$fixture/root/boot/efi/EFI/debian" "$fixture/root/sys/firmware/efi"
+printf 'original EFI\n' > "$fixture/root/boot/efi/EFI/debian/grubx64.efi"
+printf 'BootCurrent: 0000\nBootOrder: 0000\nBoot0000* original HD(...)\\EFI\\debian\\grubx64.efi\n' > "$fixture/efi"
+printf '{"filesystems":[{"target":"/","source":"/dev/vda1","fstype":"ext4","options":"rw"},{"target":"/boot/efi","source":"/dev/vda1","fstype":"vfat","options":"rw"}]}\n' > "$fixture/mounts.json"
+prep ubuntu 24.04 || fail 'UEFI prepare for order test'
+real_runner=$(declare -f _toolbox_reinstall_run_upstream)
+_toolbox_reinstall_run_upstream() {
+    eval "$real_runner"; _toolbox_reinstall_run_upstream "$@" || return
+    sed -i 's/BootOrder: 0000/BootOrder: 0002,0000/' "$fixture/efi"
+}
+reject toolbox_reinstall cancel
+[[ $(toolbox_reinstall status) == *restore-failed* ]] || fail 'EFI order regression not retained'
+pass 'UEFI reset changed BootOrder rejects success and preserves evidence'
+eval "$real_runner"
 setup; printf 'foreign kernel\n' > "$fixture/root/reinstall-vmlinuz"
 reject toolbox_reinstall preflight; no_calls; reject toolbox_reinstall cancel; no_calls; pass 'foreign upstream plan never adopted/reset'
 setup; printf 'menuentry user-custom {}\n' > "$fixture/root/boot/grub/custom.cfg"
@@ -301,6 +391,23 @@ before=$(sha256sum "$fixture/calls"); reject toolbox_reinstall cancel
 setup; prep || fail prepare
 exec {held}<"$fixture/state/lock"; flock -n "$held"; before=$(sha256sum "$fixture/calls"); reject toolbox_reinstall cancel
 [[ $before == "$(sha256sum "$fixture/calls")" ]] || fail 'concurrent reset entered'; exec {held}>&-; pass 'concurrent cancel lock'
+real_guard=$(declare -f _toolbox_reinstall_lock_guard)
+setup
+_toolbox_reinstall_lock_guard() {
+    if [[ -n ${3:-} ]]; then mv "$1/lock" "$1/lock-moved"; touch "$1/lock"; chmod 0600 "$1/lock"; fi
+    eval "$real_guard"; _toolbox_reinstall_lock_guard "$@"
+}
+reject prep; no_calls; pass 'prepare refuses inode replacement of held flock before upstream'
+eval "$real_guard"
+setup; prep || fail prepare; before=$(sha256sum "$fixture/calls")
+_toolbox_reinstall_lock_guard() {
+    if [[ -n ${3:-} ]]; then mv "$1/lock" "$1/lock-moved"; touch "$1/lock"; chmod 0600 "$1/lock"; fi
+    eval "$real_guard"; _toolbox_reinstall_lock_guard "$@"
+}
+reject toolbox_reinstall cancel
+[[ $before == "$(sha256sum "$fixture/calls")" ]] || fail 'swapped cancel lock called reset'
+pass 'cancel refuses inode replacement of held flock before reset'
+eval "$real_guard"
 setup
 # A real signal is sent to the adapter subshell; destructive execution still mocked.
 _toolbox_reinstall_run_upstream() { printf '%s\n' "$BASHPID" > "$fixture/runner.pid"; sleep 1; kill -TERM "$BASHPID"; sleep 1; }

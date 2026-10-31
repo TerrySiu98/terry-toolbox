@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 # Until the implementation exists this is an intended interface RED, not source error.
 if [[ -f $ROOT/modules/tls-acme.sh ]]; then source "$ROOT/modules/tls-acme.sh"; fi
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+fail() { printf 'FAIL: %s (case %s)\n' "$*" "${C:-initial}" >&2; exit 1; }
 pass() { printf 'PASS: %s\n' "$*"; }
 declare -F toolbox_tls_acme >/dev/null || fail 'TLS ACME public interface is not implemented'
 python3 - "$ROOT/modules/tls-acme.sh" <<'PY'
@@ -13,8 +13,12 @@ src=open(sys.argv[1]).read()
 p=subprocess.run(['bash','-s'],input='set -u\nTOOLBOX_BUNDLED=1\n'+src+'\ndeclare -F toolbox_tls_acme >/dev/null\n',text=True,capture_output=True,timeout=15)
 assert p.returncode==0 and p.stdout=='' and p.stderr=='',p.stderr
 q=subprocess.run(['bash','-n'],input=src,text=True,capture_output=True,timeout=15);assert q.returncode==0,q.stderr
+for operation,unlock,want in [(0,0,0),(7,0,7),(0,1,1),(7,1,1)]:
+ script='TOOLBOX_BUNDLED=1\n'+src+'\ntls_acme_lock_id=fixture\ntls_acme_fs() { return '+str(unlock)+'; }\ntrap tls_acme_cleanup EXIT\nexit '+str(operation)+'\n'
+ result=subprocess.run(['bash','-s'],input=script,text=True,capture_output=True,timeout=15)
+ assert result.returncode==want,(operation,unlock,result.returncode,result.stderr)
 PY
-pass 'source-only/bundle bash -s compatibility and syntax'
+pass 'source-only/bundle syntax and EXIT cleanup propagates unlock failure'
 tls_acme_valid example.com admin@example.com || fail 'valid hostname/email refused'
 for h in '../example.com' '-bad.com' 'EXAMPLE.com' '*.example.com' 'example.com.' $'example.com\nx'; do
     if tls_acme_valid "$h" admin@example.com; then fail "unsafe hostname accepted: $h"; fi
@@ -27,10 +31,17 @@ for input in '' 'YES' $'YES\nYES' $'YES\nno\n'; do
 done
 printf 'yEs\nYES\n' | tls_acme_confirm >/dev/null || fail 'double newline YES refused'
 pass 'domain/email and complete-line dual confirmation'
-T=$(mktemp -d "${TMPDIR:-/root/.hermes/cache/scratch}/tls-acme-fixture-XXXXXXXX")
+test_tmp=${TOOLBOX_TEST_TMPDIR:-${TMPDIR:-/root/.cache/terry-toolbox-tests}}
+mkdir -p -- "$test_tmp"
+T=$(mktemp -d "$test_tmp/tls-acme-fixture-XXXXXXXX")
 export T
 eval "$(declare -f tls_acme_confirm | python3 -c 'import sys;print(sys.stdin.read().replace("tls_acme_confirm", "tls_acme_original_confirm", 1))')"
-trap 'python3 -c "import shutil,sys; shutil.rmtree(sys.argv[1])" "$T"' EXIT
+cleanup() {
+    local rc=$?
+    if (( rc != 0 )); then printf 'Failed TLS fixture retained: %s\n' "$T" >&2
+    else python3 -c 'import shutil,sys; shutil.rmtree(sys.argv[1])' "$T"; fi
+}
+trap cleanup EXIT
 python3 - "$T" <<'PY'
 import sys,os,datetime
 from cryptography import x509
@@ -48,7 +59,7 @@ def write(n,b):
     os.chmod(p+'/'+n,0o600)
 write('ca.pem',cert.public_bytes(serialization.Encoding.PEM)); write('key.pem',key.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.TraditionalOpenSSL,serialization.NoEncryption()))
 write('wrong-key.pem',ca.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.TraditionalOpenSSL,serialization.NoEncryption()))
-for n,host,before,after in [('cert.pem','example.com',-1,3),('wrong-host.pem','other.com',-1,3),('future.pem','example.com',1,3),('expired.pem','example.com',-3,-1)]:
+for n,host,before,after in [('cert.pem','example.com',-1,3),('wrong-host.pem','other.com',-1,3),('future.pem','example.com',1,3),('expired.pem','example.com',-3,-1),('near-expiry.pem','example.com',-1,1/48)]:
     leaf=x509.CertificateBuilder().subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME,host)])).issuer_name(name).public_key(key.public_key()).serial_number(x509.random_serial_number()).not_valid_before(now+datetime.timedelta(days=before)).not_valid_after(now+datetime.timedelta(days=after)).add_extension(x509.SubjectAlternativeName([x509.DNSName(host)]),False).add_extension(x509.BasicConstraints(ca=False,path_length=None),True).add_extension(x509.ExtendedKeyUsage([x509.oid.ExtendedKeyUsageOID.SERVER_AUTH]),False).sign(ca,hashes.SHA256())
     write(n,leaf.public_bytes(serialization.Encoding.PEM))
 PY
@@ -58,7 +69,7 @@ fixture() {
 import os,sys,json,hashlib
 p,t=sys.argv[1:]
 os.mkdir(p,0o700);os.mkdir(p+'/units',0o700);os.mkdir(p+'/run',0o700);os.mkdir(p+'/bin',0o700)
-for n in ('ca.pem','cert.pem','key.pem','wrong-key.pem','wrong-host.pem','future.pem','expired.pem'):
+for n in ('ca.pem','cert.pem','key.pem','wrong-key.pem','wrong-host.pem','future.pem','expired.pem','near-expiry.pem'):
     with open(p+'/'+n,'xb') as f:f.write(open(t+'/'+n,'rb').read())
     os.chmod(p+'/'+n,0o600)
 d={'version':1,'root':p+'/owned','units':p+'/units','server':'https://127.0.0.1:14000/dir','requests_ca':p+'/ca.pem','cert_ca':p+'/ca.pem','host':'example.com','addresses':['127.0.0.1'],'mock_systemd':True}
@@ -108,17 +119,24 @@ for k,n in [('cert','cert'),('privkey','privkey'),('chain','chain'),('fullchain'
 conf+='\\n[renewalparams]\\naccount = 0123456789abcdef0123456789abcdef\\nserver = '+server+'\\nauthenticator = standalone\\nhttp01_port = 80\\n'
 with open(r+'/renewal/'+h+'.conf','w') as f:f.write(conf)
 os.chmod(r+'/renewal/'+h+'.conf',0o600)
+if os.getenv('SWAP_CERTBOT_LOCK')=='1':
+ os.rename(p+'/owned/.lock',p+'/retired-lock')
+ os.mkdir(p+'/owned/.lock',0o700)
 '''
 with open(p+'/bin/certbot','x') as f:f.write(mock)
 os.chmod(p+'/bin/certbot',0o755)
 PY
     export PATH="$C/bin:$BASE_PATH" TOOLBOX_TLS_ACME_ROOT="$C/owned" TOOLBOX_TLS_ACME_UNIT_DIR="$C/units" TOOLBOX_TLS_ACME_TEST_FIXTURE="$C/fixture.json" TOOLBOX_TLS_ACME_OS_RELEASE="$C/os-release" TOOLBOX_TLS_ACME_SYSTEMD_RUN="$C/run"
-    unset CERTBOT_FAIL CERT_FILE KEY_FILE SS_FAIL PORT_BUSY SS_BAD SHOW_FAIL START_FAIL STOP_FAIL RELOAD_FAIL UNKNOWN_STATE DROPIN_STATE JOB_STATE ACCOUNT_SERVER ACCOUNT_DIR ACCOUNT_ID ACCOUNT_ATTACK
+    unset CERTBOT_FAIL CERT_FILE KEY_FILE SS_FAIL PORT_BUSY SS_BAD SHOW_FAIL START_FAIL STOP_FAIL RELOAD_FAIL UNKNOWN_STATE DROPIN_STATE JOB_STATE ACCOUNT_SERVER ACCOUNT_DIR ACCOUNT_ID ACCOUNT_ATTACK SWAP_CERTBOT_LOCK SWAP_SYSTEMCTL_LOCK
 }
 BASE_PATH=$PATH
 systemctl() {
     printf 'systemctl %s\n' "$*" >> "$C/calls"
     local n=${2:-} state load active sub fragment
+    if [[ ${SWAP_SYSTEMCTL_LOCK:-} == "$1" ]]; then
+        mv "$C/owned/.lock" "$C/retired-lock"
+        mkdir -m 700 "$C/owned/.lock"
+    fi
     case $1 in
         show)
             [[ ${SHOW_FAIL:-0} != 1 ]] || return 1
@@ -195,6 +213,22 @@ tls_acme_confirm() { tls_acme_original_confirm && { PORT_BUSY=1; }; }
 reject issue; no_mutation
 tls_acme_confirm() { tls_acme_original_confirm; }
 pass 'port rechecked after confirmation; race causes zero writes'
+for kind in wants-alias upholds symlink-dir; do
+    fixture "foreign-dependency-$kind"
+    dep="$C/units/multi-user.target.wants"
+    if [[ $kind == symlink-dir ]]; then
+        mkdir -m700 "$C/foreign"
+        ln -s "$C/foreign" "$dep"
+    else
+        name=alias.timer
+        if [[ $kind == upholds ]]; then dep="$C/units/multi-user.target.upholds"; name=terry-toolbox-acme.timer; fi
+        mkdir -m700 "$dep"
+        ln -s "$C/units/terry-toolbox-acme.timer" "$dep/$name"
+    fi
+    reject issue
+    no_mutation
+done
+pass 'foreign alias/upholds links and symlink dependency directories rejected before writes'
 # These are native Certbot account layout fixtures, not real ACME issuance.
 for server in 'https://127.0.0.1:14000/dir' 'https://localhost:14000/dir'; do
     fixture "account-native-${RANDOM}"
@@ -278,6 +312,78 @@ disable || fail disable
 reject toolbox_tls_acme _renew example.com > "$C/output" 2>&1
 enable || fail 're-enable retained units'
 pass 'timer explicit authorization/readback/disable/re-enable and background renew'
+(
+    systemctl() {
+        local unit=$2 active=active sub=running pid=0
+        if [[ $unit == *.service ]]; then active=activating; sub=start; pid=${TEST_BACKGROUND_PID:-$$}; fi
+        printf 'LoadState=loaded\nActiveState=%s\nSubState=%s\nFragmentPath=%s/units/%s\nDropInPaths=\nJob=\nMainPID=%s\n' "$active" "$sub" "$C" "$unit" "$pid"
+    }
+    tls_acme_timer_read background || fail 'real running timer/owned oneshot shape'
+    TEST_BACKGROUND_PID=999999999 reject tls_acme_timer_read background
+    reject tls_acme_timer_read active
+)
+pass 'timer-triggered oneshot accepts only the current owned runtime PID'
+# Construct an already-owned expired lineage, as after offline time elapses.
+# This is fixture setup only: preserve file identities and reseal their new bytes.
+age_owned_lineage() {
+    python3 - "$C" "$1" <<'PY'
+import hashlib,json,os,sys
+p,leaf=sys.argv[1:];root=p+'/owned';m=json.load(open(root+'/metadata.json'))
+for name,data in [('cert',open(p+'/'+leaf,'rb').read()),('fullchain',open(p+'/'+leaf,'rb').read()+open(p+'/ca.pem','rb').read())]:
+ path=os.path.realpath(root+'/config/live/example.com/'+name+'.pem')
+ with open(path,'wb') as f:f.write(data)
+ m['tree'][os.path.relpath(path,root)]['sha256']=hashlib.sha256(data).hexdigest()
+raw=(json.dumps(m,sort_keys=True,separators=(',',':'))+'\n').encode()
+with open(root+'/metadata.json','wb') as f:f.write(raw)
+with open(root+'/metadata.sha256','w') as f:f.write(hashlib.sha256(raw).hexdigest()+'\n')
+PY
+}
+for old_cert in expired.pem near-expiry.pem; do
+    for action in renew disable; do
+        fixture "recovery-${old_cert%.pem}-$action"
+        issue || fail 'recovery issuance setup'; enable || fail 'recovery timer setup'
+        age_owned_lineage "$old_cert"
+        tls_acme_fs cert --existing >/dev/null || fail 'owned expired/near-expiry identity rejected'
+        reject tls_acme_fs cert >/dev/null 2>&1
+        "$action" || fail "owned $old_cert cannot $action"
+        if [[ $action == renew ]]; then tls_acme_fs cert >/dev/null || fail 'renewed pair not strictly valid'
+        else
+            [[ ! -L $C/units/timers.target.wants/terry-toolbox-acme.timer ]] || fail 'expired timer link remained'
+            reject toolbox_tls_acme _renew example.com > "$C/output" 2>&1
+        fi
+    done
+done
+fixture recovery-tamper
+issue || fail 'recovery tamper setup'; age_owned_lineage expired.pem
+printf 'tamper' >> "$C/owned/config/archive/example.com/cert1.pem"
+reject renew
+fixture recovery-invalid-new
+issue || fail 'recovery invalid candidate setup'; age_owned_lineage expired.pem
+export CERT_FILE=expired.pem
+reject renew
+pass 'expired/near-expiry owned lineages renew or disable; modified old and expired new pairs refuse'
+fixture lock-certbot
+export SWAP_CERTBOT_LOCK=1
+reject issue
+python3 - "$C" <<'PY'
+import json,sys
+p=sys.argv[1]
+assert json.load(open(p+'/owned/metadata.json'))['state']=='pending'
+assert 'lock replaced' in open(p+'/output').read()
+assert 'systemctl start' not in open(p+'/calls').read()
+PY
+[[ -d $C/retired-lock && -d $C/owned/.lock ]] || fail 'replaced Certbot lock evidence lost'
+for action in daemon-reload start stop; do
+    fixture "lock-timer-$action"; issue || fail 'lock timer setup'
+    if [[ $action == stop ]]; then enable || fail 'lock stop setup'; fi
+    : > "$C/calls"; SWAP_SYSTEMCTL_LOCK=$action
+    if [[ $action == stop ]]; then reject disable; else reject enable; fi
+    [[ -d $C/retired-lock && -d $C/owned/.lock && -L $C/units/timers.target.wants/terry-toolbox-acme.timer ]] || fail 'lost lock must retain owned evidence'
+    if [[ $action == daemon-reload ]]; then
+        ! grep -q 'systemctl start' "$C/calls" || fail 'started timer after losing lock'
+    fi
+done
+pass 'lock replacement during Certbot/reload/start/stop refuses later commits and retains evidence'
 for kind in start-fail reload-fail show-unknown; do
     fixture "timer-failure-$kind"; issue || fail setup
     case $kind in start-fail) START_FAIL=1;; reload-fail) RELOAD_FAIL=1;; show-unknown) UNKNOWN_STATE=1;; esac
@@ -305,7 +411,7 @@ s=open(sys.argv[1]).read(); assert 'PRIVATE KEY' not in s and 'private test fail
 PY
 done
 pass 'Certbot failure and real openssl negative time/host/keypair checks retained'
-for kind in foreign-symlink duplicate hardlink metadata mode runtime unit link lock timer-unknown show-fail stop-fail trust-change unknown-file; do
+for kind in foreign-symlink duplicate hardlink metadata mode runtime unit link lock timer-unknown dropin show-fail stop-fail trust-change unknown-file; do
     fixture "tamper-$kind"
     issue || fail 'prepare tamper issue'
     case $kind in
@@ -319,6 +425,7 @@ for kind in foreign-symlink duplicate hardlink metadata mode runtime unit link l
         link) enable || fail prepare-enable; rm "$C/units/timers.target.wants/terry-toolbox-acme.timer"; ln -s "$C/cert.pem" "$C/units/timers.target.wants/terry-toolbox-acme.timer";;
         lock) mkdir -m700 "$C/owned/.lock";;
         timer-unknown) enable || fail prepare-enable; UNKNOWN_STATE=1;;
+        dropin) enable || fail prepare-enable; DROPIN_STATE=/foreign/override.conf;;
         show-fail) SHOW_FAIL=1;;
         stop-fail) enable || fail prepare-enable; STOP_FAIL=1;;
         trust-change) printf 'x' >> "$C/ca.pem";;
@@ -326,7 +433,7 @@ for kind in foreign-symlink duplicate hardlink metadata mode runtime unit link l
     esac
     case $kind in
         lock) reject renew;;
-        timer-unknown|stop-fail) reject disable; [[ -L $C/units/timers.target.wants/terry-toolbox-acme.timer ]] || fail 'failure removed timer link';;
+        timer-unknown|dropin|stop-fail) reject disable; [[ -L $C/units/timers.target.wants/terry-toolbox-acme.timer ]] || fail 'failure removed timer link';;
         show-fail) reject enable;;
         *) reject renew;;
     esac

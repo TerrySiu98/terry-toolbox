@@ -2,11 +2,12 @@
 # Source-only provenance. Pin updates require human review of upstream and this diff.
 _TOOLBOX_REINSTALL_COMMIT=54fae2067557b3c0ca49e7c9ce03bca63c793f8c
 _TOOLBOX_REINSTALL_RAW_SHA=3ca358bf065ebd3ecb2f727e152a4b4fb9b154398abc1b9a5fe0b599f1027d7a
-_TOOLBOX_REINSTALL_DERIVED_SHA=ab022b13786e6b294ad9421ae4af2c2dc0a140a116bd8753a3d58fd98d759389
+_TOOLBOX_REINSTALL_DERIVED_SHA=fc056ad5498bd019201d20ca19d1ebfe1d9d7cb05028cd4cb5a0352e9566518d
 # README at this commit, lines 705..719, documents pinning confhome* to commit_id.
 # Reviewed derivation: both active origins use SAME immutable GitHub commit;
 # remove upstream curl --insecure from download and URL probe (two exact
-# occurrences). No installer rewritten.
+# occurrences), use HTTPS for Alpine boot images and Debian driver packages
+# injected into the initrd. No installer rewritten.
 # trans.sh + initrd-network.sh are downloaded through that origin; extra_confhome
 # propagates it into initrd/runtime. Distribution images/packages remain mutable.
 _toolbox_reinstall_derive() {
@@ -24,7 +25,19 @@ edits = [
  (b'command curl --insecure --connect-timeout 10 -f "$@"',
   b'command curl --connect-timeout 10 -f "$@"'),
  (b'command curl --insecure --connect-timeout 10 -Lfr 0-1048575 "$url"',
-  b'command curl --connect-timeout 10 -Lfr 0-1048575 "$url"')]
+  b'command curl --connect-timeout 10 -Lfr 0-1048575 "$url"'),
+ (b'mirror=http://mirror.nju.edu.cn/alpine/v$releasever',
+  b'mirror=https://mirror.nju.edu.cn/alpine/v$releasever'),
+ (b'mirror=http://dl-cdn.alpinelinux.org/alpine/v$releasever',
+  b'mirror=https://dl-cdn.alpinelinux.org/alpine/v$releasever'),
+ (b'local url=http://$mirror/dists/$nextos_codename/main/binary-$basearch_alt/Packages.gz',
+  b'local url=https://$mirror/dists/$nextos_codename/main/binary-$basearch_alt/Packages.gz'),
+ (b'local url=http://$mirror/dists/$nextos_codename/main/debian-installer/binary-$basearch_alt/Packages.gz',
+  b'local url=https://$mirror/dists/$nextos_codename/main/debian-installer/binary-$basearch_alt/Packages.gz'),
+ (b'curl -Lo $tmp/tmp.deb http://$mirror/"$deb_path"',
+  b'curl -Lo $tmp/tmp.deb https://$mirror/"$deb_path"'),
+ (b'is_in_china && mirror=http://mirror.nju.edu.cn/alpine || mirror=https://dl-cdn.alpinelinux.org/alpine',
+  b'is_in_china && mirror=https://mirror.nju.edu.cn/alpine || mirror=https://dl-cdn.alpinelinux.org/alpine')]
 for old, new in edits:
     if b.count(old) != 1: sys.exit('pin patch 前置条件不匹配；需要显式 review。')
     b = b.replace(old, new)

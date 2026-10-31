@@ -198,6 +198,7 @@ hy2_tls_trusted() {
         net_tls_verify "$cert" "$cafile" "$capath"
         return
     fi
+    local verify_help
     local -a trust=()
     if [[ -n $cafile ]]; then
         [[ -f $cafile && -r $cafile && -s $cafile ]] || return 1
@@ -206,7 +207,11 @@ hy2_tls_trusted() {
         [[ -n $capath && -d $capath ]] || return 1
         trust=(-CApath "$capath" -no-CAfile)
     fi
-    openssl verify "${trust[@]}" -no-CAstore -purpose sslserver -untrusted "$cert" "$cert" >/dev/null 2>&1
+    # OpenSSL 1.1 has no CAstore; match the shared verifier without retrying
+    # failed certificate checks with a weaker trust configuration.
+    verify_help=$(openssl verify -help 2>&1) || :
+    if [[ $verify_help == *-no-CAstore* ]]; then trust+=(-no-CAstore); fi
+    openssl verify "${trust[@]}" -purpose sslserver -untrusted "$cert" "$cert" >/dev/null 2>&1
 }
 
 # ---------------------------------------------------------------- 下载

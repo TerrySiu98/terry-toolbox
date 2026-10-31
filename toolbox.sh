@@ -79,6 +79,17 @@ _toolbox_tls_acme() {
   declare -F toolbox_tls_acme >/dev/null || { printf 'TLS ACME 模块未加载。\n' >&2; return 1; }
   toolbox_tls_acme "$@"
 }
+_tb_reinstall_target() {
+  local choice
+  printf '重装目标：1 Debian 13；2 Ubuntu 24.04；3 Alpine 3.24；0 取消\n选择：' >&2
+  IFS= read -r choice || { printf '输入结束，已取消。\n' >&2; return 1; }
+  case "$choice" in
+    1) printf 'debian 13\n';;
+    2) printf 'ubuntu 24.04\n';;
+    3) printf 'alpine 3.24\n';;
+    *) printf '已取消。\n' >&2; return 1;;
+  esac
+}
 _tb_service_screen() {
   local title
   case "$1" in
@@ -166,8 +177,13 @@ run_service_action() {
         7) _toolbox_webssh_container easynode install;; 8) _toolbox_webssh_container easynode uninstall;; 9) _toolbox_webssh_container easynode status;;
       esac ;;
     MAIN_REINSTALL)
+      local target distro version
       case "$choice" in
-        1) _toolbox_system_reinstall preflight;; 2) _toolbox_system_reinstall prepare;;
+        1|2)
+          target=$(_tb_reinstall_target) || return 1
+          read -r distro version <<< "$target"
+          if [[ $choice == 1 ]]; then _toolbox_system_reinstall preflight "$distro"
+          else _toolbox_system_reinstall prepare "$distro" "$version"; fi;;
         3) _toolbox_system_reinstall status;; 4) _toolbox_system_reinstall cancel;;
       esac ;;
     TLS)
