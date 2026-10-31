@@ -1,0 +1,1461 @@
+{
+  "schema": 1,
+  "date": "2026-10-31",
+  "baseline_commit": "d884aae024485ff0632011e52a8d37c4a79effb2",
+  "branch": "codex/complete-toolbox",
+  "status": "accepted-with-documented-scope-not-deployed",
+  "evidence_policy": "Raw evidence contains fixture credentials and remains outside Git. Hashes bind each native run to its exact source; historical runs do not substitute for later changed source.",
+  "native": {
+    "docker_ipv6": {
+      "status": "passed",
+      "environment": "Debian 13.7 / x86_64 / KVM / Docker 29.9.2",
+      "module_sha256": "48636afa070fe222ecb78fd0883a22af12004e03589e68893ff31ba4487e4423",
+      "harness_sha256": "ebe3eecc3d7949077b29b8931bd5a8ae73ab708c99dbd73cd069f8a4683b77d1",
+      "evidence_archive_sha256": "cf2ecb999f602af41f30c703d7b5d16ad55b063ece29d9cb66609b3dfdecf8a8",
+      "passed": [
+        "native Docker installer",
+        "IPv6 apply",
+        "two containers return exact IPv6 ULA nonce",
+        "whole VM reboot and changed boot ID",
+        "same complete container IDs return nonce after reboot",
+        "owned containers removed",
+        "restore original absent daemon.json and bridge IPv6 false"
+      ],
+      "not_covered": [
+        "public IPv6",
+        "original preexisting daemon.json native restoration",
+        "Ubuntu/Alpine/arm64",
+        "long-duration load"
+      ]
+    },
+    "webssh_containers": {
+      "status": "passed",
+      "branches": [
+        "personal",
+        "easynode"
+      ],
+      "environment": "Debian 13.7 / x86_64 / KVM / Docker 29.9.2",
+      "module_sha256": "be92b787359383f361361d2bf168768cc06407242fbe62cfb7dc3ba720f1217d",
+      "harness_sha256": "29af592c7635acec25e59a8554fe2add7c8bd07eb1c3b431f67fe023f26a264c",
+      "evidence_archive_sha256": "9d84f8db8122e200f189445698eac8dd35c618bca32365e8106a8fe84094a0dc",
+      "passed": [
+        "anonymous/wrong-password rejection",
+        "native authentication and protected API",
+        "real SSH exact nonce",
+        "SFTP file write and read",
+        "complete container-ID restart persistence",
+        "owned uninstall preserves data and credentials",
+        "zero containers and default Docker networks at end"
+      ],
+      "not_covered": [
+        "browser UI",
+        "2FA/MFA",
+        "RDP",
+        "public TLS/reverse proxy",
+        "whole VM reboot",
+        "arm64"
+      ],
+      "signal_cleanup_followup": {
+        "status": "passed",
+        "module_sha256": "be92b787359383f361361d2bf168768cc06407242fbe62cfb7dc3ba720f1217d",
+        "harness_sha256": "8c8c0d30fdbb7de663c3cf4a0ad5927af021553ed2667a3da15cb8adf5c82192",
+        "cases": [
+          {
+            "branch": "personal",
+            "passed": true,
+            "product_exit_code": 130,
+            "elapsed_seconds": 25.17,
+            "checks": [
+              "real-app-started",
+              "TERM-exit-130",
+              "no-local-state-loss",
+              "owned-container-and-network-absent",
+              "all-existing-data-files-retained",
+              "credentials-and-sentinel-hashes-unchanged",
+              "foreign-container-network-file-identical"
+            ]
+          },
+          {
+            "branch": "easynode",
+            "passed": true,
+            "product_exit_code": 130,
+            "elapsed_seconds": 80.11,
+            "checks": [
+              "real-app-started",
+              "TERM-exit-130",
+              "no-local-state-loss",
+              "owned-container-and-network-absent",
+              "all-existing-data-files-retained",
+              "credentials-and-sentinel-hashes-unchanged",
+              "foreign-container-network-file-identical"
+            ]
+          }
+        ],
+        "fixture_teardown": true,
+        "vm_powered_off": true,
+        "reason": "Consume the diagnostic nonzero status in the TERM trap before explicit exit130 so errexit cannot unwind the local claim before EXIT cleanup.",
+        "regression_detects_old_bug": true,
+        "old_test_exit": 1,
+        "corrected_test_exit": 0,
+        "diagnostic_archive_sha256": "2dee54cb3fa5245a6cdb45b9100c570bc31da23a8ad172aeaf6506f3177b1301"
+      },
+      "previous_candidate": {
+        "status": "passed-before-signal-fix",
+        "module_sha256": "71a10dbc9e790f8fd428beb76e494903afe37492794d776348ba5cb4e1691f9e",
+        "evidence_archive_sha256": "1d9cedb95ec90c8868e630c30206abc99baff21fc6b52ebcb69e09726420aa1e"
+      },
+      "guest_archive_sha256": "9c69ef61d2d1a69e475c8f026c3019056e782646bf3030673ab19e21b31246d7"
+    },
+    "vmess": {
+      "status": "passed",
+      "previous_candidates": [
+        {
+          "module_sha256": "6a2085ed378e1b284e9e3f32e61ce22c05ff14af5d0197565418e50678688a79",
+          "status": "failed-disable-boot",
+          "reason": "Duplicate production systemd root paths counted one owned boot link twice; corrected before the successful candidate03 full lifecycle."
+        },
+        {
+          "candidate": "02",
+          "status": "failed-public-egress-probe-after-enable-reboot",
+          "module_sha256": "da9ba5aea62529a21f35e04d816ec6e07b93b3bb25b0ccea56d3b26fc06b7aa5",
+          "diagnostic_rerun": "five cases passed with unchanged source; original curl error not captured; full lifecycle restarted with per-case curl evidence",
+          "evidence_archive_sha256": "09550066bc7dda60d4f284b77b813be754925e54414dbe7599e27b37417f53f5"
+        }
+      ],
+      "candidate": "03",
+      "source_sha256": {
+        "modules/vmess.sh": "da9ba5aea62529a21f35e04d816ec6e07b93b3bb25b0ccea56d3b26fc06b7aa5",
+        "modules/network.sh": "db2c659a86239207364ac775d53b338fab557871a70f68936a758851b50484f8",
+        "tests/vmess-native.sh": "70b63b31c0d5b6e389de83ecf1a7e8ade9af762e06127b7a74e7a7d094831abb",
+        "tests/vmess-native-probe.py": "3dd9907c04d41bcfd9aa41d30b08730d4d99a2471dcf1a048a3bae488ffd330e"
+      },
+      "evidence_archive_sha256": "8a31041a6920dfe8b3eb849e7bd30d2410fe0842f7f057b3db0482298061732e",
+      "passed": [
+        "native install and five authenticated/rejection public HTTPS probes",
+        "enable boot then whole VM reboot and five probes",
+        "disable boot then second whole VM reboot with inactive service",
+        "explicit service start for real ACME certificate sync",
+        "public uninstall retains original input certificate/key"
+      ],
+      "not_covered": [
+        "arm64",
+        "public inbound reachability",
+        "long-duration service load"
+      ]
+    },
+    "acme": {
+      "status": "passed",
+      "module_sha256": "8b00dc18242a86130660e32ee74a41216b4cab6ba9f17dacf821366e4cadba9f",
+      "harness_sha256": "927e4a3db1bb6b730c3c39836c6ae20b674b6947c6017179e9b59fa15e203ecf",
+      "evidence_archive_sha256": "8a31041a6920dfe8b3eb849e7bd30d2410fe0842f7f057b3db0482298061732e",
+      "result": {
+        "real_certbot": "certbot 4.0.0",
+        "pebble": "2.10.1",
+        "http01_port": 80,
+        "challenge_validation_skipped": false,
+        "four_distinct_leaf_sha256": [
+          "4b228f631bdf43986ea638942a79f9de6821c8171246c2d4b9f36fdb50837a03",
+          "7735b058a615516c4936f7d44b2bc44b7a0e848c0dd3b295b7b88b8f3f925edb",
+          "a8bcb60300a3b861d911fe51dc36569fc54ce43e33f24db0b975b8ba1e25c4cc",
+          "c3b9a2766069dcc9bd55e36226ae4a316978c261e7279ef2665528e3d05515a1"
+        ],
+        "real_systemd_background_renewal": true,
+        "cert4_not_before": 1793455719,
+        "cert4_not_after": 1793477318,
+        "verification_guest_time": 1793455753.1908495,
+        "clock_restore_pending": true,
+        "expired_lineage_recovery": true,
+        "expired_vmess_pair_recovery": true,
+        "vmess_config_preserved": true,
+        "vmess_sync": true,
+        "timer_disabled_at_end": true,
+        "boot_id": "6a99239e-d6e9-47ec-af42-3ed1247be367"
+      },
+      "clock_recovery": {
+        "complete": true,
+        "guest_clock_restored": true,
+        "previous_time_services_restored": true,
+        "host_time_jump_absent": true
+      },
+      "not_covered": [
+        "production public CA",
+        "public DNS/HTTP reachability",
+        "arm64",
+        "long-duration renewal reliability"
+      ],
+      "result_snapshot_stage": "result.json was saved before EXIT cleanup; clock_restore_pending describes that phase only. Final recovery is proved by tls-acme-fixture-native03-support/clock.restored.json in the same evidence archive."
+    },
+    "reinstall": {
+      "status": "passed",
+      "targets": [
+        "debian 13",
+        "ubuntu 24.04",
+        "alpine 3.24"
+      ],
+      "results": {
+        "debian_13": {
+          "status": "passed",
+          "environment": "x86_64 / KVM / BIOS / one 12-GiB virtio disk",
+          "result_sha256": "549509ac9b8958bad25d205cd7f4e4269e29dd9f0245b8da58c80ed1f2dc32ed",
+          "module_sha256": "0be3583907b9dfa2966106578c87f0a6a6977e550411aa59c663e057db645b9f",
+          "provenance_sha256": "aaab2fda7bfb5f0094e26c0491eae74754a7beceb1a42cd9a3805431a4382121",
+          "readback_sha256_used": "3f4cd383b52d1047edd8dc0dd5f27dfbb113c9a6f10836065d56f3e74733ec65",
+          "passed": [
+            "fresh qcow2 overlay",
+            "read-only preflight",
+            "real pinned prepare",
+            "status",
+            "cancel and exact boot restore",
+            "archive cancelled plan",
+            "real prepare again",
+            "off-disk evidence copy",
+            "seed-CD eject confirmed",
+            "controller-issued VM reboot",
+            "upstream disk installation",
+            "upstream automatic reboot",
+            "key-only root SSH",
+            "installed persistent disk filesystem readback"
+          ],
+          "result": {
+            "distribution": "debian",
+            "guest_id": "toolbox-reinstall-01",
+            "new_boot_id": "cea2c4b7-807d-44ac-9bb5-06b91ce34b74",
+            "old_filesystem_nonce_absent": true,
+            "password_ssh_disabled": true,
+            "result": "PASS",
+            "root_device": "/dev/vda1",
+            "root_key_matches": true,
+            "version": "13"
+          }
+        },
+        "ubuntu_24_04": {
+          "status": "passed",
+          "environment": "x86_64 / KVM / BIOS / one 12-GiB virtio disk",
+          "result_sha256": "1075eda84d6b490d1e49327c24ad5249db7109c3dc45e09ee020f5642d18424c",
+          "module_sha256": "0be3583907b9dfa2966106578c87f0a6a6977e550411aa59c663e057db645b9f",
+          "provenance_sha256": "aaab2fda7bfb5f0094e26c0491eae74754a7beceb1a42cd9a3805431a4382121",
+          "readback_sha256_used": "146e30eddd0c3ebaa8d7eb50e1bde144163192b02521646bc05c00837fdd5293",
+          "passed": [
+            "fresh qcow2 overlay",
+            "read-only preflight",
+            "real pinned prepare",
+            "status",
+            "cancel and exact boot restore",
+            "archive cancelled plan",
+            "real prepare again",
+            "off-disk evidence copy",
+            "seed-CD eject confirmed",
+            "controller-issued VM reboot",
+            "upstream disk installation",
+            "upstream automatic reboot",
+            "key-only root SSH",
+            "installed persistent disk filesystem readback"
+          ],
+          "result": {
+            "distribution": "ubuntu",
+            "guest_id": "toolbox-reinstall-01",
+            "new_boot_id": "8b60ff5d-3f78-46eb-a741-7828b669956e",
+            "old_filesystem_nonce_absent": true,
+            "password_ssh_disabled": true,
+            "result": "PASS",
+            "root_device": "/dev/vda2",
+            "root_key_matches": true,
+            "version": "24.04"
+          }
+        },
+        "alpine_3_24": {
+          "status": "passed",
+          "environment": "x86_64 / KVM / BIOS / one 12-GiB virtio disk",
+          "result_sha256": "0dfb3cd183e887ccc89e55150b8327c380d3ab251e22c46934ed53fc2ce1d05c",
+          "module_sha256": "0be3583907b9dfa2966106578c87f0a6a6977e550411aa59c663e057db645b9f",
+          "provenance_sha256": "aaab2fda7bfb5f0094e26c0491eae74754a7beceb1a42cd9a3805431a4382121",
+          "readback_sha256_used": "040ab7e66bcf6ab3bb693f7c1e14c7d84c8ef419b5b1b9aa9ee81d0372a21db0",
+          "passed": [
+            "fresh qcow2 overlay",
+            "read-only preflight",
+            "real pinned prepare",
+            "status",
+            "cancel and exact boot restore",
+            "archive cancelled plan",
+            "real prepare again",
+            "off-disk evidence copy",
+            "seed-CD eject confirmed",
+            "controller-issued VM reboot",
+            "upstream disk installation",
+            "upstream automatic reboot",
+            "key-only root SSH",
+            "installed persistent disk filesystem readback"
+          ],
+          "result": {
+            "distribution": "alpine",
+            "guest_id": "toolbox-reinstall-01",
+            "new_boot_id": "16973e5b-a279-435a-b11f-55a08af37eff",
+            "old_filesystem_nonce_absent": true,
+            "password_ssh_disabled": true,
+            "result": "PASS",
+            "root_device": "/dev/vda1",
+            "root_key_matches": true,
+            "version": "3.24.3"
+          }
+        }
+      },
+      "evidence_archive_sha256": "2515c2d52c1620552a3a3ae240951d1d4e44c16b0548fe518fa5d0b4ee1db4a6",
+      "harness_sha256": "5c13ef0534e5e687eb668eba6de43f964a279e8e862ea146ec1583ae6529c435",
+      "not_covered": [
+        "No native UEFI or arm64 acceptance; UEFI create-only BootOrder behavior covered by mocks.",
+        "Main installer pinned and derived: two insecure curl flags removed and six boot/driver HTTP locations converted to HTTPS.",
+        "Pinned trans.sh still performs wget --no-check-certificate --spider for HTTP Date clock synchronization.",
+        "Distribution images/packages remain mutable; Debian/Ubuntu installer apt uses HTTP with distribution signatures. Do not claim every runtime request is authenticated HTTPS.",
+        "One successful fresh installation per target; no long-term or production-host claim."
+      ]
+    },
+    "webssh_python": {
+      "status": "passed",
+      "environment": "Debian13.7/x86_64/KVM/Python3.13.5",
+      "webssh_version": "1.6.3",
+      "module_sha256": "6143e1d7d9a8e7aa0894d0bfcaf36cf2a16a017088a4e57fde3b6a720ec905bf",
+      "harness_sha256": "5365541a06dc360d1f266f46197bb8c77b4492560fbf2ac80d1332053e51759b",
+      "sdist_sha256": "2bce5bbaf206ad345910c7e4dc8024b3c418e681c9f5ff098f1802beff76e100",
+      "evidence_archive_sha256": "94706e6dca25b442d0508e1892fc719a4a4c514a026804d5d1fc2a7b0f36392f",
+      "passed": [
+        "native installation",
+        "anonymous/wrong Basic HTTP and WebSocket rejection",
+        "foreign Origin rejected",
+        "real SSH exact private-file nonce",
+        "worker replay rejected",
+        "both service InvocationIDs change on restart; repeat all probes",
+        "public uninstall; system nginx/SSH config preserved",
+        "temporary sshd unit and cgroup gone"
+      ],
+      "not_covered": [
+        "browser UI",
+        "MFA",
+        "SFTP",
+        "public TLS",
+        "whole VM reboot",
+        "arm64",
+        "fully locked transitive Python dependencies"
+      ]
+    }
+  },
+  "regression": {
+    "status": "passed-by-full-run-and-targeted-followups",
+    "previous_run": {
+      "status": "cancelled-after-environment-failure",
+      "evidence": "final-regression-v1",
+      "reason": "private Python ELF unpacked group-writable0775; changed to0755 without changing bytes",
+      "source_changed": false,
+      "descendant_cleanup_complete": true
+    },
+    "previous_timeout": {
+      "run": "v2",
+      "test": "alpine-swap-test.sh",
+      "limit_seconds": 600,
+      "reason": "long full127case suite reachedlimit; completed cases passed",
+      "new_limit_seconds": 1200,
+      "cancelled_with_complete_cleanup": true
+    },
+    "known_v3_failure": {
+      "test": "hy2-test.sh",
+      "elapsed_seconds": 17.35,
+      "exit_code": 1,
+      "cleanup_complete": true,
+      "reason": "Standalone HY2 trust verification passed unsupported -no-CAstore to OpenSSL 1.1.1; full-chain acceptance failed. Frozen v3 continues; fix and affected-suite verification are recorded separately."
+    },
+    "affected_v4": {
+      "status": "completed-with-one-menu-test-failure",
+      "passed": 9,
+      "failed": 1,
+      "archive_sha256": "6e6ba526995c0df86aeb9bbd2a5a33a0d83df5bc6a574407774d3a369e9c3577",
+      "summary_sha256": "c871cda3bbb59311aa3431944ef6c8680f9ed1e8f50b5653368267ccde4d46a6",
+      "failed_test": "menu-test.py",
+      "failure_reason": "Old PTY input omitted the new reinstall distribution choice, cancelling preflight; transcript and corrected test tracked separately.",
+      "source_changed": false,
+      "cleanup_complete": true
+    },
+    "menu_v5": {
+      "status": "passed",
+      "suites": 2,
+      "menu_elapsed_seconds": 22.29,
+      "remaining_dispatch_elapsed_seconds": 0.63,
+      "summary_sha256": "e5d5420ee462412efd028120a732e188bfb0a35024f58d06af1f5ceb555f7e44",
+      "test_sha256": "f5050c36824a564168d6d0cbb61b4b06d05ca405863ed5491982f20df8c0cc77",
+      "source_files_unchanged": 67,
+      "cleanup_complete": true,
+      "scope": "Real PTY menu interactions with mocked privileged actions; includes explicit Debian target and preserved 21 action pauses."
+    },
+    "known_v3_vmess_management_failure": {
+      "test": "vmess-management-test.sh",
+      "exit_code": 1,
+      "elapsed_seconds": 685.02,
+      "reason": "OpenSSL1.1 ambiguously selected between old/new self-signed trust anchors with identical subject names. Same-DN near-expiry fails while expired passes; a distinct renewal OU preserves CN/SAN and makes both bundle orders verify. Product validation unchanged; full corrected suite rerun pending."
+    },
+    "vmess_management_limit_adjustment": {
+      "history_seconds": [
+        900,
+        1800,
+        5400
+      ],
+      "reason": "v6 completed the expired/near-expiry recovery group but reached1800s during later failure injection. Host CPU steal measured around74%; final follow-up will run serially with5400s budget. Historical timeout is retained as failure.",
+      "followup_status": "passed-full-suite-in-final-v8"
+    },
+    "full_v3": {
+      "planned_tests": 30,
+      "passed": 24,
+      "failed": 6,
+      "archive_sha256": "d3eb27fbb8c2b1b83c6d77e4854ac484e23076865d433bf3ee841ef9756c1d76",
+      "summary_sha256": "a0dbebc1aab5bd210cd95ef6311efd820b9b8f409aa3889cbc84493e0da6998f",
+      "source_changed": false,
+      "cleanup_complete": true,
+      "results": [
+        {
+          "test": "syntax",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 0.37,
+          "timeout": false
+        },
+        {
+          "test": "alpine-swap-dispatch-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 0.12,
+          "timeout": false
+        },
+        {
+          "test": "alpine-swap-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 664.03,
+          "timeout": false
+        },
+        {
+          "test": "apps-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 2.64,
+          "timeout": false
+        },
+        {
+          "test": "build-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 5.1,
+          "timeout": false
+        },
+        {
+          "test": "diagnostics-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 0.07,
+          "timeout": false
+        },
+        {
+          "test": "docker-ipv6-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 501.33,
+          "timeout": false
+        },
+        {
+          "test": "entry-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 0.81,
+          "timeout": false
+        },
+        {
+          "test": "hy2-test.sh",
+          "status": "failed",
+          "exit_code": 1,
+          "elapsed_seconds": 17.35,
+          "timeout": false
+        },
+        {
+          "test": "network-alpine-feedback-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 7.88,
+          "timeout": false
+        },
+        {
+          "test": "network-alpine-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 21.85,
+          "timeout": false
+        },
+        {
+          "test": "network-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 37.36,
+          "timeout": false
+        },
+        {
+          "test": "reinstall-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 254.98,
+          "timeout": false
+        },
+        {
+          "test": "remaining-dispatch-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 0.29,
+          "timeout": false
+        },
+        {
+          "test": "system-alpine-feedback-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 2.16,
+          "timeout": false
+        },
+        {
+          "test": "system-review-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 2.0,
+          "timeout": false
+        },
+        {
+          "test": "system-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 42.34,
+          "timeout": false
+        },
+        {
+          "test": "tls-acme-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 1276.75,
+          "timeout": false
+        },
+        {
+          "test": "vmess-dispatch-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 0.07,
+          "timeout": false
+        },
+        {
+          "test": "vmess-management-test.sh",
+          "status": "failed",
+          "exit_code": 1,
+          "elapsed_seconds": 685.02,
+          "timeout": false
+        },
+        {
+          "test": "vmess-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 357.1,
+          "timeout": false
+        },
+        {
+          "test": "webssh-containers-test.sh",
+          "status": "failed",
+          "exit_code": -15,
+          "elapsed_seconds": 1200.42,
+          "timeout": true
+        },
+        {
+          "test": "webssh-test.sh",
+          "status": "failed",
+          "exit_code": -15,
+          "elapsed_seconds": 600.49,
+          "timeout": true
+        },
+        {
+          "test": "regression-runner-test.py",
+          "status": "failed",
+          "exit_code": 1,
+          "elapsed_seconds": 20.8,
+          "timeout": false
+        },
+        {
+          "test": "menu-test.py",
+          "status": "failed",
+          "exit_code": 1,
+          "elapsed_seconds": 19.19,
+          "timeout": false
+        },
+        {
+          "test": "entry-feedback-test.py",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 1.11,
+          "timeout": false
+        },
+        {
+          "test": "docker-origin-test.py",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 4.2,
+          "timeout": false
+        },
+        {
+          "test": "deploy-cloudflare-test.py",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 9.65,
+          "timeout": false
+        },
+        {
+          "test": "certificate-recovery-test.py",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 4.41,
+          "timeout": false
+        },
+        {
+          "test": "worker-test.mjs",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 0.38,
+          "timeout": false
+        }
+      ]
+    },
+    "v6_management": {
+      "status": "failed-timeout",
+      "elapsed_seconds": 1802.89,
+      "last_completed_group": "expired/near-expiry owned pair recovery",
+      "summary_sha256": "e4b6b8a5ae256b13eaa54900266de4c0042d83edcf9ec839edbb860c17449fb4",
+      "source_changed": false,
+      "cleanup_complete": true,
+      "remaining_groups": [
+        "later certificate failures",
+        "partial atomic exchange",
+        "real new candidate rejection cases"
+      ]
+    },
+    "webssh_limits": {
+      "webssh-containers-test.sh": {
+        "previous_seconds": 1200,
+        "final_seconds": 5400
+      },
+      "webssh-test.sh": {
+        "previous_seconds": 600,
+        "final_seconds": 5400
+      },
+      "reason": "Full suites reached fixed limits under measured host contention; follow-ups retain all cases.",
+      "followup_status": "passed-full-suite-in-final-v8"
+    },
+    "final_followup": {
+      "run": "v8",
+      "status": "passed",
+      "planned_suites": 14,
+      "reused_v3_suites": 16,
+      "source_archive_sha256": "8ce6d8c8e9a8b2b1419a58a0f39d6a6db3ca40189b8eb4fbde187b3dbfe995e3",
+      "dependency_review_sha256": "0fc3144222bf4da9210064f259f157d41ff8eee80219d50466ba2c07aa0e0b23",
+      "summary_sha256": "c6f008f0ce86e0a8450ae00a887317aa5708fd2089e46079211de702baeda1af",
+      "source_changed": false,
+      "cleanup_complete": true
+    },
+    "consolidated": {
+      "summary_sha256": "77a66da81257993bc2e9baa8ae912403144c22c442b47831ae08b99c4ebd2e58",
+      "single_final_source_full_run": false,
+      "passed_suites": 30,
+      "skipped_suites": 0,
+      "reused_v3_suites": 16,
+      "final_v8_suites": 14,
+      "source_sha256": {
+        "docs/index.html": "eb7fdfa9c6ad729efe3206e67d0b73142f5fb39f280b86e06e910ae1b1c83e9a",
+        "modules/alpine-swap.sh": "c84b599967dfe5f8eb827ce221093e4839ed0515542e6aad0158bf636971aa26",
+        "modules/apps.sh": "4b666089e45f8420d6b855eadf7b8bde305ae522d4e6a7dd736c5fd0df5b6608",
+        "modules/diagnostics.sh": "4387be57a45ea45a72c7d15fcb3cf958dc3b424cb4e63cdc9e58cad2aef15094",
+        "modules/docker-ipv6.sh": "48636afa070fe222ecb78fd0883a22af12004e03589e68893ff31ba4487e4423",
+        "modules/entry.sh": "f9050108e11484a237aba9bc5b451e378c5f28c9f88ef9501688e12058a69dd3",
+        "modules/hy2.sh": "a7714f1ae6e80de0c6e551e8a2b9b6d6614ba68202eb7a5d0d9c11369283f376",
+        "modules/network.sh": "db2c659a86239207364ac775d53b338fab557871a70f68936a758851b50484f8",
+        "modules/reinstall-provenance.sh": "aaab2fda7bfb5f0094e26c0491eae74754a7beceb1a42cd9a3805431a4382121",
+        "modules/reinstall.sh": "0be3583907b9dfa2966106578c87f0a6a6977e550411aa59c663e057db645b9f",
+        "modules/system.sh": "b259fe63309a2ff1fdd56ed5185728081800080f92337fb4f7471cd7f01b9a7b",
+        "modules/tls-acme.sh": "8b00dc18242a86130660e32ee74a41216b4cab6ba9f17dacf821366e4cadba9f",
+        "modules/vmess.sh": "da9ba5aea62529a21f35e04d816ec6e07b93b3bb25b0ccea56d3b26fc06b7aa5",
+        "modules/webssh-containers.sh": "be92b787359383f361361d2bf168768cc06407242fbe62cfb7dc3ba720f1217d",
+        "modules/webssh.sh": "6143e1d7d9a8e7aa0894d0bfcaf36cf2a16a017088a4e57fde3b6a720ec905bf",
+        "scripts/build-worker.py": "3109dcb181ad101c208ea18c3be36fa07e1fafb51bb555690a38db3e10d0cc6e",
+        "scripts/build.sh": "c92d6c9aaf97cae5fbf6d1f46a2fa329faee09c8ec7067a03ae1ad2b034a350f",
+        "scripts/deploy-cloudflare.py": "dd5036cd87a690bde8348e115a1992e211950e764d0bf2bc07e7381fe2c28fd4",
+        "scripts/release.sh": "0a939d3a369cd4d9f921b09dea68855c39a509c0670b3410ab2241488db0dde8",
+        "scripts/test.sh": "f86e3a7e74ae80551f0cc542f75c2a2bf4f6a7966a50a71e6cfb4ffd5a429b22",
+        "tests/alpine-swap-dispatch-test.sh": "ca589adffd7eadb9c86fff81280c15c9a0d8f1b55680d2373aba7c3fb77da316",
+        "tests/alpine-swap-test.sh": "4e1da32413fe2b84231a1315521e494a3b86d167527d11e7e913ada979205ad3",
+        "tests/apps-test.sh": "207c9d65a6f8c622e3b7dfcddbdaa950dd4a11316aef503db1d01b0b77382627",
+        "tests/b2-real.sh": "887a3a9f90378969559117dd09f2d35b3cc6325612255c91900e96210e8bad99",
+        "tests/build-test.sh": "8ae6db9ba03d5236ecdb3e0b6044a66189fa987915ef73c8ee8d6fe7c6ff5d33",
+        "tests/certificate-fixture.py": "28e13dada1ecad750e2868ca835896ebb9c0b2a602e85f85b0007847f78ab85f",
+        "tests/certificate-recovery-test.py": "89bac8a183ee112ebdf876df2747e4b5c437e75edeb76b45e8a11a020b92abbc",
+        "tests/deploy-cloudflare-test.py": "504a0fda22f28305d6ddb583854d9d25fcc66cf07f8409175375bf935eb0b2c7",
+        "tests/diagnostics-test.sh": "a043d37b832bd87d92de15700051dfd4ef585d5f87abc920f4d352ba8e37a5ed",
+        "tests/docker-ipv6-integration.py": "ebe3eecc3d7949077b29b8931bd5a8ae73ab708c99dbd73cd069f8a4683b77d1",
+        "tests/docker-ipv6-test.sh": "b233ee9491a6f17eb79a75aa36f17f70f6c893c0f1d370fc53bfce319a3260bb",
+        "tests/docker-origin-test.py": "5ddbd38af5cdd7aa7a3382878e3c30ac05da49a03c839c0d9e302ffd4693bc9d",
+        "tests/entry-feedback-test.py": "91794c594ea0d03938c1fc11d947931b30fe89b1627c7e04701452621763dac8",
+        "tests/entry-test.sh": "277b2379a8ecd63063917ce24adee86b2447b2a17c5c15ddf7c52d44281564c9",
+        "tests/hy2-test.sh": "41971eda0c8a5b99b56b6ec690b6aec63142b68250d06f4cd821a787314597d2",
+        "tests/menu-test.py": "f5050c36824a564168d6d0cbb61b4b06d05ca405863ed5491982f20df8c0cc77",
+        "tests/network-alpine-feedback-test.sh": "0b7c035d21415b0133b118a638464f5813677247838fdca190c4cd62816b6195",
+        "tests/network-alpine-test.sh": "2f6cd9d75ade2fb84bfcb612b4a19e070c7a3e7746903e0423334b3dbe7f93e0",
+        "tests/network-test.sh": "5b1c693a13cd67b64a0dd3dacfd23081be8c16cec827dc92aa81e62341802f4a",
+        "tests/regression-runner-test.py": "e9cd0cd30caa8517b43ee61d815d1af39881cab0ce0d7bbad1fd9afd03de0ea3",
+        "tests/regression-runner.py": "938b1fe6a7ef33f9df9408ee1be5da68f077078f8676658629b79390b774f163",
+        "tests/reinstall-native-readback.py": "040ab7e66bcf6ab3bb693f7c1e14c7d84c8ef419b5b1b9aa9ee81d0372a21db0",
+        "tests/reinstall-native.sh": "5c13ef0534e5e687eb668eba6de43f964a279e8e862ea146ec1583ae6529c435",
+        "tests/reinstall-test.sh": "03a681e9db36cf9d856b550c3397f0ebb307aa3057a007cd09e57ff658b3dd0e",
+        "tests/remaining-dispatch-test.sh": "f8f77c75946f8ec7cb9a5513c43f3621187068211c2e4e0a5fed130632ea6477",
+        "tests/scratch-root.sh": "83a8ed75b9a4af3434321be76964ea920ea622f040dfe15d105bebe511c97ace",
+        "tests/system-alpine-feedback-test.sh": "9993d3f7b47d7e9d64eafce12a56b27cb6732819212c39a8e6ea4aa1e8fb1705",
+        "tests/system-review-test.sh": "3edf4a7fd9011c99d4667023342b13908cad8a55e311476144abb85eda9e3385",
+        "tests/system-test.sh": "31eb250453d114033cbdad29738c1f669b8185fbd6db483a139072e0c808d741",
+        "tests/tls-acme-integration.sh": "a8ecd807a265a2f156b14e03bc9a78701fd2d5d57bb494fb52b1056920a4de95",
+        "tests/tls-acme-native.sh": "927e4a3db1bb6b730c3c39836c6ae20b674b6947c6017179e9b59fa15e203ecf",
+        "tests/tls-acme-test.sh": "c48a39a8ecba5b595c74b1528be510833b043df72664f701e2f845fcee38182f",
+        "tests/vmess-dispatch-test.sh": "38d50b4010f008989a291a1b23f8d200a1b0735875b0c6d5d970ee8bfc2eb412",
+        "tests/vmess-management-test.sh": "9342afaede2e6b789e054275d26a0d30474c48b2843c53a3be4c4d3f8603b395",
+        "tests/vmess-native-probe.py": "3dd9907c04d41bcfd9aa41d30b08730d4d99a2471dcf1a048a3bae488ffd330e",
+        "tests/vmess-native.sh": "70b63b31c0d5b6e389de83ecf1a7e8ade9af762e06127b7a74e7a7d094831abb",
+        "tests/vmess-protocol-test.py": "f555b0f4dfd39930bcc1b20c030b699380a8a5ae4ed94dc7803394b0bf1eea0c",
+        "tests/vmess-test.sh": "43574df8362364e768ca1e7dfbeb3a68c95ce12d4381211d55b8d38e4159c9a7",
+        "tests/webssh-containers-mock.py": "1b474dbad2405b55e933a05c8d385b11845d4a4bb1f92c7ebe828ff83bcb6eb4",
+        "tests/webssh-containers-real.py": "29af592c7635acec25e59a8554fe2add7c8bd07eb1c3b431f67fe023f26a264c",
+        "tests/webssh-containers-test.sh": "f1a847bb3efafb979f6ea85f7bf94b48d72e122edee2aa078d7e83b81231088e",
+        "tests/webssh-native.py": "5365541a06dc360d1f266f46197bb8c77b4492560fbf2ac80d1332053e51759b",
+        "tests/webssh-test.sh": "32350364250ecfdaf7bbc793062935a70eaf994ef7e0b03028c1f5901aeaf859",
+        "tests/worker-test.mjs": "66f5c6bdfae08f86619d823cbda84d95d2a4a27f73c7fc61ca5b8bb84d9a0073",
+        "toolbox.sh": "0cde014145b8c08109b231390c0e0597f6d983ac6fd75417b62552f53a09e2ab",
+        "web/index.html": "b48dadad5a1fbac8d007efeaf615a3a08468a3b0b47383a898a8c1c99b93b8f4",
+        "web/router.mjs": "5e85f8a064d135407308c5ec6df774ebc0002996b9b37959424d5da0a5aed2b9"
+      },
+      "selected_results": [
+        {
+          "test": "syntax",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 0.4,
+          "timeout": false,
+          "origin_run": "final-regression-v8-affected",
+          "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "test": "alpine-swap-dispatch-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 0.12,
+          "timeout": false,
+          "origin_run": "final-regression-v3",
+          "log_sha256": "1c3b20839e6801b5bc86bd664cac6e15315d2f45c4237d6668a5cd6b35a668e9"
+        },
+        {
+          "test": "alpine-swap-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 664.03,
+          "timeout": false,
+          "origin_run": "final-regression-v3",
+          "log_sha256": "2ba22cee3da6ec57edd9d21ce278cc392be864a9b55ce71bcf6d5a373039eea2"
+        },
+        {
+          "test": "apps-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 2.64,
+          "timeout": false,
+          "origin_run": "final-regression-v3",
+          "log_sha256": "83b4f11891c3ef6aba0dad31e34f7b609c5994644bee93c7d84ef1ea3495df25"
+        },
+        {
+          "test": "build-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 5.24,
+          "timeout": false,
+          "origin_run": "final-regression-v8-affected",
+          "log_sha256": "2670777e706ec8fd4b4bc018b076dd9f470e370347fd47218b14eb69ed33bed9"
+        },
+        {
+          "test": "diagnostics-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 0.07,
+          "timeout": false,
+          "origin_run": "final-regression-v3",
+          "log_sha256": "960ed00ace35815557d89e474de33a377f98b00eee80536c6d8e97fdc3e1a390"
+        },
+        {
+          "test": "docker-ipv6-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 501.33,
+          "timeout": false,
+          "origin_run": "final-regression-v3",
+          "log_sha256": "b46b0c6886abd3886528904f8c4c41936755f1e1508edae37d2a7beae7123f37"
+        },
+        {
+          "test": "entry-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 0.86,
+          "timeout": false,
+          "origin_run": "final-regression-v8-affected",
+          "log_sha256": "ee7da1e74a1a5d6094646e0654e5e426d1c268df9fa395d1e3f5183af4606248"
+        },
+        {
+          "test": "hy2-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 28.75,
+          "timeout": false,
+          "origin_run": "final-regression-v8-affected",
+          "log_sha256": "8339226cfd616e6d45a43688cc8d533ffa3a05ab311f32d2679253484bbea1a7"
+        },
+        {
+          "test": "network-alpine-feedback-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 7.88,
+          "timeout": false,
+          "origin_run": "final-regression-v3",
+          "log_sha256": "3cbd00f1cfd288ac1bccd691539dd19f6269cd2557f576dfa82db397c720cf29"
+        },
+        {
+          "test": "network-alpine-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 21.85,
+          "timeout": false,
+          "origin_run": "final-regression-v3",
+          "log_sha256": "bc9297de60e93f2973b5b1ba98e90c66156ee0f5aa6f8c35cf5ed59cb360f61e"
+        },
+        {
+          "test": "network-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 37.62,
+          "timeout": false,
+          "origin_run": "final-regression-v8-affected",
+          "log_sha256": "06c701660ab9c9e9a28dd9c34e81fcabe4a65fdc1b9acae36d0d6d3f46a2fd19"
+        },
+        {
+          "test": "reinstall-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 254.98,
+          "timeout": false,
+          "origin_run": "final-regression-v3",
+          "log_sha256": "b9ac0fc2510fd04cb1c2e606eba7adb38c813fc1cfe65d4cbeea3515f972fc9b"
+        },
+        {
+          "test": "remaining-dispatch-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 0.27,
+          "timeout": false,
+          "origin_run": "final-regression-v8-affected",
+          "log_sha256": "4124526d6b8f999c3cdcddf470a2c0132173648446c8d6f63ac07f2be83e76a8"
+        },
+        {
+          "test": "system-alpine-feedback-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 2.16,
+          "timeout": false,
+          "origin_run": "final-regression-v3",
+          "log_sha256": "93381468cdfc11b0b0cc16de2b7bab32fed419bc0a22f6379b38c36b68184e9f"
+        },
+        {
+          "test": "system-review-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 2.0,
+          "timeout": false,
+          "origin_run": "final-regression-v3",
+          "log_sha256": "58927e25b30b697fccf9377d00174f28b4e63d5c550db98e54341f64b60c6e83"
+        },
+        {
+          "test": "system-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 42.34,
+          "timeout": false,
+          "origin_run": "final-regression-v3",
+          "log_sha256": "12f6498b4caafccc7f0e2f22c7f06d7b281b4f94520ee12b9e0c8d52318f0faf"
+        },
+        {
+          "test": "tls-acme-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 1276.75,
+          "timeout": false,
+          "origin_run": "final-regression-v3",
+          "log_sha256": "5aac120ba7fb15a6e9da8d4ec9df8b7bbf8f1ef56f4de59554743bea6074f751"
+        },
+        {
+          "test": "vmess-dispatch-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 0.07,
+          "timeout": false,
+          "origin_run": "final-regression-v3",
+          "log_sha256": "36fca576475e072f6497592e8103a8125f041314bd8cb3f77e6a82333e84eff3"
+        },
+        {
+          "test": "vmess-management-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 948.93,
+          "timeout": false,
+          "origin_run": "final-regression-v8-affected",
+          "log_sha256": "11d30d2eeede7099a13b30e8b9659019b5d3b6810aba62040edd558ec7087b5e"
+        },
+        {
+          "test": "vmess-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 357.1,
+          "timeout": false,
+          "origin_run": "final-regression-v3",
+          "log_sha256": "08b1c3e28d78427d2e1ca00e2765880b756f3f14d584fc2f7d72e92476e5c4e9"
+        },
+        {
+          "test": "webssh-containers-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 1687.51,
+          "timeout": false,
+          "origin_run": "final-regression-v8-affected",
+          "log_sha256": "e298386ad534fb2fa5b515cede113dd1dfc75fa0e6cc53b18ffeaefa561d7573"
+        },
+        {
+          "test": "webssh-test.sh",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 1367.8,
+          "timeout": false,
+          "origin_run": "final-regression-v8-affected",
+          "log_sha256": "2a1c7724d3829c9656f19acb2a9dc7996500fb1903181091c6d782e70a267809"
+        },
+        {
+          "test": "regression-runner-test.py",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 11.12,
+          "timeout": false,
+          "origin_run": "final-regression-v8-affected",
+          "log_sha256": "2ad2f86f887ff1917fb63cf1a9c37ea946d7262648c0e44c09f3c89002b13ce0"
+        },
+        {
+          "test": "menu-test.py",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 11.3,
+          "timeout": false,
+          "origin_run": "final-regression-v8-affected",
+          "log_sha256": "b5015f741ecaf12585fd9902b89793c85be6a45cb73b0d523b076495e4748e1a"
+        },
+        {
+          "test": "entry-feedback-test.py",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 0.55,
+          "timeout": false,
+          "origin_run": "final-regression-v8-affected",
+          "log_sha256": "d2dca31b83878d8cf7b81cb305a3a950779be23c5a3a12f5eb23edf76e2c2581"
+        },
+        {
+          "test": "docker-origin-test.py",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 4.2,
+          "timeout": false,
+          "origin_run": "final-regression-v3",
+          "log_sha256": "56bb18fb0fc6823bc6a5cca19310457c47352d185458bdbf9157a576b07a213c"
+        },
+        {
+          "test": "deploy-cloudflare-test.py",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 12.5,
+          "timeout": false,
+          "origin_run": "final-regression-v8-affected",
+          "log_sha256": "456f43e9cf0b9daf4ec6b695231257e1df4454f2c7f43a9b7f8ebd504b54cfaf"
+        },
+        {
+          "test": "certificate-recovery-test.py",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 4.41,
+          "timeout": false,
+          "origin_run": "final-regression-v3",
+          "log_sha256": "b72a1bb048c89ebc99beac07124af5a68b8e0576f713bdd53bff49b7467415ee"
+        },
+        {
+          "test": "worker-test.mjs",
+          "status": "passed",
+          "exit_code": 0,
+          "elapsed_seconds": 0.7,
+          "timeout": false,
+          "origin_run": "final-regression-v8-affected",
+          "log_sha256": "bed35222057c73d183d76b2c42da83f030e344e27f0137b6594ffd9f972caa44"
+        }
+      ],
+      "scope": "Complete v3 frozen run plus intermediate diagnostics and fourteen final v8 affected suites; original failures and timeouts retained. Sixteen unchanged transitive dependency paths justify reused results."
+    },
+    "historical_followup_resolution": {
+      "hy2-test.sh": "Corrected strict validator passed final v8; original v3 failure and reason retained.",
+      "vmess-management-test.sh": "Corrected full suite passed final v8; original v3 failure, v6 timeout and their reasons retained."
+    },
+    "historical_run_results": {
+      "v3": {
+        "directory": "final-regression-v3",
+        "summary_sha256": "a0dbebc1aab5bd210cd95ef6311efd820b9b8f409aa3889cbc84493e0da6998f",
+        "results": [
+          {
+            "test": "syntax",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 0.37,
+            "timeout": false,
+            "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          {
+            "test": "alpine-swap-dispatch-test.sh",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 0.12,
+            "timeout": false,
+            "log_sha256": "1c3b20839e6801b5bc86bd664cac6e15315d2f45c4237d6668a5cd6b35a668e9"
+          },
+          {
+            "test": "alpine-swap-test.sh",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 664.03,
+            "timeout": false,
+            "log_sha256": "2ba22cee3da6ec57edd9d21ce278cc392be864a9b55ce71bcf6d5a373039eea2"
+          },
+          {
+            "test": "apps-test.sh",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 2.64,
+            "timeout": false,
+            "log_sha256": "83b4f11891c3ef6aba0dad31e34f7b609c5994644bee93c7d84ef1ea3495df25"
+          },
+          {
+            "test": "build-test.sh",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 5.1,
+            "timeout": false,
+            "log_sha256": "e7a02d83ecf468d4fd3f09c97937b51fdc8cda53a43b350bfa48af32016567d4"
+          },
+          {
+            "test": "diagnostics-test.sh",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 0.07,
+            "timeout": false,
+            "log_sha256": "960ed00ace35815557d89e474de33a377f98b00eee80536c6d8e97fdc3e1a390"
+          },
+          {
+            "test": "docker-ipv6-test.sh",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 501.33,
+            "timeout": false,
+            "log_sha256": "b46b0c6886abd3886528904f8c4c41936755f1e1508edae37d2a7beae7123f37"
+          },
+          {
+            "test": "entry-test.sh",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 0.81,
+            "timeout": false,
+            "log_sha256": "ee7da1e74a1a5d6094646e0654e5e426d1c268df9fa395d1e3f5183af4606248"
+          },
+          {
+            "test": "hy2-test.sh",
+            "status": "failed",
+            "exit_code": 1,
+            "elapsed_seconds": 17.35,
+            "timeout": false,
+            "log_sha256": "d1d95c52abddd30065ff86c7200b3d2ead753b539e1eefe103957684eb050c00"
+          },
+          {
+            "test": "network-alpine-feedback-test.sh",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 7.88,
+            "timeout": false,
+            "log_sha256": "3cbd00f1cfd288ac1bccd691539dd19f6269cd2557f576dfa82db397c720cf29"
+          },
+          {
+            "test": "network-alpine-test.sh",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 21.85,
+            "timeout": false,
+            "log_sha256": "bc9297de60e93f2973b5b1ba98e90c66156ee0f5aa6f8c35cf5ed59cb360f61e"
+          },
+          {
+            "test": "network-test.sh",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 37.36,
+            "timeout": false,
+            "log_sha256": "06c701660ab9c9e9a28dd9c34e81fcabe4a65fdc1b9acae36d0d6d3f46a2fd19"
+          },
+          {
+            "test": "reinstall-test.sh",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 254.98,
+            "timeout": false,
+            "log_sha256": "b9ac0fc2510fd04cb1c2e606eba7adb38c813fc1cfe65d4cbeea3515f972fc9b"
+          },
+          {
+            "test": "remaining-dispatch-test.sh",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 0.29,
+            "timeout": false,
+            "log_sha256": "4124526d6b8f999c3cdcddf470a2c0132173648446c8d6f63ac07f2be83e76a8"
+          },
+          {
+            "test": "system-alpine-feedback-test.sh",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 2.16,
+            "timeout": false,
+            "log_sha256": "93381468cdfc11b0b0cc16de2b7bab32fed419bc0a22f6379b38c36b68184e9f"
+          },
+          {
+            "test": "system-review-test.sh",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 2.0,
+            "timeout": false,
+            "log_sha256": "58927e25b30b697fccf9377d00174f28b4e63d5c550db98e54341f64b60c6e83"
+          },
+          {
+            "test": "system-test.sh",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 42.34,
+            "timeout": false,
+            "log_sha256": "12f6498b4caafccc7f0e2f22c7f06d7b281b4f94520ee12b9e0c8d52318f0faf"
+          },
+          {
+            "test": "tls-acme-test.sh",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 1276.75,
+            "timeout": false,
+            "log_sha256": "5aac120ba7fb15a6e9da8d4ec9df8b7bbf8f1ef56f4de59554743bea6074f751"
+          },
+          {
+            "test": "vmess-dispatch-test.sh",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 0.07,
+            "timeout": false,
+            "log_sha256": "36fca576475e072f6497592e8103a8125f041314bd8cb3f77e6a82333e84eff3"
+          },
+          {
+            "test": "vmess-management-test.sh",
+            "status": "failed",
+            "exit_code": 1,
+            "elapsed_seconds": 685.02,
+            "timeout": false,
+            "log_sha256": "c1210cdd42678ccb8dfa79c90f31670c948d2416d0eeb6fc7a0449d9167f2c4d"
+          },
+          {
+            "test": "vmess-test.sh",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 357.1,
+            "timeout": false,
+            "log_sha256": "08b1c3e28d78427d2e1ca00e2765880b756f3f14d584fc2f7d72e92476e5c4e9"
+          },
+          {
+            "test": "webssh-containers-test.sh",
+            "status": "failed",
+            "exit_code": -15,
+            "elapsed_seconds": 1200.42,
+            "timeout": true,
+            "log_sha256": "d744661cc06111e9ae45965032f5d6390ef9db959743e7da3be32fbf6fe33c79"
+          },
+          {
+            "test": "webssh-test.sh",
+            "status": "failed",
+            "exit_code": -15,
+            "elapsed_seconds": 600.49,
+            "timeout": true,
+            "log_sha256": "0582dcb8904a0b4c1a43b628064d58a062bc0c14aebd8c00557d6bbcffbe9376"
+          },
+          {
+            "test": "regression-runner-test.py",
+            "status": "failed",
+            "exit_code": 1,
+            "elapsed_seconds": 20.8,
+            "timeout": false,
+            "log_sha256": "0e4fa355f0d19c7f0aac89523466bf3235adc43eeea153d0156b0a5241ca2f1a"
+          },
+          {
+            "test": "menu-test.py",
+            "status": "failed",
+            "exit_code": 1,
+            "elapsed_seconds": 19.19,
+            "timeout": false,
+            "log_sha256": "4443d1d9532cacea498199e1a44d5700eab44b12ad01d833069253ee7bdd43de"
+          },
+          {
+            "test": "entry-feedback-test.py",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 1.11,
+            "timeout": false,
+            "log_sha256": "d2dca31b83878d8cf7b81cb305a3a950779be23c5a3a12f5eb23edf76e2c2581"
+          },
+          {
+            "test": "docker-origin-test.py",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 4.2,
+            "timeout": false,
+            "log_sha256": "56bb18fb0fc6823bc6a5cca19310457c47352d185458bdbf9157a576b07a213c"
+          },
+          {
+            "test": "deploy-cloudflare-test.py",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 9.65,
+            "timeout": false,
+            "log_sha256": "ae914dd452e66cc87cfcde3b067b6b25ca3aae147a72ef848f04fd88d29ec31c"
+          },
+          {
+            "test": "certificate-recovery-test.py",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 4.41,
+            "timeout": false,
+            "log_sha256": "b72a1bb048c89ebc99beac07124af5a68b8e0576f713bdd53bff49b7467415ee"
+          },
+          {
+            "test": "worker-test.mjs",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 0.38,
+            "timeout": false,
+            "log_sha256": "cada8a8db0c5e18e49faf5fb557924c07adc2ce5e37b04e8160834ecd7775519"
+          }
+        ]
+      },
+      "v4": {
+        "directory": "final-regression-v4-affected",
+        "summary_sha256": "c871cda3bbb59311aa3431944ef6c8680f9ed1e8f50b5653368267ccde4d46a6",
+        "results": [
+          {
+            "test": "syntax",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 0.92,
+            "timeout": false,
+            "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          {
+            "test": "build-test.sh",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 11.67,
+            "timeout": false,
+            "log_sha256": "e9700e9ec2a4d7db8fcfe59e2d13891467a1357f4dc08684007beec8fa08b509"
+          },
+          {
+            "test": "entry-test.sh",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 1.8,
+            "timeout": false,
+            "log_sha256": "ee7da1e74a1a5d6094646e0654e5e426d1c268df9fa395d1e3f5183af4606248"
+          },
+          {
+            "test": "hy2-test.sh",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 57.92,
+            "timeout": false,
+            "log_sha256": "8339226cfd616e6d45a43688cc8d533ffa3a05ab311f32d2679253484bbea1a7"
+          },
+          {
+            "test": "network-test.sh",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 82.41,
+            "timeout": false,
+            "log_sha256": "06c701660ab9c9e9a28dd9c34e81fcabe4a65fdc1b9acae36d0d6d3f46a2fd19"
+          },
+          {
+            "test": "remaining-dispatch-test.sh",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 0.59,
+            "timeout": false,
+            "log_sha256": "4124526d6b8f999c3cdcddf470a2c0132173648446c8d6f63ac07f2be83e76a8"
+          },
+          {
+            "test": "menu-test.py",
+            "status": "failed",
+            "exit_code": 1,
+            "elapsed_seconds": 19.48,
+            "timeout": false,
+            "log_sha256": "204ae3a3cfa7ed3558157c035964636c9dbc873e049c5486b0de66e2a3bc93af"
+          },
+          {
+            "test": "entry-feedback-test.py",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 1.22,
+            "timeout": false,
+            "log_sha256": "d2dca31b83878d8cf7b81cb305a3a950779be23c5a3a12f5eb23edf76e2c2581"
+          },
+          {
+            "test": "deploy-cloudflare-test.py",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 25.58,
+            "timeout": false,
+            "log_sha256": "b538dbcafdcaf53865d7848367b4298c98d4e29366079d185e7867a209c970fb"
+          },
+          {
+            "test": "worker-test.mjs",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 1.72,
+            "timeout": false,
+            "log_sha256": "3d0fede09e0eba7f195947352efeb74e215206e617c2e40ce3fbe7e6c793fbf5"
+          }
+        ]
+      },
+      "v5": {
+        "directory": "final-regression-v5-menu",
+        "summary_sha256": "e5d5420ee462412efd028120a732e188bfb0a35024f58d06af1f5ceb555f7e44",
+        "results": [
+          {
+            "test": "remaining-dispatch-test.sh",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 0.63,
+            "timeout": false,
+            "log_sha256": "4124526d6b8f999c3cdcddf470a2c0132173648446c8d6f63ac07f2be83e76a8"
+          },
+          {
+            "test": "menu-test.py",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 22.29,
+            "timeout": false,
+            "log_sha256": "b5015f741ecaf12585fd9902b89793c85be6a45cb73b0d523b076495e4748e1a"
+          }
+        ]
+      },
+      "v6": {
+        "directory": "final-regression-v6-vmess",
+        "summary_sha256": "e4b6b8a5ae256b13eaa54900266de4c0042d83edcf9ec839edbb860c17449fb4",
+        "results": [
+          {
+            "test": "vmess-management-test.sh",
+            "status": "failed",
+            "exit_code": -15,
+            "elapsed_seconds": 1802.89,
+            "timeout": true,
+            "log_sha256": "0931ebd6bb2ea103f7620be19f50ae06d1c31b158edef88f1b445bf9b4caf03c"
+          },
+          {
+            "test": "regression-runner-test.py",
+            "status": "failed",
+            "exit_code": 1,
+            "elapsed_seconds": 19.89,
+            "timeout": false,
+            "log_sha256": "0e4015ccc5128f41cf3776394257c4d63c243a648f8e4bf5095d1f5f726ce14e"
+          }
+        ]
+      }
+    }
+  },
+  "release": {
+    "status": "not-deployed",
+    "known_production_script_sha256": "cdac369c7d03e118a5317071b3db90cf7bae3bb81a343115ef08d5a19355a542",
+    "decision": "User deferred hosting and deployment decision until fixes and acceptance are complete; current recommendation is Cloudflare Workers.",
+    "candidate_script_sha256": "eb7fdfa9c6ad729efe3206e67d0b73142f5fb39f280b86e06e910ae1b1c83e9a",
+    "candidate_script_bytes": 663084,
+    "candidate_build_evidence": "final-build-v3/verification.json",
+    "offline_validation": {
+      "status": "passed",
+      "environment": "Debian11/private Python3.11.16/Bash5",
+      "test_methods": 28,
+      "unittest_elapsed_seconds": 11.157,
+      "runner_elapsed_seconds": 12.5,
+      "skips": 0,
+      "includes_real_source_release_build": true,
+      "production_api_called": false,
+      "source_sha256": {
+        "scripts/deploy-cloudflare.py": "dd5036cd87a690bde8348e115a1992e211950e764d0bf2bc07e7381fe2c28fd4",
+        "tests/deploy-cloudflare-test.py": "504a0fda22f28305d6ddb583854d9d25fcc66cf07f8409175375bf935eb0b2c7",
+        "scripts/build-worker.py": "3109dcb181ad101c208ea18c3be36fa07e1fafb51bb555690a38db3e10d0cc6e",
+        "scripts/release.sh": "0a939d3a369cd4d9f921b09dea68855c39a509c0670b3410ab2241488db0dde8",
+        "scripts/build.sh": "c92d6c9aaf97cae5fbf6d1f46a2fa329faee09c8ec7067a03ae1ad2b034a350f"
+      },
+      "evidence": "final-regression-v8-affected/deploy-cloudflare-test.py.log",
+      "log_sha256": "456f43e9cf0b9daf4ec6b695231257e1df4454f2c7f43a9b7f8ebd504b54cfaf"
+    },
+    "worker_validation": {
+      "status": "passed",
+      "routing_cases": 13,
+      "script_sha256": "eb7fdfa9c6ad729efe3206e67d0b73142f5fb39f280b86e06e910ae1b1c83e9a",
+      "evidence": "final-regression-v8-affected/worker-test.mjs.log",
+      "log_sha256": "bed35222057c73d183d76b2c42da83f030e344e27f0137b6594ffd9f972caa44"
+    },
+    "previous_candidate_script_sha256": "a106722b0a914f52a07d194cd8f120570a9602347940bf836f6df01ef5ca326a"
+  },
+  "runner_supervision": {
+    "status": "passed",
+    "environment": "Debian11/privatePython3.11.16/Linux pidfd and subreaper",
+    "test_methods": 10,
+    "elapsed_seconds": 11.68,
+    "runner_sha256": "938b1fe6a7ef33f9df9408ee1be5da68f077078f8676658629b79390b774f163",
+    "test_sha256": "e9cd0cd30caa8517b43ee61d815d1af39881cab0ce0d7bbad1fd9afd03de0ea3",
+    "summary_sha256": "61850c5579f53c4d42f0eeee053a0bc7b952da1beb20dc417d93a53102ee2e54",
+    "scope": "Ready handshake permits deliberately delayed double-fork fixture startup before the unchanged0.5s supervision timeout; native process cleanup and unrelated-process checks retained. Final14 suite rerun also includes this test.",
+    "final_v8_elapsed_seconds": 11.12,
+    "final_v8_summary_sha256": "c6f008f0ce86e0a8450ae00a887317aa5708fd2089e46079211de702baeda1af"
+  },
+  "vmess_protocol": {
+    "status": "passed",
+    "cases": 8,
+    "elapsed_seconds": 19.598,
+    "evidence_summary_sha256": "f2a73e35ec68ea0904ec83b4a2041bf3bafdc39c77a82ef27548c39e8e96e223",
+    "harness_sha256": "f555b0f4dfd39930bcc1b20c030b699380a8a5ae4ed94dc7803394b0bf1eea0c",
+    "binary_sha256": "e783b9d2b46ed1ab3617c59b04dfbce38c999322d018c6e060f18d88bf6158aa",
+    "scope": "real loopback authentication/nonces/rejections and default private-target block; no service installation or public reachability claim",
+    "cleanup_complete": true
+  },
+  "hy2_openssl_compatibility": {
+    "status": "passed",
+    "environment": "Debian11/OpenSSL1.1.1w",
+    "module_sha256": "a7714f1ae6e80de0c6e551e8a2b9b6d6614ba68202eb7a5d0d9c11369283f376",
+    "test_sha256": "41971eda0c8a5b99b56b6ec690b6aec63142b68250d06f4cd821a787314597d2",
+    "evidence_summary_sha256": "f9ef1d95a1f4c266fc56c28e089367bc197a86b22e8b0f9d615742115e0f65b5",
+    "elapsed_seconds": 58.799,
+    "cleanup_complete": true,
+    "scope": "Full isolated HY2 suite and real loopback fullchain/CA/SNI; old standalone path failed, corrected standalone/shared paths pass and reject missing intermediate or wrong CA; no installation or public service claim."
+  },
+  "source_commit": "f880a583adc75a0241fbbea9cc54e6b7d358b4ec",
+  "pull_request": "https://github.com/TerrySiu98/terry-toolbox/pull/1"
+}
