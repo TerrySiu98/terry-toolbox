@@ -322,9 +322,9 @@ PY
 pass 'new prepare after cancelled preserves sealed history without deleting files'
 setup; prep || fail prepare; toolbox_reinstall cancel > "$fixture/cancel" 2>&1 || fail cancel
 printf '# changed after cancel\n' >> "$fixture/root/boot/grub/grub.cfg"
-before=$(sha256sum "$fixture/calls"); reject prep
+before=$(sha256sum "$fixture/calls"); reject toolbox_reinstall status; reject prep
 [[ $before == "$(sha256sum "$fixture/calls")" ]] || fail 'changed cancelled baseline ran upstream'
-pass 'changed cancelled boot baseline refuses recycling'
+pass 'changed cancelled boot baseline rejects status/reboot evidence and recycling'
 setup; prep || fail prepare; printf '# boot tamper\n' >> "$fixture/root/boot/grub/custom.cfg"
 before=$(sha256sum "$fixture/calls"); reject toolbox_reinstall cancel
 [[ $before == "$(sha256sum "$fixture/calls")" ]] || fail 'tamper called reset'; pass 'boot identity tamper rejects cancel'

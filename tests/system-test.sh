@@ -531,8 +531,8 @@ printf 'YES\nYES\n/dev/vda\n' | toolbox_system MAIN_REBOOT >/dev/null
 [ "$(<"$log")" = reboot ]
 : > "$log"
 toolbox_reinstall() { printf 'blocking: unknown plan\n'; return 1; }
-printf 'YES\nYES\nREBOOT\n' | toolbox_system MAIN_REBOOT >/dev/null
-[ "$(<"$log")" = reboot ]
+printf 'YES\nYES\nREBOOT\n' | toolbox_system MAIN_REBOOT >/dev/null 2>&1 && exit 1
+[ ! -s "$log" ]
 : > "$log"
 unset -f toolbox_reinstall
 printf 'YES\nYES\n' | toolbox_system B8 >/dev/null

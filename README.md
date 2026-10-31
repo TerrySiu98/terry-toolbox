@@ -119,7 +119,7 @@ curl -fsSL sh.uw.cx | sha256sum
 | `M1` | BBR | 开发中：调整当前运行期拥塞控制，重启后可能失效 |
 | `M2` | 基础依赖 | 开发中：按缺失命令补包并回读；Alpine 3.24 真实 APK 隔离验证通过，其他系统待当前版本实测 |
 | `M3` | 重装系统 | 已实现 preflight/prepare/status/cancel；选择 Debian 13、Ubuntu 24.04 或 Alpine 3.24，提供 SSH 公钥并确认整盘目标；prepare 不自动重启；三目标均已通过 x86_64/KVM/BIOS 实际擦盘重装、公钥登录和持久根分区验收，UEFI/arm64 尚未实测 |
-| `M4` | 重启服务器 | 开发中：确认后重启本机 |
+| `M4` | 重启服务器 | 开发中：双确认后重启；M3 失败／中断／未知状态拒绝，prepared 另需目标磁盘确认，取消后的引导状态及确认期间状态变化会再次回读 |
 | `B1` | Docker | 开发中：Debian/Ubuntu 使用固定 GPG 主密钥指纹、私有官方索引下载再安装本地包；拒绝全局已有 Docker 包索引及已有安装/冲突包/数据，普通依赖仍用系统源；Alpine 使用系统签名仓库及 docker-openrc，拒绝接管已有安装，启动后回读稳定版 Engine ≥28；失败保留私有日志与现场，不自动卸载，原生包可能启用 Docker 自启；IPv6 apply/status/restore 已在 Debian 13.7/KVM 通过双容器 ULA 通信、整机重启与恢复原先无 daemon.json 的状态 |
 | `B2` | NodeQuality | 开发中：固定 SHA-256 后执行综合质量测试，真实运行已验证 |
 | `B4` | 哪吒面板 | 开发中：容器部署入口，真实运行待验证 |

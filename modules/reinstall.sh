@@ -398,6 +398,10 @@ elif op in ('status','verify'):
             host_init=m.get('host_init','openrc' if m['target'].startswith('alpine') else 'systemd')
             if args[3]!=host_init:fail('cancel PID1 init 与 prepared host 不一致: '+args[3])
     elif op=='verify':fail('非可验证 prepared 状态: '+m['phase']+'；'+m.get('detail',''))
+    elif m['phase']=='cancelled':
+        # A previous successful reset is not proof that boot files stayed safe.
+        cancelled_check(m)
+        if args[1]!=m['before_efi']:fail('cancelled plan 后 EFI 状态变化；拒绝普通重启')
     print('M3 phase='+m['phase']+' target='+m['target']+' disk='+m['disk']['name']+' commit='+m['commit'])
     if m.get('detail'):print(m['detail'])
 elif op=='restore':

@@ -4272,23 +4272,38 @@ _toolbox_system_password() {
     passwd root
 }
 _toolbox_system_reboot() {
-    local info rc=0 disk answer
+    local info current first rc=0 phase disk answer
     _toolbox_system_root || return
     _toolbox_system_confirm '将立即重启本机，中断所有服务和连接。' || return
-    # A pending M3 plan is consumed by the next boot: never reboot it blind.
+    # A failed/interrupted prepare can already have armed destructive boot state.
+    # Only a verified prepared/cancelled plan or the exact no-plan status is safe
+    # to interpret; unknown status is never a generic REBOOT override.
     if declare -F toolbox_reinstall >/dev/null 2>&1; then
         info=$(toolbox_reinstall status 2>&1) || rc=$?
         if (( rc != 0 )); then
             printf '%s\n' "$info" >&2
-            printf 'M3 plan 状态未知；逐字输入 REBOOT 才能继续：' >&2
-            IFS= read -r answer && [[ $answer == REBOOT ]] || { printf '已取消。\n' >&2; return 1; }
-        elif [[ $info == *'phase=prepared'* ]]; then
-            printf '检测到已 prepared 的 M3 plan：\n%s\n' "$info"
-            disk=${info#*disk=}; disk=${disk%% *}
-            [[ -n $disk ]] || { _toolbox_system_error 'M3 status 未给出磁盘；拒绝盲目重启。'; return 1; }
-            printf '重启即会进入重装，目标磁盘 %s。逐字输入该磁盘路径确认：' "$disk"
-            IFS= read -r answer && [[ $answer == "$disk" ]] || { printf '已取消。\n' >&2; return 1; }
+            _toolbox_system_error 'M3 plan 状态未知，可能残留重装引导；拒绝重启，请人工核对引导与救援入口。'
+            return 1
         fi
+        first=${info%%$'\n'*}
+        if [[ $first == '没有本工具 owned plan；只读，未调用上游。' || $first == '没有本工具 owned plan；未调用上游。' ]]; then
+            [[ $info == "$first" ]] || { _toolbox_system_error 'M3 无计划状态包含额外未知信息；拒绝重启。'; return 1; }
+        elif [[ $first =~ ^M3\ phase=(prepared|cancelled)\ target=(debian\ 13|ubuntu\ 24\.04|alpine\ 3\.24)\ disk=(/dev/[[:alnum:]_./-]+)\ commit=([[:xdigit:]]+)$ ]]; then
+            phase=${BASH_REMATCH[1]}; disk=${BASH_REMATCH[3]}
+            if [[ $phase == prepared ]]; then
+                printf '检测到已 prepared 的 M3 plan：\n%s\n' "$info"
+                printf '重启即会进入重装，目标磁盘 %s。逐字输入该磁盘路径确认：' "$disk"
+                IFS= read -r answer && [[ $answer == "$disk" ]] || { printf '已取消。\n' >&2; return 1; }
+            fi
+        else
+            printf '%s\n' "$info" >&2
+            _toolbox_system_error 'M3 plan 未完成或状态不可信，可能残留重装引导；拒绝重启，请人工检查，不自动 reset。'
+            return 1
+        fi
+        # Confirmations can take time. Re-read the exact state immediately before
+        # reboot; a newly prepared, changed or failed plan needs a new decision.
+        current=$(toolbox_reinstall status 2>&1) || { printf '%s\n' "$current" >&2; return 1; }
+        [[ $current == "$info" ]] || { _toolbox_system_error 'M3 plan 在确认期间变化；拒绝重启，请重新检查。'; return 1; }
     fi
     reboot
 }
@@ -12131,6 +12146,10 @@ elif op in ('status','verify'):
             host_init=m.get('host_init','openrc' if m['target'].startswith('alpine') else 'systemd')
             if args[3]!=host_init:fail('cancel PID1 init 与 prepared host 不一致: '+args[3])
     elif op=='verify':fail('非可验证 prepared 状态: '+m['phase']+'；'+m.get('detail',''))
+    elif m['phase']=='cancelled':
+        # A previous successful reset is not proof that boot files stayed safe.
+        cancelled_check(m)
+        if args[1]!=m['before_efi']:fail('cancelled plan 后 EFI 状态变化；拒绝普通重启')
     print('M3 phase='+m['phase']+' target='+m['target']+' disk='+m['disk']['name']+' commit='+m['commit'])
     if m.get('detail'):print(m['detail'])
 elif op=='restore':
