@@ -3146,12 +3146,13 @@ toolbox_network_dns() {
 # ================================================================ 入口
 
 toolbox_network() {
-    if (( $# < 1 || $# > 6 )); then
+    if (( $# < 1 || $# > 7 )) || { (( $# == 7 )) && [[ ${1:-} != A5 || ${2:-} != *-ws ]]; }; then
         printf '用法: toolbox_network <A1|A2|A3|A4|A5|B12|B23|B31>\n' >&2
         printf '     toolbox_network A1  [install <证书> <私钥> <主机名> [端口] | uninstall | status]\n' >&2
         printf '     toolbox_network A2  [install [端口] [回落目标] | uninstall | status]\n' >&2
         printf '     toolbox_network A3  [install|uninstall|status] [证书] [私钥] [主机名] [端口]\n' >&2
         printf '     toolbox_network A5  [install <回落目标> <SNI主机名> [端口] | uninstall | status]\n' >&2
+        printf '     toolbox_network A5  [install-ws <证书> <私钥> <主机名> [端口] [WS路径] | uninstall-ws | status-ws]\n' >&2
         printf '     toolbox_network B12 [install|uninstall|status]\n' >&2
         printf '     toolbox_network B23 [install <DNS...> | restore | status]\n' >&2
         printf '     toolbox_network B31 [install|uninstall|status] <tcp|udp> <本地端口> [目标主机] [目标端口]\n' >&2
@@ -3221,7 +3222,10 @@ toolbox_network() {
                 install) ( set -e; _net_a5_install "$@" ) ;;
                 uninstall) ( set -e; _net_a5_uninstall ) ;;
                 status) net_a5_status ;;
-                *) net_die '用法: toolbox_network A5 [install <回落目标> <SNI主机名> [端口] | uninstall | status]' ;;
+                install-ws|uninstall-ws|status-ws|enable-boot-ws|disable-boot-ws|boot-status-ws|update-cert-ws)
+                    declare -F toolbox_vmess >/dev/null || { net_die 'VMess 模块未加载；未修改系统。'; return 1; }
+                    toolbox_vmess "${action%-ws}" "$@" ;;
+                *) net_die '用法: toolbox_network A5 [install <回落目标> <SNI主机名> [端口] | uninstall | status | install-ws <证书> <私钥> <主机名> [端口] [WS路径] | uninstall-ws | status-ws]' ;;
             esac
             return $?
             ;;

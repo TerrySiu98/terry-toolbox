@@ -45,7 +45,7 @@ show_help() {
 load_modules() {
   [[ ${TOOLBOX_MODULES_LOADED:-0} == 1 ]] && return 0
   local f
-  for f in apps network system diagnostics hy2 webssh; do
+  for f in apps network system diagnostics hy2 webssh vmess alpine-swap docker-ipv6 webssh-containers tls-acme reinstall-provenance reinstall; do
     if [[ ! -r "$TOOLBOX_DIR/modules/$f.sh" ]]; then
       printf '错误：缺少模块 %s/modules/%s.sh。请下载完整项目。\n' "$TOOLBOX_DIR" "$f" >&2
       return 1
@@ -63,28 +63,58 @@ run_action() {
     B3|B4|B5|B9|B13|B17|B20|B21|B22|B24|B25|B26|B27|B28|B29|B30) toolbox_app "${key#B}" ;;
     MAIN_BBR|MAIN_DEPS|MAIN_REINSTALL|MAIN_REBOOT|B1|B2|B6|B7|B8|B11|B14|B15|B16|B19) toolbox_system "$key" ;;
     B10) toolbox_webssh ;;
+    TLS) _toolbox_tls_acme status ;;
     B18) printf 'B18：预留，暂未实现。\n' ; return 1 ;;
     *) printf '无效选项：%s\n' "$key" ; return 1 ;;
   esac
 }
 _tb_managed_key() {
-  case "$1" in A[1-5]|B10|B12|B16|B19|B23|B31) return 0;; *) return 1;; esac
+  case "$1" in A[1-5]|B1|B10|B12|B16|B19|B23|B31|MAIN_REINSTALL|TLS) return 0;; *) return 1;; esac
+}
+_toolbox_webssh_container() {
+  declare -F toolbox_webssh_container >/dev/null || { printf 'WebSSH 容器模块未加载。\n' >&2; return 1; }
+  toolbox_webssh_container "$@"
+}
+_toolbox_tls_acme() {
+  declare -F toolbox_tls_acme >/dev/null || { printf 'TLS ACME 模块未加载。\n' >&2; return 1; }
+  toolbox_tls_acme "$@"
 }
 _tb_service_screen() {
   local title
   case "$1" in
     A1) title='A1 Alpine Hysteria 2';; A2) title='A2 Alpine Xray';;
     A3) title='A3 TUIC';; A4) title='A4 Hysteria 2';; A5) title='A5 Xray';;
-    B10) title='B10 WebSSH';; B12) title='B12 TCP Brutal';;
+    B1) title='B1 Docker';; B10) title='B10 WebSSH';; B12) title='B12 TCP Brutal';;
+    MAIN_REINSTALL) title='M3 系统重装';; TLS) title='TLS 证书管理';;
     B16) title='B16 网络优化';; B19) title='B19 Alpine 工具';;
     B23) title='B23 DNS 切换';; B31) title='B31 Relay 转发';;
   esac
   _tb_head "$title"
   case "$1" in
+    A5)
+      _tb_row '📦 1. 安装 REALITY'; _tb_row '🗑️  2. 卸载 REALITY'; _tb_row '🩺 3. REALITY 状态'
+      _tb_row '📦 4. 安装 VMess + WS'; _tb_row '🗑️  5. 卸载 VMess + WS'; _tb_row '🩺 6. VMess + WS 状态'
+      _tb_row '🔄 7. VMess 开机自启'; _tb_row '⏸️  8. 关闭 VMess 自启'; _tb_row '🩺 9. VMess 自启状态'
+      _tb_row '🔐 10. 更新 VMess 证书';;
+    B1)
+      _tb_row '📦 1. 安装 Docker'; _tb_row '🌐 2. 配置 Docker IPv6'
+      _tb_row '🩺 3. IPv6 状态'; _tb_row '↩️  4. 回滚 IPv6 配置';;
+    B10)
+      _tb_row '📦 1. 安装 WebSSH'; _tb_row '🗑️  2. 卸载 WebSSH'; _tb_row '🩺 3. WebSSH 状态'
+      _tb_row '📦 4. 安装个人版'; _tb_row '🗑️  5. 卸载个人版'; _tb_row '🩺 6. 个人版状态'
+      _tb_row '📦 7. 安装 Easynode'; _tb_row '🗑️  8. 卸载 Easynode'; _tb_row '🩺 9. Easynode 状态';;
+    MAIN_REINSTALL)
+      _tb_row '🩺 1. 重装预检'; _tb_row '💽 2. 准备重装（毁损风险）'
+      _tb_row '🩺 3. 重装计划状态'; _tb_row '↩️  4. 取消本工具重装计划'
+      _tb_row '⚠️  不自动重启，不用于业务机试验';;
+    TLS)
+      _tb_row '🔐 1. 申请证书'; _tb_row '🩺 2. 证书状态'; _tb_row '🔄 3. 手动续期'
+      _tb_row '⏰ 4. 启用自动续期'; _tb_row '⏸️  5. 关闭自动续期'; _tb_row '📤 6. 同步至 VMess';;
     B16) _tb_row '🚀 1. 应用优化参数'; _tb_row '↩️  2. 回滚到应用前';;
     B19)
       _tb_row '🖥️  1. Webtop 桌面容器'; _tb_row '🔀 2. UDP 端口跳跃'
-      _tb_row '↩️  3. 移除端口跳跃'; _tb_row '💾 4. swap（暂未启用）';;
+      _tb_row '↩️  3. 移除端口跳跃'; _tb_row '💾 4. 安装 swap'
+      _tb_row '🗑️  5. 卸载 swap'; _tb_row '🩺 6. swap 状态';;
     B23)
       _tb_row '🌐 1. Cloudflare DNS'; _tb_row '🌐 2. Google DNS'; _tb_row '🌐 3. Quad9 DNS'
       _tb_row '🌐 4. 阿里 DNS'; _tb_row '🌐 5. 腾讯 DNS'; _tb_row '✍️  6. 自定义 DNS'
@@ -96,7 +126,10 @@ _tb_service_screen() {
 }
 _tb_service_choice_valid() {
   case "$1" in
-    B16) [[ $2 =~ ^[12]$ ]];; B19) [[ $2 =~ ^[1-4]$ ]];;
+    A5) [[ $2 =~ ^([1-9]|10)$ ]];;
+    B1|MAIN_REINSTALL) [[ $2 =~ ^[1-4]$ ]];; B10) [[ $2 =~ ^[1-9]$ ]];;
+    TLS) [[ $2 =~ ^[1-6]$ ]];;
+    B16) [[ $2 =~ ^[12]$ ]];; B19) [[ $2 =~ ^[1-6]$ ]];;
     B23) [[ $2 =~ ^[1-8]$ ]];; *) [[ $2 =~ ^[1-3]$ ]];;
   esac
 }
@@ -104,6 +137,45 @@ run_service_action() {
   local key=$1 choice=$2 action
   local input servers=()
   case "$key" in
+    A5)
+      case "$choice" in
+        1) action=install;; 2) action=uninstall;; 3) action=status;;
+        4) action=install-ws;; 5) action=uninstall-ws;; 6) action=status-ws;;
+        7) action=enable-boot-ws;; 8) action=disable-boot-ws;; 9) action=boot-status-ws;;
+        10)
+          local cert keyfile
+          printf '新证书完整链路径（PEM）：'
+          IFS= read -r cert || { printf '输入结束，已取消。\n' >&2; return 1; }
+          printf '新私钥路径（无口令 PEM）：'
+          IFS= read -r keyfile || { printf '输入结束，已取消。\n' >&2; return 1; }
+          [[ -n $cert && -n $keyfile ]] || { printf '路径不能为空，已取消。\n' >&2; return 1; }
+          toolbox_network A5 update-cert-ws "$cert" "$keyfile"; return $?;;
+      esac
+      toolbox_network A5 "$action" ;;
+    B1)
+      case "$choice" in
+        1) _toolbox_system_docker;;
+        2) _toolbox_system_docker_ipv6 apply;;
+        3) _toolbox_system_docker_ipv6 status;;
+        4) _toolbox_system_docker_ipv6 restore;;
+      esac ;;
+    B10)
+      case "$choice" in
+        1) toolbox_webssh install;; 2) toolbox_webssh uninstall;; 3) toolbox_webssh status;;
+        4) _toolbox_webssh_container personal install;; 5) _toolbox_webssh_container personal uninstall;; 6) _toolbox_webssh_container personal status;;
+        7) _toolbox_webssh_container easynode install;; 8) _toolbox_webssh_container easynode uninstall;; 9) _toolbox_webssh_container easynode status;;
+      esac ;;
+    MAIN_REINSTALL)
+      case "$choice" in
+        1) _toolbox_system_reinstall preflight;; 2) _toolbox_system_reinstall prepare;;
+        3) _toolbox_system_reinstall status;; 4) _toolbox_system_reinstall cancel;;
+      esac ;;
+    TLS)
+      case "$choice" in
+        1) action=issue;; 2) action=status;; 3) action=renew;;
+        4) action=enable-renewal;; 5) action=disable-renewal;; 6) action=deploy-vmess;;
+      esac
+      _toolbox_tls_acme "$action" ;;
     B16)
       case "$choice" in
         1) ( set -e; _toolbox_system_netopt_apply );;
@@ -114,7 +186,9 @@ run_service_action() {
         1) ( set -e; _toolbox_system_alpine_webtop );;
         2) ( set -e; _toolbox_system_alpine_hop_apply );;
         3) ( set -e; _toolbox_system_alpine_hop_remove );;
-        4) ( set -e; _toolbox_system_alpine_swap );;
+        4) _toolbox_system_alpine_swap install;;
+        5) _toolbox_system_alpine_swap uninstall;;
+        6) _toolbox_system_alpine_swap status;;
       esac ;;
     B23)
       case "$choice" in
@@ -178,7 +252,7 @@ menu() {
       key=B$choice
     fi
     case "$key" in
-      DIAG|MAIN_BBR|MAIN_DEPS|MAIN_REINSTALL|MAIN_REBOOT|A[1-5]|B[1-9]|B[12][0-9]|B3[01]) ;;
+      DIAG|TLS|MAIN_BBR|MAIN_DEPS|MAIN_REINSTALL|MAIN_REBOOT|A[1-5]|B[1-9]|B[12][0-9]|B3[01]) ;;
       *) notice='无效的选择，请按菜单编号输入。'; continue;;
     esac
     if _tb_managed_key "$key"; then

@@ -25,6 +25,17 @@ out=$(printf 'B18\n0\n' | HOME="$tmp" bash "$artifact" 2>&1)
 # A5 已启用，但此环境缺依赖会先退出，没有固定文案；只要求菜单不中断。
 out=$(printf 'A5\n0\n' | HOME="$tmp" bash "$artifact" 2>&1)
 [[ $out == *'A5 Xray'* && $out == *'返回上一层'* ]] || fail 'network management dispatch'
+[[ $out == *'4. 安装 VMess + WS'* && $out == *'6. VMess + WS 状态'* ]] || fail 'VMess management missing from bundle'
+# Source the bundle with --help: modules define functions without executing installation.
+bash -c 'source "$1" --help >/dev/null; declare -F toolbox_vmess >/dev/null' _ "$artifact" || fail 'VMess module not bundled'
+bash -c 'source "$1" --help >/dev/null; declare -F toolbox_alpine_swap >/dev/null' _ "$artifact" || fail 'Alpine swap module not bundled'
+# Every newly supported management action must survive standalone bundling.
+for function in toolbox_docker_ipv6 toolbox_webssh_container toolbox_tls_acme toolbox_reinstall; do
+  bash -c 'source "$1" --help >/dev/null; declare -F "$2" >/dev/null' _ "$artifact" "$function" || fail "$function module not bundled"
+done
+out=$(printf 'B19\n0\n0\n' | HOME="$tmp" bash "$artifact" 2>&1)
+[[ $out == *'4. 安装 swap'* && $out == *'5. 卸载 swap'* && $out == *'6. swap 状态'* ]] || fail 'Alpine swap management missing from bundle'
+bash -c 'source "$1" --help >/dev/null; toolbox_alpine_swap() { printf "BUNDLED:%s\\n" "$*"; }; [[ $(run_service_action B19 6) == BUNDLED:status ]]' _ "$artifact" || fail 'bundled Alpine status dispatch'
 out=$(printf 'B2\nNO\n0\n' | HOME="$tmp" bash "$artifact" 2>&1)
 [[ $out == *'NodeQuality：官方综合测试'* ]] || fail 'system dispatch'
 # App dispatch needs a Docker stub: B28 prints its image and note, then the trailing "0"

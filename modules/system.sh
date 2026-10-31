@@ -473,8 +473,24 @@ _toolbox_system_password() {
     passwd root
 }
 _toolbox_system_reboot() {
+    local info rc=0 disk answer
     _toolbox_system_root || return
     _toolbox_system_confirm '将立即重启本机，中断所有服务和连接。' || return
+    # A pending M3 plan is consumed by the next boot: never reboot it blind.
+    if declare -F toolbox_reinstall >/dev/null 2>&1; then
+        info=$(toolbox_reinstall status 2>&1) || rc=$?
+        if (( rc != 0 )); then
+            printf '%s\n' "$info" >&2
+            printf 'M3 plan 状态未知；逐字输入 REBOOT 才能继续：' >&2
+            IFS= read -r answer && [[ $answer == REBOOT ]] || { printf '已取消。\n' >&2; return 1; }
+        elif [[ $info == *'phase=prepared'* ]]; then
+            printf '检测到已 prepared 的 M3 plan：\n%s\n' "$info"
+            disk=${info#*disk=}; disk=${disk%% *}
+            [[ -n $disk ]] || { _toolbox_system_error 'M3 status 未给出磁盘；拒绝盲目重启。'; return 1; }
+            printf '重启即会进入重装，目标磁盘 %s。逐字输入该磁盘路径确认：' "$disk"
+            IFS= read -r answer && [[ $answer == "$disk" ]] || { printf '已取消。\n' >&2; return 1; }
+        fi
+    fi
     reboot
 }
 # ---------------------------------------------------------------- B2 NodeQuality
@@ -1527,20 +1543,24 @@ _toolbox_system_alpine_hop_remove() {
 }
 
 _toolbox_system_alpine_swap() {
-    _toolbox_system_error 'Alpine swap 暂未启用：OpenRC 下没有等价的事务与回滚方案，尚未验证；未改动。'
-    _toolbox_system_error 'Alpine 可先用 apk add zram-init 或 setup-swap 手工处理；Debian/Ubuntu 请用 B6。'
-    return 1
+    declare -F toolbox_alpine_swap >/dev/null || {
+        _toolbox_system_error 'Alpine swap 模块未加载；请使用完整工具箱。未改动。'
+        return 1
+    }
+    toolbox_alpine_swap "$@"
 }
 
 _toolbox_system_alpine() {
     local choice
-    printf 'B19 Alpine 专用工具\n 1 Webtop 桌面容器\n 2 端口跳跃（HY2 等 UDP 服务）\n 3 移除端口跳跃\n 4 swap（暂未启用）\n 0 返回\n请输入编号: ' >&2
+    printf 'B19 Alpine 专用工具\n 1 Webtop 桌面容器\n 2 端口跳跃（HY2 等 UDP 服务）\n 3 移除端口跳跃\n 4 安装 swap\n 5 卸载 swap\n 6 swap 状态\n 0 返回\n请输入编号: ' >&2
     IFS= read -r choice || return 1
     case $choice in
         1) _toolbox_system_alpine_webtop;;
         2) _toolbox_system_alpine_hop_apply;;
         3) _toolbox_system_alpine_hop_remove;;
-        4) _toolbox_system_alpine_swap;;
+        4) _toolbox_system_alpine_swap install;;
+        5) _toolbox_system_alpine_swap uninstall;;
+        6) _toolbox_system_alpine_swap status;;
         0) printf '未修改。\n';;
         *) _toolbox_system_error "无效选项：$choice"; return 2;;
     esac
@@ -1967,13 +1987,21 @@ _toolbox_system_swap() {
     printf '查看：swapon --show；systemctl status %s；free -h\n' "$_TOOLBOX_SWAP_UNIT"
     printf '注意：fstab 未改，持久化只依赖 systemd 单元；请勿再手工给同一路径加 fstab 条目。\n'
 }
+_toolbox_system_docker_ipv6() {
+    declare -F toolbox_docker_ipv6 >/dev/null || { printf 'Docker IPv6 模块未加载。\n' >&2; return 1; }
+    toolbox_docker_ipv6 "$@"
+}
+_toolbox_system_reinstall() {
+    declare -F toolbox_reinstall >/dev/null || { printf '系统重装模块未加载。\n' >&2; return 1; }
+    toolbox_reinstall "$@"
+}
 # MAIN_* distinguish primary menu actions from B* toolbox actions.
 # B<number> and bare <number> both select toolbox-menu entries.
 toolbox_system() {
     case "${1-}" in
         MAIN_BBR) _toolbox_system_bbr;;
         MAIN_DEPS) _toolbox_system_deps;;
-        MAIN_REINSTALL) _toolbox_system_unimplemented '系统重装（缺少安全可验证的恢复方案）';;
+        MAIN_REINSTALL) _toolbox_system_reinstall "${2:-preflight}" "${@:3}";;
         MAIN_REBOOT) _toolbox_system_reboot;;
         B1|1) _toolbox_system_docker;;
         B2|2) _toolbox_system_nodequality;;

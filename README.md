@@ -14,6 +14,8 @@
 
 > **开发预览，尚非稳定版。** 源码与单文件脚本已公开。下方功能表同时列出已实测、待真机验收及计划项目，不能视为全部完成；首次使用请选测试机。
 
+> **开发交接中：** 当前未发布工作位于 `handoff/hermes` 分支，正在由 Claude Code 继续完善。部署方式、环境变量、进度边界、已知问题和非 Git 资产见 [HANDOFF.md](HANDOFF.md)。`main` 与线上 `sh.uw.cx` 仍是旧版本，不包含本分支新增功能。
+
 ## 简介
 
 Terry Toolbox 是一个面向 Linux 服务器的中文菜单工具箱。登录服务器后运行脚本，输入编号就能进入相应功能。
@@ -27,7 +29,9 @@ Terry Toolbox 是一个面向 Linux 服务器的中文菜单工具箱。登录�
 - **Alpine Docker 隔离验证**：已修复只安装包不启动服务、日志文件名不兼容 BusyBox 的问题。全新 Alpine 3.24 用户态通过完整 B1 双确认菜单、真实签名 APK 安装、OpenRC 启动、Engine 29.9.2 / docker info 回读及服务归属核对，停止后确认不可连接，未配置自启。首次验证因 fixture 缺失 cgroup2 失败；仅补只读 cgroup2 挂载后通过。OpenRC 启动状态仍是 fixture，cgroup controller 有只读/支持警告；没有运行容器、验证应用或整机重启。
 - **历史实测记录**：部分 Docker 应用、Hysteria 2 全流程、WebSSH 认证拦截与卸载；不能据此声称当前全部功能已通过真实验收。
 - **已开发、待当前版本真机验收**：BBR、依赖、Docker、改密码、重启、路由追踪、Debian/Ubuntu swap、Xray、DNS、TCP Brutal、Relay、Alpine HY2/Xray、1Panel、流量告警、Telegram 通知、网络优化、WebSSH 和各 Docker 应用。
-- **计划或未启用**：系统重装（M3）、Docker IPv6、WebSSH 个人版/Easynode、Xray VMess + WS、Alpine swap。
+- **本地新增，尚未发布**：A5 的 VMess + WebSocket + TLS 安装、状态与卸载。当前源码的 51 项语法/回归/静态检查全部通过，包含固定 Xray 26.10.29 的 8 个真实回环协议场景；独立规格及回滚安全复核通过，单文件开发包构建及启动/菜单检查通过。安装生命周期仍为模拟测试，真实 systemd 安装及公网访问待验收。当前一键入口仍是上次发布版本，不包含本项。
+- **本地开发中，尚未发布**：B19 Alpine swap 已接入安装、卸载和状态；模拟测试通过，真实 Alpine/OpenRC 兼容与重启验证进行中，暂不作已验收声明。
+- **计划或未启用**：系统重装（M3）、Docker IPv6、WebSSH 个人版/Easynode。
 - **预留**：B18。
 
 ## 使用方法
@@ -83,6 +87,29 @@ curl -fsSL sh.uw.cx | sha256sum
 
 网络服务、WebSSH、TCP Brutal、网络优化、Alpine 工具、DNS 与 Relay 通过功能管理页选择动作，不会选中编号就直接安装。TLS 服务安装会询问已有证书、私钥路径及证书域名；当前不自动申请或生成证书。输入结束或取消不会视为安装成功。
 
+### A5：VMess + WebSocket + TLS（本地开发版）
+
+**尚未发布到 `sh.uw.cx`。** 本地源码运行 `bash toolbox.sh` 后输入 `A5`：`1/2/3` 仍是 REALITY，`4` 安装 VMess + WS，`5` 卸载，`6` 查看状态。两种协议使用独立服务和目录，但默认都用 TCP 443，不能占用同一端口。
+
+- 仅支持 **Debian + systemd、amd64/arm64**；arm64 有固定官方校验值，尚未实际运行验收。需先备好可信的完整 PEM 证书链、无口令 PEM 私钥和证书覆盖的域名；证书路径不接受空白或特殊字符。缺依赖直接提示，不自动补装。
+- 新建 `/etc/terry-toolbox-vmess`、`/usr/local/bin/terry-toolbox-vmess`、`terry-toolbox-vmess.service`，固定 Xray 26.10.29；两次输入 `YES` 后才安装。默认 IPv4 `0.0.0.0:443`，可选端口与 WS 路径。不改 REALITY、DNS、防火墙或 ACME，也不设开机自启。
+- 随机 UUID 不回显。Xray 客户端配置保存在 `client.json`，导入链接保存在 `vmess.txt`，均为 `0600`；请通过自己的安全渠道取用。客户端本地 SOCKS 为 `127.0.0.1:1080`。
+- 状态会核对资源清单、systemd、指定 TCP 端口及实际可执行文件、证书和 WS 握手；安装自检**不是认证数据面或公网可达证明**。测试脚本另外验证正确/错误认证、路径/Host/信任拒绝、进程重启及默认私网阻断。
+- 不覆盖既有资源。停止失败、pending job、未知状态或内容/inode 改动时保留文件并报错；不要手工改配置或换证书后期待自动卸载仍接管。续期和开机启动尚无自动管理入口；需要更新时先按完整性状态处理，不删除归属清单强行重装。
+- **旧客户端兼容功能，不建议新部署优先选用。** 固定版上游已将 VMess（无前向保密）和 WS（特征明显）标为弃用。VMess 依赖准确系统时间；客户端与服务端需正常校时。保留 Xray 默认的私网目的地址阻断，不为测试放开内网。
+
+### B19：Alpine swap（本地开发版）
+
+**尚未发布到 `sh.uw.cx`。** 本地源码运行 `bash toolbox.sh` 后输入 `B19`：`1/2/3` 保留 Webtop 与 UDP 端口跳跃，`4` 安装 swap，`5` 卸载，`6` 只读查看状态。
+
+- 仅支持 **Alpine + 已启动的 OpenRC + 可写持久 ext4**。拒绝 overlay、tmpfs、btrfs、NFS 等文件系统；输入 `128..8192` MiB 十进制整数，建议 `1024`，空白取消。完整分配文件，预留额外 16 MiB 可用空间。输入的是文件大小，内核实际可用容量会扣除头部及物理 extent 页对齐损耗。
+- 必须已有 `bash`、`python3`、`cat`、`flock`、`dd`、`mkswap`、`swapon`、`swapoff`、`rc-service`、`openrc-run`；缺命令会具名报错，**不自动安装软件包**。状态检查同样需要这些依赖。
+- 两次输入 `YES` 后新建 `/var/lib/terry-toolbox-alpine-swap`（`0700`），内含 swapfile（`0600`）、JSON manifest、runtime.py 和运行锁；创建 `/etc/init.d/terry-toolbox-alpine-swap`，真实启用并验证内核记录后添加 `default` 自启链接。**不改 `/etc/fstab`、sysctl、B6 或其他 swap。**
+- 只接管本次创建的资源。状态、启动和停止均校验文件/目录归属、脚本内容及 swap 的 UUID/固定头部；不会把可被内核写入的数据页固定为全文件哈希。未知文件、被换 inode、配置被改、同名服务/自启或 `conf.d` 冲突都拒绝。
+- 安装失败仅在安全门禁允许时回滚；卸载必须停止成功、OpenRC 明确 `stopped` 且内核不再使用目标文件。停止失败、内存不足、未知/过渡状态或归属变化会**保留现场并报错**，不会强删。退役标记防止卸载期间重新启动；`/run/terry-toolbox-alpine-swap.lock` 故意保留，避免删锁导致并发分裂。
+- **验证边界：** 同一冻结候选已在独立 Alpine 3.24.2 x86_64 / KVM（kernel 6.18.52）通过菜单安装、32 MiB 实际换页与读回、服务重启、整机重启后自启、未知文件保留和菜单卸载；`fstab`、sysctl、原 swap 表及宿主 swap 保持不变。首部保持不变，数据页实际变化。arm64、其他内核/文件系统、长期负载及真实停止失败后的恢复尚未验收。最终 swap 模拟套件 **127 项通过**；整仓 **56 项检查**经一条旧禁用断言修正复测后全部通过（功能源码未变），单文件 **9 项 smoke**通过，独立规格与安全复核均通过。
+- 不提供在线扩容、接管手工 swap 或自动修复。不要手工改清单后强制卸载。该功能与 VMess 一样仅存在于本地候选，线上入口仍是旧版本。
+
 ## 功能列表
 
 状态说明：**已实测**表示在隔离测试机完成过真实运行验收；**开发中**表示已有实现但未完成真实验收；**计划**表示还未实现或暂不启用；**预留**表示尚未安排功能。
@@ -108,7 +135,7 @@ curl -fsSL sh.uw.cx | sha256sum
 | `B14` | 三网回程 | 开发中：向预设目标执行路由追踪 |
 | `B15` | Telegram 流量通知 | 开发中：Token / Chat 隐藏输入，systemd timer 推送 |
 | `B16` | 网络优化 | 开发中：独立 sysctl drop-in、保存原值；新增可读参数需先回滚旧方案，回滚记录缺键则保留现场并拒绝 |
-| `B19` | Alpine 工具 | 开发中：Webtop、UDP 端口跳跃及移除；Alpine swap 暂未启用 |
+| `B19` | Alpine 工具 | 开发中：Webtop、UDP 端口跳跃及移除；本地新增 OpenRC swap 已通过 Alpine 3.24.2 x86_64/KVM 安装、真实换页、服务重启、整机自启及卸载验收，尚未发布 |
 
 ### 网络服务
 
@@ -118,7 +145,7 @@ curl -fsSL sh.uw.cx | sha256sum
 | `A2` | Alpine Xray | 开发中：Alpine + OpenRC 的 VLESS + REALITY；依赖检查失败立即退出，按指定端口和真实可执行文件核对归属；隔离安装、正反认证、服务重启和卸载通过，用户机器与公网待验收；回落流量不限 |
 | `A3` | TUIC | 开发中：固定官方 v1.0.0 静态二进制，自动验证启动与端口归属；认证需客户端实测 |
 | `A4` | Hysteria 2 | 开发中：有 Debian 安装、认证、数据面、重启、卸载的历史实测记录；当前交互与安全修复版本待真机复验 |
-| `A5` | Xray | 开发中：VLESS Reality，回落限流、并发锁、回滚和认证自检 |
+| `A5` | Xray | 开发中：VLESS Reality；本地新增 VMess + WS + TLS 独立安装/状态/卸载，尚未发布。真实协议通过，systemd 生命周期待验收；上游已弃用 VMess/WS，仅供兼容 |
 | `B12` | TCP Brutal | 开发中：DKMS 编译 kernel module、开机载入与默认拥塞控制；仅非容器 Debian |
 | `B23` | DNS 切换 | 开发中：仅 systemd-resolved，先查 resolv.conf 归属；验证失败回滚并列出泄漏面 |
 | `B31` | Relay 转发 | 开发中：socat 单单元转发（TCP/UDP），不依赖也不会改动 nginx |
@@ -167,6 +194,14 @@ python3 tests/entry-feedback-test.py # 启动 ss 检查、包映射与装后回�
 python3 tests/docker-origin-test.py # 真实离线 APT，索引与空包为明确标注的合成 fixture
 node tests/worker-test.mjs
 ```
+
+VMess 的真实协议验证单独运行（需自行准备已核验的 Xray 26.10.29 二进制；测试只创建短命回环进程和私有临时文件，不安装服务）：
+
+```bash
+python3 tests/vmess-protocol-test.py /absolute/path/to/xray
+```
+
+该测试调用模块生成服务端/客户端配置，再为隔离 nonce 目标临时放行**一个确切回环 TCP 端口**；最后使用未修改的服务端配置验证默认私网阻断。它不等于 systemd、真实 VPS、公网或整机重启验收。
 
 `tests/b2-real.sh` 是单独的真实 NodeQuality 运行，不属于默认回归。**不要在业务机器上把真实安装测试当作回归运行。**
 
