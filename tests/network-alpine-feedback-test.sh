@@ -20,13 +20,27 @@ cleanup() {
 }
 trap cleanup EXIT
 export TMPDIR=$work HOME=$work/home
-mkdir -p "$HOME" "$work/bin" "$work/initd" "$work/run" "$work/openrc" "$work/lock" "$work/etc"
+mkdir -p "$HOME" "$work/bin" "$work/guardbin" "$work/initd" "$work/run" "$work/openrc" "$work/lock" "$work/etc"
 printf 'ID=alpine\nVERSION_ID=3.24\n' > "$work/os-release"
 : > "$work/openrc/softlevel"
 export TOOLBOX_NET_OS_RELEASE=$work/os-release TOOLBOX_NET_OPENRC_RUN=$work/openrc
+export TOOLBOX_OS_RELEASE=$work/os-release NETWORK_FEEDBACK_FORBIDDEN=$work/forbidden
 export TOOLBOX_NET_UID=0 TOOLBOX_NET_BIN_DIR=$work/bin TOOLBOX_NET_INITD=$work/initd
 export TOOLBOX_NET_RUN=$work/run TOOLBOX_NET_LOCK_DIR=$work/lock
 export TOOLBOX_A1_ETC=$work/etc/hy2 TOOLBOX_A2_ETC=$work/etc/xray
+# PATH is the second package boundary: it survives child shells, function
+# unsets, and a lazy reload that replaces the dependency execution mock.
+for cmd in apk apt apt-get dnf yum; do
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n" "package:$0 $*" >> "$NETWORK_FEEDBACK_FORBIDDEN"\nexit 99\n' > "$work/guardbin/$cmd"
+    chmod +x "$work/guardbin/$cmd"
+done
+export PATH=$work/guardbin:$PATH
+source "$ROOT/modules/dependencies.sh" || exit 1
+_toolbox_deps_exec() { printf 'dependency-package:%s\n' "$*" >> "$NETWORK_FEEDBACK_FORBIDDEN"; return 99; }
+# These fixtures have the distribution CA package; no host metadata query.
+_toolbox_deps_ca_package() { return 0; }
+_toolbox_deps_root() { return 0; }
+export -f _toolbox_deps_exec _toolbox_deps_ca_package _toolbox_deps_root
 source "${NETWORK_TEST_MODULE:-$ROOT/modules/network.sh}" || exit 1
 # Never reach a real package manager, curl, OpenRC, or external network.
 rc-service() {
@@ -69,8 +83,7 @@ ss() {
     esac
     return 0
 }
-curl() { printf forbidden >> "$work/forbidden"; return 99; }
-apk() { printf forbidden >> "$work/forbidden"; return 99; }
+curl() { printf forbidden >> "$NETWORK_FEEDBACK_FORBIDDEN"; return 99; }
 net_check_cert() { :; }
 net_tls_trusted() { :; }
 net_alpine_fetch() { printf fetch >> "$work/fetch"; return 22; }
@@ -89,19 +102,20 @@ missing_gate() {
     }
     # Actual menu shape: action || handler, disabling nested errexit.
     if [[ $key == A1 ]]; then
-        toolbox_network "$key" install cert key a1.example.test 18443 <<< YES > "$work/missing.out" 2>&1 || rc=$?
+        toolbox_network "$key" install cert key a1.example.test 18443 <<< n > "$work/missing.out" 2>&1 || rc=$?
     else
-        toolbox_network "$key" install 18444 <<< YES > "$work/missing.out" 2>&1 || rc=$?
+        toolbox_network "$key" install 18444 <<< n > "$work/missing.out" 2>&1 || rc=$?
     fi
     [[ $rc != 0 ]] || { fail "$key missing $MISSING_CMD accepted"; return 1; }
     [[ ! -f $work/fetch && ! -f $work/rc.log && ! -f $work/update.log ]] || { fail "$key missing $MISSING_CMD crossed preflight"; return 1; }
     if builtin command grep -q '确认执行\|即将在\|开始写入' "$work/missing.out"; then fail "$key missing $MISSING_CMD prompted/wrote"; return 1; fi
-    builtin command grep -q "缺少必需命令：.*$MISSING_CMD" "$work/missing.out" || { builtin command cat "$work/missing.out"; fail "$key missing $MISSING_CMD inaccurate error"; }
+    builtin command grep -q "网络服务 缺少命令：.*$MISSING_CMD" "$work/missing.out" || { builtin command cat "$work/missing.out"; fail "$key missing $MISSING_CMD inaccurate error"; return 1; }
+    builtin command grep -q '已取消补装；未执行安装' "$work/missing.out" || { builtin command cat "$work/missing.out"; fail "$key missing $MISSING_CMD did not decline dependency installation"; }
 }
 for key in A1 A2; do
     for c in ss timeout readlink sed cut grep tr chmod cp mkdir rm rmdir cat stat sha256sum install mktemp flock openssl uname sleep date; do
         rm -f "$work/fetch" "$work/rc.log" "$work/update.log"
-        run "$key rejects missing $c before confirmation" missing_gate "$key" "$c"
+        run "$key declines missing $c before feature confirmation" missing_gate "$key" "$c"
     done
 done
 rm -f "$work/fetch" "$work/rc.log" "$work/update.log"
@@ -323,20 +337,23 @@ uninstall_missing_flock() {
     printf binary > "$(net_a2_bin)"
     command() { [[ ${1:-} != -v || ${2:-} != flock ]] || return 1; builtin command "$@"; }
     local rc=0
-    toolbox_network A2 uninstall <<< YES > "$work/out" 2>&1 || rc=$?
+    toolbox_network A2 uninstall <<< n > "$work/out" 2>&1 || rc=$?
     [[ $rc != 0 && -f $(net_a2_init) && -f $(net_a2_bin) && ! -f $work/rc.log ]] || { fail 'uninstall missing flock touched service/files'; return 1; }
+    builtin command grep -q '网络服务 缺少命令：.*flock' "$work/out" || { fail 'uninstall did not check its flock dependency'; return 1; }
+    builtin command grep -q '已取消补装；未执行安装' "$work/out" || { fail 'uninstall did not decline dependency installation'; return 1; }
 }
-run 'uninstall required tools fail before confirmation' uninstall_missing_flock
+run 'uninstall declines missing tools before feature confirmation' uninstall_missing_flock
 reset_install_fixture
 status_missing_ss() {
     printf 'command="%s"\n' "$(net_a2_bin)" > "$(net_a2_init)"
     command() { [[ ${1:-} != -v || ${2:-} != ss ]] || return 1; builtin command "$@"; }
     local rc=0
-    toolbox_network A2 status > "$work/out" 2>&1 || rc=$?
+    toolbox_network A2 status </dev/null > "$work/out" 2>&1 || rc=$?
     [[ $rc != 0 && ! -f $work/rc.log ]] || { fail 'status missing ss became unverifiable success'; return 1; }
-    builtin command grep -q '缺少必需命令：.*ss' "$work/out" || { fail 'status did not check its ss dependency'; return 1; }
+    builtin command grep -q '网络服务 缺少命令：.*ss' "$work/out" || { fail 'status did not check its ss dependency'; return 1; }
+    builtin command grep -q '未收到完整确认（EOF）；已取消补装' "$work/out" || { fail 'status did not decline dependency installation on EOF'; return 1; }
 }
 run 'status missing ss fails before OpenRC query' status_missing_ss
-[[ ! -f $work/forbidden ]] || { fail 'host/network boundary reached'; exit 1; }
+[[ ! -f $NETWORK_FEEDBACK_FORBIDDEN ]] || { fail 'host/network boundary reached'; exit 1; }
 if (( failures )); then printf '%s feedback regressions failed\n' "$failures" >&2; exit 1; fi
 printf 'network alpine feedback tests passed\n'

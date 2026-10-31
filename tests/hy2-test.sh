@@ -12,6 +12,12 @@ toolbox_test_scratch
 ROOT=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 work=$(mktemp -d "${TMPDIR:-/root/.cache/terry-toolbox-tests}/toolbox-hy2-test.XXXXXXXX")
 cleanup() {
+    local rc=$?
+    if [[ -s $work/package-boundary.log ]]; then
+        printf 'FAIL: unmocked package/service command\n' >&2
+        command cat "$work/package-boundary.log" >&2
+        rc=1
+    fi
     python3 -c '
 import os, signal, time
 marker = ("TOOLBOX_TEST_WORK=" + os.environ["TOOLBOX_TEST_WORK"]).encode()
@@ -32,6 +38,7 @@ for pid in pids:
         except ProcessLookupError: pass
 '
     rm -rf -- "${work:?}"
+    exit "$rc"
 }
 trap cleanup EXIT
 export HOME=$work/home TOOLBOX_TEST_WORK=$work
@@ -51,13 +58,27 @@ export TOOLBOX_HY2_LOCK=$work/lock
 export TOOLBOX_HY2_CLIENT_DIR=$work/verify
 export TOOLBOX_HY2_SYSTEMD_RUN=$work/systemd-run
 export TOOLBOX_HY2_OS_RELEASE=$work/os-release
+export TOOLBOX_OS_RELEASE=$work/os-release
 export TOOLBOX_HY2_BIN_SRC=$work/pkg/hysteria-linux-amd64
 export PATH=$work/fakebin:$PATH
 unset TOOLBOX_HY2_URL TOOLBOX_HY2_SHA256_ARM64
-for cmd in apk apt apt-get dnf yum sysctl systemctl rc-service rc-update modprobe rmmod dkms depmod; do
-    printf '#!/usr/bin/env bash\nprintf "%%s\\n" forbidden >> "$SD/forbidden.log"\nexit 99\n' > "$work/fakebin/$cmd"
+for cmd in sudo apk apt apt-get apt-cache aptitude dpkg dpkg-query dpkg-deb dnf yum rpm sysctl systemctl rc-service rc-update modprobe rmmod dkms depmod; do
+    {
+        printf '#!/bin/sh\n'
+        printf 'printf "%%s\\n" "$0 $*" >> %q\n' "$work/package-boundary.log"
+        printf 'exit 99\n'
+    } > "$work/fakebin/$cmd"
     chmod +x "$work/fakebin/$cmd"
 done
+for guard_env in inherited empty; do
+    if [[ $guard_env == empty ]]; then
+        env -i PATH="$PATH" bash --noprofile --norc -c 'apt-get --fixture-guard-probe' && exit 1 || [[ $? == 99 ]]
+    else
+        bash --noprofile --norc -c 'apt-get --fixture-guard-probe' && exit 1 || [[ $? == 99 ]]
+    fi
+done
+[[ $(wc -l < "$work/package-boundary.log") -eq 2 ]]
+: > "$work/package-boundary.log"
 
 printf 'ID=debian\nVERSION_ID="13"\n' > "$TOOLBOX_HY2_OS_RELEASE"
 printf 'ID=ubuntu\n' > "$work/os-ubuntu"
@@ -139,6 +160,9 @@ ss() {
 }
 sleep() { :; }
 
+source "$ROOT/modules/dependencies.sh"
+_toolbox_deps_exec() { printf 'dependency:%s\n' "$*" >> "$work/package-boundary.log"; return 99; }
+_toolbox_deps_ca_package() { return 0; }
 source "$ROOT/modules/hy2.sh"
 
 # ---- 断言工具
@@ -185,6 +209,72 @@ out=$(bash -ec "source '$ROOT/modules/hy2.sh'; declare -F toolbox_hy2 >/dev/null
 out=$(bash -euc 'source "$1"; source "$1"; declare -F toolbox_hy2 >/dev/null; printf ok' _ "$ROOT/modules/hy2.sh" 2>"$work/source-twice.err") \
     || fail '重复 source hy2.sh 失败'
 [[ $out == ok && ! -s $work/source-twice.err ]] || fail '重复 source hy2.sh 有输出或 readonly 报错'
+
+# Missing ordinary tools must be installed before CPU/certificate/ownership
+# probes. Only the dependency execution boundary is a successful package mock.
+(
+    export TOOLBOX_HY2_UID=0
+    hy2_dep_trace=$work/hy2-dependency.trace
+    _toolbox_deps_root() { return 0; }
+    command() {
+        if [[ ${1:-} == -v ]]; then
+            [[ ${2:-} != "${HY2_MISSING_CAPABILITY:-}" ]] || return 1
+            [[ " ${HY2_MISSING:-} " != *" ${2:-} "* || ${HY2_DEPS_READY:-0} == 1 ]] || return 1
+        fi
+        builtin command "$@"
+    }
+    _toolbox_deps_exec() {
+        printf 'package:%s\n' "$*" >> "$hy2_dep_trace"
+        [[ ${1:-} == apt-get ]] || return 99
+        case ${2:-} in update) return 0;; install) HY2_DEPS_READY=1;; *) return 99;; esac
+    }
+    hy2_arch() { printf 'arch\n' >> "$hy2_dep_trace"; return 71; }
+    for dependency in uname grep date cut tr readlink cp chmod mkdir rm rmdir dirname cat sleep; do
+        : > "$hy2_dep_trace"; HY2_MISSING=$dependency; HY2_DEPS_READY=0
+        toolbox_hy2 install cert key example.test 18443 <<< n > "$work/hy2-deps.out" 2>&1 && fail 'HY2 missing dependency accepted'
+        [[ $(<"$work/hy2-deps.out") == *"Hysteria 2 缺少命令：$dependency"* && ! -s $hy2_dep_trace ]] || fail "HY2 $dependency reached CPU/certificate probe"
+    done
+    : > "$hy2_dep_trace"; HY2_MISSING='uname grep'; HY2_DEPS_READY=0
+    toolbox_hy2 install cert key example.test 18443 <<< y > "$work/hy2-deps.out" 2>&1 && fail 'HY2 mocked arch stop ignored'
+    [[ $(<"$hy2_dep_trace") == *$'package:apt-get install '*$'\narch' ]] || fail 'HY2 dependency install did not resume same call at arch'
+    : > "$hy2_dep_trace"; HY2_DEPS_READY=0; HY2_MISSING_CAPABILITY=systemctl
+    toolbox_hy2 install cert key example.test 18443 <<< y > "$work/hy2-deps.out" 2>&1 && fail 'HY2 missing init accepted'
+    [[ ! -s $hy2_dep_trace && $(<"$work/hy2-deps.out") == *'未找到 systemctl'* ]] || fail 'HY2 installed ordinary tools before init check'
+    HY2_MISSING_CAPABILITY=''
+    # Uninstall/status must remain inert when no installation exists.
+    for action in uninstall status; do
+        : > "$hy2_dep_trace"; HY2_MISSING='grep flock rm sed ss readlink cut'; HY2_DEPS_READY=0
+        toolbox_hy2 "$action" <<< y > "$work/hy2-deps.out" 2>&1 && fail 'HY2 absent install reported success'
+        [[ ! -s $hy2_dep_trace ]] || fail 'HY2 absent install requested packages'
+    done
+    printf 'Description=Terry Toolbox Hysteria 2 server\nWorkingDirectory=%s\nExecStart=%s server -c %s/config.yaml --disable-update-check\n' \
+        "$(hy2_etc)" "$(hy2_bin)" "$(hy2_etc)" > "$(hy2_unit)"
+    for dependency in grep flock rm; do
+        : > "$hy2_dep_trace"; HY2_MISSING=$dependency; HY2_DEPS_READY=0
+        toolbox_hy2 uninstall <<< n > "$work/hy2-deps.out" 2>&1 && fail 'HY2 uninstall accepted missing dependency'
+        [[ $(<"$work/hy2-deps.out") == *"Hysteria 2 缺少命令：$dependency"* && ! -s $hy2_dep_trace && -e $(hy2_unit) ]] || fail 'HY2 uninstall misreported ownership or touched files'
+    done
+    : > "$hy2_dep_trace"; HY2_MISSING=grep; HY2_DEPS_READY=0
+    toolbox_hy2 uninstall <<< $'y\nn' > "$work/hy2-deps.out" 2>&1 && fail 'HY2 package y replaced uninstall confirmation'
+    [[ $(<"$work/hy2-deps.out") == *'确认卸载'* && -e $(hy2_unit) && ! -e $(hy2_lock) ]] || fail 'HY2 uninstall did not retain confirmation boundary'
+    printf 'foreign unit\n' > "$(hy2_unit)"
+    : > "$hy2_dep_trace"; HY2_DEPS_READY=0
+    toolbox_hy2 uninstall <<< $'y\nYES' > "$work/hy2-deps.out" 2>&1 && fail 'HY2 dependency success bypassed ownership'
+    [[ $(<"$(hy2_unit)") == 'foreign unit' && $(<"$work/hy2-deps.out") == *'不是本模块生成'* ]] || fail 'HY2 foreign unit changed'
+    for dependency in sed ss readlink grep cut; do
+        : > "$hy2_dep_trace"; HY2_MISSING=$dependency; HY2_DEPS_READY=0
+        toolbox_hy2 status <<< n > "$work/hy2-deps.out" 2>&1 && fail 'HY2 status silently accepted missing reader'
+        [[ $(<"$work/hy2-deps.out") == *'状态读取不完整'* && ! -s $hy2_dep_trace ]] || fail 'HY2 missing reader misreported ownership'
+    done
+    : > "$hy2_dep_trace"; HY2_MISSING='sed ss readlink grep cut'; HY2_MISSING_CAPABILITY=systemctl
+    toolbox_hy2 status <<< y > "$work/hy2-deps.out" 2>&1 && fail 'HY2 status accepted missing systemctl'
+    [[ $(<"$work/hy2-deps.out") == *'未找到 systemctl'* && $(<"$work/hy2-deps.out") != *'缺少命令'* && ! -s $hy2_dep_trace ]] || fail 'HY2 status confused missing init with state or ordinary dependencies'
+    HY2_MISSING_CAPABILITY=''
+    TOOLBOX_HY2_SYSTEMD_RUN=$work/no-systemd toolbox_hy2 status <<< y > "$work/hy2-deps.out" 2>&1 && fail 'HY2 status accepted inactive init'
+    [[ $(<"$work/hy2-deps.out") == *'systemd 未作为 init 运行'* && ! -s $hy2_dep_trace ]] || fail 'HY2 status did not preserve init gate'
+    [[ ! -s $SD/systemctl.log && ! -s $SD/curl.log ]] || fail 'HY2 dependency fixtures crossed service/network boundary'
+)
+reset
 
 # 2. 非 root 拒绝
 if TOOLBOX_HY2_UID=1000 toolbox_hy2 install "$work/good.crt" "$work/good.key" "$GOOD_H" 443 <<< 'YES' >/dev/null 2>&1; then
@@ -716,5 +806,5 @@ reset
 [[ -f $(hy2_client_dir)/good.yaml && $(<"$(hy2_client_dir)/good.yaml") == foreign-probe ]] || fail 'HY2 回滚删除未登记探针文件'
 reset
 
-[[ ! -e $SD/forbidden.log ]] || fail '命中了真实命令兜底拒绝桩'
+[[ ! -s $work/package-boundary.log ]] || fail '命中了真实命令兜底拒绝桩'
 printf 'All hy2 tests passed.\n'

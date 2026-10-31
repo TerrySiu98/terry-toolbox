@@ -21,6 +21,9 @@ if [[ ! -f "$ROOT/modules/reinstall.sh" ]]; then
 fi
 source "$ROOT/modules/reinstall-provenance.sh"
 source "$ROOT/modules/reinstall.sh"
+# Exercise the real shared dependency interaction with only package execution
+# mocked. No fixture may invoke the host package manager or change boot state.
+source "$ROOT/modules/dependencies.sh"
 declare -F toolbox_reinstall >/dev/null || { printf 'FAIL: M3 interface absent\n' >&2; exit 1; }
 # Upstream fixtures must be REAL downloaded bytes, explicitly verified by the
 # production fetch/derive helper. Default cached evidence; override for CI cache.
@@ -64,8 +67,45 @@ assert 'is_in_china && mirror=http://mirror.nju.edu.cn/alpine' not in s
 assert 'command curl --insecure --connect-timeout' not in s
 PY
 pass 'reviewed source digest and HTTPS boot images/injected packages'
+(
+    # Root detection precedes the dependency prompt, so it must not need id.
+    id() { printf 'called\n' >> "$case_root/root-id-called"; return 127; }
+    root_rc=0
+    _toolbox_reinstall_root > "$case_root/root-check" 2>&1 || root_rc=$?
+    if [[ $EUID == 0 ]]; then
+        [[ $root_rc == 0 ]] || fail 'root was rejected because id is missing'
+    else
+        [[ $root_rc != 0 && $(< "$case_root/root-check") == *'需要 root'* ]] || fail 'non-root check did not fail closed'
+    fi
+    [[ ! -e $case_root/root-id-called ]] || fail 'root check executed id before dependency handling'
+) || fail 'builtin EUID root check'
+pass 'root check uses builtin EUID before dependencies; existing fixture override remains isolated'
 _toolbox_reinstall_root() { return 0; }
-_toolbox_reinstall_has() { [[ $1 != "${MISSING:-}" && $1 != "${MISSING2:-}" ]]; }
+_toolbox_reinstall_has() {
+    [[ $1 != "${MISSING:-}" && $1 != "${MISSING2:-}" ]] || [[ -e $fixture/deps-installed/$1 ]]
+}
+_toolbox_deps_has() { _toolbox_reinstall_has "$@"; }
+_toolbox_deps_os() { printf 'debian\n'; }
+_toolbox_deps_root() { return 0; }
+apt-get() {
+    local c stolen
+    printf '%s\n' "$*" >> "$fixture/package-calls"
+    # The real core must disconnect the package command from menu/confirmation
+    # stdin; a package helper must never consume the next destructive answer.
+    if IFS= read -r stolen; then
+        printf 'package manager consumed confirmation input\n' >&2; return 99
+    fi
+    case ${1:-} in
+        update) [[ ${DEPS_INSTALL_MODE:-ok} != update-fail ]] || return 71;;
+        install)
+            [[ ${DEPS_INSTALL_MODE:-ok} != install-fail ]] || return 72
+            if [[ ${DEPS_INSTALL_MODE:-ok} != still-missing ]]; then
+                for c in "${MISSING:-}" "${MISSING2:-}"; do [[ -z $c ]] || : > "$fixture/deps-installed/$c"; done
+            fi;;
+        *) printf 'unexpected package operation\n' >&2; return 99;;
+    esac
+    printf 'MOCK PACKAGE STDOUT\n'
+}
 # Capture the production detector BEFORE mocking it (Alpine/musl path is real).
 real_container=$(declare -f _toolbox_reinstall_container)
 _toolbox_reinstall_container() { return "${CONTAINER_RC:-1}"; }
@@ -80,11 +120,11 @@ mokutil() { printf 'SecureBoot disabled\n'; }
 setup() {
     # Consume case knobs from the prefix, then clear them so nothing leaks.
     local want_init=${INIT_MODE:-systemd} want_archive=${ARCHIVE_MODE:-plain}
-    unset MISSING MISSING2 CONTAINER_RC MOCK_FAIL RUNTIME_BAD CFG_BAD RESET_FAIL RESET_BAD BOOT_ID MBR ARCHIVE_BAD MOCK_ARCH INIT_MODE ARCHIVE_MODE VIRTWHAT
+    unset MISSING MISSING2 DEPS_INSTALL_MODE CONTAINER_RC MOCK_FAIL RUNTIME_BAD CFG_BAD RESET_FAIL RESET_BAD BOOT_ID MBR ARCHIVE_BAD MOCK_ARCH INIT_MODE ARCHIVE_MODE VIRTWHAT
     fixture=$(mktemp -d "$case_root/case.XXXXXX")
     export TOOLBOX_REINSTALL_ROOT="$fixture/root" TOOLBOX_REINSTALL_STATE="$fixture/state"
     mkdir -p "$fixture/root/boot/grub" "$fixture/root/proc/sys/kernel/random" "$fixture/root/proc/1" \
-        "$fixture/root/sys/class/dmi/id"
+        "$fixture/root/sys/class/dmi/id" "$fixture/deps-installed"
     printf 'Mock Product\n' > "$fixture/root/sys/class/dmi/id/product_name"
     # PID1 identification fixture: systemd default, OpenRC on demand.
     case $want_init in
@@ -99,6 +139,7 @@ setup() {
     printf '{"blockdevices":[{"name":"/dev/vda","kname":"vda","type":"disk","pkname":null,"fstype":null,"size":2147483648,"model":"MOCK KVM","serial":"fixture-owned","wwn":"fixture","maj:min":"252:0","ro":false,"rm":false,"ptuuid":"12345678","children":[{"name":"/dev/vda1","kname":"vda1","type":"part","pkname":"vda","fstype":"ext4"}]}]}\n' > "$fixture/lsblk.json"
     printf '{"filesystems":[{"target":"/","source":"/dev/vda1","fstype":"ext4","options":"rw"}]}\n' > "$fixture/mounts.json"
     : > "$fixture/calls"
+    : > "$fixture/package-calls"
     export TOOLBOX_REINSTALL_SSH_KEY_FILE="$case_root/key.pub"
     eval "$real_fetch"
 }
@@ -184,7 +225,7 @@ PY
     [[ ${ARCHIVE_BAD:-0} != 1 ]] || printf 'invalid archive\n' > "$fixture/root/reinstall-initrd"
 }
 prep() { printf 'YES\nyes\n/dev/vda\n' | toolbox_reinstall prepare "${1:-debian}" "${2:-13}" > "$fixture/output" 2>&1; }
-reject() { if "$@" > "$fixture/output" 2>&1; then fail 'unexpected success'; fi; }
+reject() { if "$@" </dev/null > "$fixture/output" 2>&1; then fail 'unexpected success'; fi; }
 no_calls() { [[ ! -s $fixture/calls ]] || fail 'unexpected upstream mutation boundary'; }
 setup
 reject toolbox_reinstall prepare windows 11; no_calls; pass 'fixed target rejects unsupported'
@@ -194,7 +235,68 @@ for input in 'NO\n' 'YES\nNO\n' 'YES' 'YES\nYES' 'YES\nYES\n/dev/vda' 'YES\nYES\
     no_calls; [[ ! -e $fixture/state ]] || fail 'consent refusal wrote state'
 done
 pass 'cancel, both EOF confirmations, unterminated disk and exact typed mismatch'
-setup; MISSING=cpio; reject toolbox_reinstall preflight; no_calls; pass 'missing dependencies'
+setup; toolbox_reinstall preflight > "$fixture/output" 2> "$fixture/errors" || fail 'complete dependency preflight'
+[[ ! -s $fixture/package-calls && ! -s $fixture/errors ]] || fail 'complete dependencies prompted/installed'
+pass 'complete dependencies continue without prompt or package operation'
+for source_mode in absolute relative basename; do
+    setup
+    (
+        unset -f toolbox_require_commands
+        case $source_mode in
+            absolute) source "$ROOT/modules/reinstall.sh";;
+            relative) cd "$ROOT"; source modules/reinstall.sh;;
+            basename) cd "$ROOT/modules"; source reinstall.sh;;
+        esac
+        cd "$fixture"
+        _toolbox_reinstall_has() { [[ $1 != toolbox-m3-fixture-unmapped ]]; }
+        if _toolbox_reinstall_need toolbox-m3-fixture-unmapped </dev/null > "$fixture/output" 2> "$fixture/errors"; then exit 1; fi
+        declare -F toolbox_require_commands >/dev/null
+    ) || fail "standalone $source_mode source did not load sibling dependency core after cd"
+    [[ ! -s $fixture/package-calls && ! -e $fixture/state ]] || fail 'standalone dependency probe mutated state'
+done
+pass 'absolute/relative/basename module sources lazily load sibling core after cwd changes'
+setup; MISSING=virt-what
+if ! printf 'y\n' | toolbox_reinstall preflight alpine > "$fixture/output" 2> "$fixture/errors"; then fail 'same-call dependency preflight'; fi
+no_calls
+[[ ! -e $fixture/state && -e $fixture/deps-installed/virt-what ]] || fail 'preflight dependency install wrote plan state or did not install'
+command grep -q 'preflight 磁盘/引导只读检查通过' "$fixture/output" || fail 'preflight did not continue after installation'
+command grep -q '依赖已按确认安装' "$fixture/errors" || fail 'preflight package mutation not explained'
+pass 'virt-what installation resumes same preflight with readonly disk/boot checks'
+setup; MISSING=virt-what; MISSING2=cpio
+if ! printf 'y\nYES\nyes\n/dev/vda\n' | toolbox_reinstall prepare alpine 3.24 > "$fixture/output" 2> "$fixture/errors"; then
+    fail 'same-call Alpine prepare after dependency confirmation'
+fi
+[[ -e $fixture/deps-installed/virt-what && -e $fixture/deps-installed/cpio ]] || fail 'missing commands not installed'
+[[ $(command grep -c '^install ' "$fixture/package-calls") == 1 && $(command grep -c '^update\( \|$\)' "$fixture/package-calls") == 1 ]] || fail 'dependency request not batched exactly once'
+command grep '^install ' "$fixture/package-calls" | command grep -q 'virt-what' || fail 'virt-what package missing'
+command grep '^install ' "$fixture/package-calls" | command grep -q 'cpio' || fail 'cpio package missing'
+command grep -q '仅 prepare 完成并回读' "$fixture/output" || fail 'dependency success did not continue prepare'
+[[ $(command wc -l < "$fixture/calls") == 1 ]] || fail 'same call executed wrong upstream count'
+command grep -q '依赖已按确认安装' "$fixture/errors" || fail 'package mutation not explained'
+command grep -q 'MOCK PACKAGE STDOUT' "$fixture/errors" || fail 'package stdout not captured on stderr'
+if command grep -q 'MOCK PACKAGE STDOUT\|依赖已按确认安装' "$fixture/output"; then fail 'dependency output contaminated stdout'; fi
+pass 'virt-what + cpio install once on y and same Alpine call completes prepare'
+for input in 'n\nYES\nyes\n/dev/vda\n' '\nYES\nyes\n/dev/vda\n' '' 'y'; do
+    setup; MISSING=virt-what
+    if printf '%b' "$input" | toolbox_reinstall prepare alpine 3.24 > "$fixture/output" 2>&1; then fail 'dependency refusal/EOF accepted'; fi
+    no_calls
+    [[ ! -e $fixture/state && ! -s $fixture/package-calls ]] || fail 'dependency refusal/EOF changed state/packages'
+done
+pass 'dependency refusal, default N, EOF and unterminated y refuse before state and upstream'
+for mode in update-fail install-fail still-missing; do
+    setup; MISSING=virt-what; DEPS_INSTALL_MODE=$mode
+    if printf 'y\nYES\nyes\n/dev/vda\n' | toolbox_reinstall prepare alpine 3.24 > "$fixture/output" 2>&1; then fail "dependency $mode accepted"; fi
+    no_calls
+    [[ ! -e $fixture/state ]] || fail "dependency $mode created plan state"
+done
+pass 'update/install failure and absent command after success refuse before prepare'
+setup; MISSING=grub-reboot
+if printf 'y\nYES\nyes\n/dev/vda\n' | toolbox_reinstall prepare alpine 3.24 > "$fixture/output" 2>&1; then fail 'missing bootloader accepted'; fi
+no_calls
+[[ ! -e $fixture/state && ! -s $fixture/package-calls ]] || fail 'bootloader dependency installed or plan created'
+command grep -q '不会自动安装或转换引导器/init' "$fixture/output" || fail 'missing bootloader refusal unclear'
+pass 'missing GRUB refuses without installing or converting bootloader/init'
+setup; MISSING=cpio; reject toolbox_reinstall preflight; no_calls; pass 'preflight missing dependency EOF refuses'
 setup; CONTAINER_RC=0; reject toolbox_reinstall preflight; no_calls
 CONTAINER_RC=2; reject toolbox_reinstall preflight; no_calls; pass 'container and unknown detector'
 # Container classification must not depend on systemd-detect-virt (absent on Alpine).
@@ -321,10 +423,19 @@ assert json.load(open(p+'/active/metadata.json'))['target']=='ubuntu 24.04'
 PY
 pass 'new prepare after cancelled preserves sealed history without deleting files'
 setup; prep || fail prepare; toolbox_reinstall cancel > "$fixture/cancel" 2>&1 || fail cancel
+printf 'foreign kernel after cancel\n' > "$fixture/root/reinstall-vmlinuz"
+before=$(sha256sum "$fixture/calls"); reject toolbox_reinstall status
+[[ $before == "$(sha256sum "$fixture/calls")" ]] || fail 'cancelled status invoked upstream'
+command grep -q 'cancelled plan 后 boot 路径集合变化' "$fixture/output" || fail 'cancelled new boot path not named'
+pass 'cancelled status rejects newly armed boot path without invoking upstream'
+setup; prep || fail prepare; toolbox_reinstall cancel > "$fixture/cancel" 2>&1 || fail cancel
 printf '# changed after cancel\n' >> "$fixture/root/boot/grub/grub.cfg"
-before=$(sha256sum "$fixture/calls"); reject toolbox_reinstall status; reject prep
+before=$(sha256sum "$fixture/calls"); reject toolbox_reinstall status
+command grep -q 'cancelled plan 后原 boot 文件变化' "$fixture/output" || fail 'cancelled boot bytes not checked'
+[[ $before == "$(sha256sum "$fixture/calls")" ]] || fail 'changed cancelled status ran upstream'
+reject prep
 [[ $before == "$(sha256sum "$fixture/calls")" ]] || fail 'changed cancelled baseline ran upstream'
-pass 'changed cancelled boot baseline rejects status/reboot evidence and recycling'
+pass 'changed cancelled boot baseline refuses status and recycling'
 setup; prep || fail prepare; printf '# boot tamper\n' >> "$fixture/root/boot/grub/custom.cfg"
 before=$(sha256sum "$fixture/calls"); reject toolbox_reinstall cancel
 [[ $before == "$(sha256sum "$fixture/calls")" ]] || fail 'tamper called reset'; pass 'boot identity tamper rejects cancel'
@@ -344,7 +455,18 @@ setup; mkdir -p "$fixture/root/boot/efi/EFI/debian" "$fixture/root/sys/firmware/
 printf 'original EFI\n' > "$fixture/root/boot/efi/EFI/debian/grubx64.efi"
 printf 'BootCurrent: 0000\nBootOrder: 0000\nBoot0000* original HD(...)\\EFI\\debian\\grubx64.efi\n' > "$fixture/efi"
 printf '{"filesystems":[{"target":"/","source":"/dev/vda1","fstype":"ext4","options":"rw"},{"target":"/boot/efi","source":"/dev/vda1","fstype":"vfat","options":"rw"}]}\n' > "$fixture/mounts.json"
-prep ubuntu 24.04 || fail 'UEFI prepare'; toolbox_reinstall cancel > "$fixture/cancel" 2>&1 || fail 'UEFI cancel'; pass 'UEFI BootNext/entry identity + restore'
+MISSING=virt-what; MISSING2=efibootmgr
+if ! printf 'y\nYES\nyes\n/dev/vda\n' | toolbox_reinstall prepare ubuntu 24.04 > "$fixture/output" 2>&1; then fail 'UEFI prepare after dependency confirmation'; fi
+[[ $(command grep -c '^install ' "$fixture/package-calls") == 1 ]] || fail 'UEFI dependency installation not batched'
+command grep '^install ' "$fixture/package-calls" | command grep -q 'efibootmgr' || fail 'EFI inspection package missing'
+command grep '^install ' "$fixture/package-calls" | command grep -q 'virt-what' || fail 'ordinary package missing from EFI request'
+toolbox_reinstall cancel > "$fixture/cancel" 2>&1 || fail 'UEFI cancel'; pass 'UEFI inspection and ordinary tools install once, then BootNext/entry identity + restore'
+before=$(sha256sum "$fixture/calls")
+printf 'BootCurrent: 0000\nBootOrder: 0002,0000\nBoot0000* original HD(...)\\EFI\\debian\\grubx64.efi\n' > "$fixture/efi"
+reject toolbox_reinstall status
+[[ $before == "$(sha256sum "$fixture/calls")" ]] || fail 'cancelled EFI status ran upstream'
+command grep -q 'cancelled plan 后 EFI 状态变化' "$fixture/output" || fail 'cancelled EFI comparison not enforced'
+pass 'cancelled status rejects later EFI BootOrder change without invoking upstream'
 # --create-only must never silently reorder persistent boot entries.
 setup; mkdir -p "$fixture/root/boot/efi/EFI/debian" "$fixture/root/sys/firmware/efi"
 printf 'original EFI\n' > "$fixture/root/boot/efi/EFI/debian/grubx64.efi"

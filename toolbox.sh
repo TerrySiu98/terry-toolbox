@@ -45,7 +45,7 @@ show_help() {
 load_modules() {
   [[ ${TOOLBOX_MODULES_LOADED:-0} == 1 ]] && return 0
   local f
-  for f in apps network system diagnostics hy2 webssh vmess alpine-swap docker-ipv6 webssh-containers tls-acme reinstall-provenance reinstall; do
+  for f in dependencies apps network system diagnostics hy2 webssh vmess alpine-swap docker-ipv6 webssh-containers tls-acme reinstall-provenance reinstall; do
     if [[ ! -r "$TOOLBOX_DIR/modules/$f.sh" ]]; then
       printf '错误：缺少模块 %s/modules/%s.sh。请下载完整项目。\n' "$TOOLBOX_DIR" "$f" >&2
       return 1

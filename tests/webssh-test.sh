@@ -8,7 +8,38 @@ source "$script_dir/scratch-root.sh"
 toolbox_test_scratch
 TEST_SCRATCH=$TMPDIR
 TEST_DIR=$(mktemp -d "$TMPDIR/toolbox-webssh.XXXXXXXX")
-trap 'rm -rf -- "$TEST_DIR"' EXIT
+cleanup_packages() {
+    local rc=$?
+    if [[ -s $TEST_DIR/package-boundary.log ]]; then
+        printf 'FAIL: unmocked package command\n' >&2
+        command cat "$TEST_DIR/package-boundary.log" >&2
+        rc=1
+    fi
+    rm -rf -- "$TEST_DIR"
+    exit "$rc"
+}
+trap cleanup_packages EXIT
+# Physical package guards also cover child Bash and an empty environment.
+mkdir -p "$TEST_DIR/package-deny"
+: > "$TEST_DIR/package-boundary.log"
+for manager in sudo apt apt-get apt-cache aptitude apk dpkg dpkg-query dpkg-deb dnf yum rpm; do
+    {
+        printf '#!/bin/sh\n'
+        printf 'printf "%%s\\n" "$0 $*" >> %q\n' "$TEST_DIR/package-boundary.log"
+        printf 'exit 99\n'
+    } > "$TEST_DIR/package-deny/$manager"
+    chmod 0755 "$TEST_DIR/package-deny/$manager"
+done
+export PATH="$TEST_DIR/package-deny:$PATH"
+for guard_env in inherited empty; do
+    if [[ $guard_env == empty ]]; then
+        env -i PATH="$PATH" bash --noprofile --norc -c 'apt-get --fixture-guard-probe' && exit 1 || [[ $? == 99 ]]
+    else
+        bash --noprofile --norc -c 'apt-get --fixture-guard-probe' && exit 1 || [[ $? == 99 ]]
+    fi
+done
+[[ $(wc -l < "$TEST_DIR/package-boundary.log") -eq 2 ]]
+: > "$TEST_DIR/package-boundary.log"
 export HOME="$TEST_DIR/home" TMPDIR="$TEST_DIR/tmp"
 mkdir -p "$HOME" "$TMPDIR"
 
@@ -473,9 +504,108 @@ regression_missing_tool() {
         if [[ ${1-} == -v && ${2-} == curl ]]; then return 1; fi
         builtin command "$@"
     }
+    source "$script_dir/../modules/dependencies.sh"
+    _toolbox_deps_os() { printf 'debian\n'; }
+    _toolbox_deps_ca_package() { return 0; }
+    _toolbox_deps_confirm() { printf 'fixture: dependency installation declined\n' >&2; return 1; }
     if out=$(install_ok 2>&1); then fail 'missing curl accepted'; fi
-    [[ $out == *'缺少必需命令'* && ! -e $TOOLBOX_WEBSSH_ETC && ! -e $TOOLBOX_WEBSSH_LOCK ]] || fail 'missing curl wrote state'
+    [[ $out == *'缺少命令：'* && ! -e $TOOLBOX_WEBSSH_ETC && ! -e $TOOLBOX_WEBSSH_LOCK ]] || fail 'missing curl wrote state'
     assert_no_log 'apt-get'
+}
+regression_dependency_entrypoint() {
+    local action=$1 dep_missing=$2 dep_mode=$3 trace="$TEST_DIR/dependency-order" input='' dep_available=0
+    reset
+    : > "$trace"
+    # Existing-resource checks are the first downstream boundary. No real
+    # installation, ownership helper, service or port probe may run here.
+    [[ $action != status ]] || : > "$webssh_unit_file"
+    source "$script_dir/../modules/dependencies.sh"
+    _toolbox_deps_os() { printf 'debian\n'; }
+    _toolbox_deps_root() { return 0; }
+    _toolbox_deps_ca_package() { return 0; }
+    eval "$(declare -f _toolbox_deps_confirm | sed '1s/_toolbox_deps_confirm/webssh_dependency_confirm/')"
+    _toolbox_deps_confirm() { printf 'prompt\n' >> "$trace"; webssh_dependency_confirm "$@"; }
+    command() {
+        if [[ ${1-} == -v ]]; then
+            [[ $dep_available != 0 || " $dep_missing " != *" ${2-} "* ]]
+            return
+        fi
+        builtin command "$@"
+    }
+    apt-get() {
+        local stolen
+        if IFS= read -r stolen; then fail 'dependency package manager consumed the next answer'; fi
+        printf 'apt:%s\n' "$1" >> "$trace"
+        case $1 in
+            update) return 0;;
+            install)
+                [[ $dep_mode != install-fail ]] || return 71
+                [[ $dep_mode == still-missing ]] || dep_available=1;;
+            *) fail 'unexpected dependency package command';;
+        esac
+    }
+    webssh_dependency_boundary() {
+        local next
+        printf 'downstream\n' >> "$trace"
+        if [[ $dep_mode == success ]]; then
+            IFS= read -r next && [[ $next == NEXT-ANSWER ]] || fail 'dependency handling lost the next answer'
+        fi
+    }
+    webssh_unit_state() { webssh_dependency_boundary; printf 'foreign\n'; }
+    webssh_unit_summary() { webssh_dependency_boundary; return 72; }
+    case $dep_mode in
+        decline) input=$'n\n';;
+        eof) input='';;
+        partial) input=y;;
+        *) input=$'y\nNEXT-ANSWER\n';;
+    esac
+    printf '%s' "$input" > "$TEST_DIR/dependency-input"
+    if out=$(toolbox_webssh "$action" "$public_port" < "$TEST_DIR/dependency-input" 2>&1); then
+        fail "$action/$dep_missing/$dep_mode escaped the downstream sentinel"
+    fi
+    local expected='prompt'
+    case $dep_mode in
+        install-fail|still-missing) expected=$'prompt\napt:update\napt:install';;
+        success) expected=$'prompt\napt:update\napt:install\ndownstream';;
+        present) expected=downstream;;
+        unsupported) expected='';;
+    esac
+    [[ $(< "$trace") == "$expected" ]] || fail "$action/$dep_missing/$dep_mode dependency order: $(< "$trace"); $out"
+    [[ ! -e $TOOLBOX_WEBSSH_ETC && ! -e $TOOLBOX_WEBSSH_LOCK ]] || fail "$action/$dep_missing/$dep_mode wrote managed resources"
+    assert_no_log 'python3 -m venv'
+    assert_no_log 'systemctl enable'
+    assert_no_log 'systemctl disable'
+}
+run_dependency_regressions() {
+    local action missing mode commands failures=0
+    for action in install uninstall status; do
+        case $action in
+            install) commands='openssl sha256sum curl flock ss awk sed mktemp install python3 getent grep cut tr cat cp rm chmod chown date sleep';;
+            uninstall) commands='python3 grep flock';;
+            status) commands='ss awk';;
+        esac
+        # Missing each command alone catches omissions otherwise hidden by a
+        # different command pulling in the same distribution package.
+        for missing in $commands; do
+            for mode in decline success; do
+                if ( regression_dependency_entrypoint "$action" "$missing" "$mode" ); then :; else failures=$((failures+1)); fi
+            done
+        done
+        for mode in eof partial install-fail still-missing; do
+            if ( regression_dependency_entrypoint "$action" "$commands" "$mode" ); then :; else failures=$((failures+1)); fi
+        done
+        if ( regression_dependency_entrypoint "$action" '' present ); then :; else failures=$((failures+1)); fi
+        if ( regression_dependency_entrypoint "$action" systemctl unsupported ); then :; else failures=$((failures+1)); fi
+    done
+    (
+        reset
+        toolbox_require_commands() { fail 'absent status requested dependencies'; }
+        webssh_require_systemd() { fail 'absent status required systemd'; }
+        if out=$(toolbox_webssh status 2>&1); then fail 'absent status unexpectedly succeeded'; fi
+        [[ $out == '未安装。' ]] || fail 'absent status changed'
+    ) || failures=$((failures+1))
+    (( failures == 0 )) || fail "$failures dependency entrypoint regressions failed"
+    printf 'PASS WebSSH dependency entrypoints: each missing tool, batched refusal/failure/readback, systemd gate and absent status\n'
 }
 regression_python_old() {
     reset
@@ -610,6 +740,8 @@ run_regressions() {
     done
     (( failures == 0 )) || fail "$failures safety regressions failed"
 }
+run_dependency_regressions
+[[ ${WEBSSH_TEST_FOCUS:-} != dependencies ]] || { printf 'WebSSH dependency regressions passed.\n'; exit 0; }
 run_regressions
 [[ ${WEBSSH_TEST_FOCUS:-} != regressions ]] || { printf 'WebSSH safety regressions passed.\n'; exit 0; }
 

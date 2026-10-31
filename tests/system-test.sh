@@ -6,12 +6,31 @@ toolbox_test_scratch
 safetyroot=$(mktemp -d "$TMPDIR/toolbox-system-safety.XXXXXX")
 export HOME="$safetyroot/home"
 mkdir -p "$HOME" "$safetyroot/bin"
-for cmd in apt-get apk docker systemctl sysctl swapon swapoff mkswap dd passwd reboot \
+for cmd in sudo apt apt-get apt-cache aptitude apk dpkg dpkg-query dpkg-deb docker systemctl sysctl swapon swapoff mkswap dd passwd reboot \
            iptables ip6tables rc-service mount umount chroot curl wget gpg dpkg dpkg-query; do
  printf '#!/usr/bin/env bash\nprintf "UNMOCKED privileged boundary: %%s\\n" "%s" >&2\nexit 99\n' "$cmd" > "$safetyroot/bin/$cmd"
  chmod 0755 "$safetyroot/bin/$cmd"
 done
 export PATH="$safetyroot/bin:$PATH"
+package_boundary_log="$safetyroot/package-boundary.log"
+: > "$package_boundary_log"
+for cmd in sudo apt apt-get apt-cache aptitude apk dpkg dpkg-query dpkg-deb; do
+ {
+  printf '#!/usr/bin/env bash\n'
+  printf 'printf "%%s\\n" "$0 $*" >> %q\n' "$package_boundary_log"
+  printf 'printf "UNMOCKED package boundary: %%s\\n" "$0" >&2\nexit 99\n'
+ } > "$safetyroot/bin/$cmd"
+done
+# Shell-function mocks do not survive child Bash or env -i. Prove those paths
+# resolve to the physical deny scripts before any product code is loaded.
+package_guard_probe='for manager in sudo apt apt-get apk dpkg; do [[ $(command -v "$manager") == "$1/$manager" ]] || exit 1; rc=0; "$manager" --fixture-guard-probe || rc=$?; [[ $rc == 99 ]] || exit 1; done'
+bash --noprofile --norc -c "$package_guard_probe" guard "$safetyroot/bin" >/dev/null 2>&1
+env -i PATH="$PATH" bash --noprofile --norc -c "$package_guard_probe" guard "$safetyroot/bin" >/dev/null 2>&1
+[[ $(wc -l < "$package_boundary_log") == 10 ]]
+: > "$package_boundary_log"
+package_guard_assert() {
+ [[ ! -s $package_boundary_log ]] || { printf 'FAIL: unmocked package execution was attempted\n' >&2; cat "$package_boundary_log" >&2; return 1; }
+}
 # Real install is allowed only for scratch paths; this catches hardcoded /opt etc.
 install() {
  local arg
@@ -22,10 +41,22 @@ install() {
 }
 # shellcheck source=modules/system.sh
 source "${SYSTEM_MODULE_UNDER_TEST:-$ROOT/modules/system.sh}"
+source "$ROOT/modules/dependencies.sh"
+# Root discovery must work before external dependencies are available. The
+# function override used below remains the fixture seam for privileged cases.
+(
+ id() { printf 'unexpected id call\n' > "$safetyroot/id-called"; return 127; }
+ if (( EUID == 0 )); then
+  _toolbox_system_root
+ else
+  if _toolbox_system_root >/dev/null 2>&1; then exit 1; fi
+ fi
+ [[ ! -e $safetyroot/id-called ]]
+)
 package_status_impl=$(declare -f _toolbox_system_package_installed)
 log=$(mktemp "$TMPDIR/toolbox-system-test.XXXXXX")
 docker_marker="${log}.docker"
-trap 'rm -f "$log" "$docker_marker"; rm -rf "$safetyroot"' EXIT
+trap 'rc=$?; package_guard_assert || rc=1; rm -f "$log" "$docker_marker"; rm -rf "$safetyroot"; exit "$rc"' EXIT
 # Replace system boundaries with functions; no real privileged command is run.
 _toolbox_system_os() { printf '%s\n' "${TEST_OS:-debian}"; }
 _toolbox_system_root() { return 0; }
@@ -47,6 +78,12 @@ _toolbox_system_has() {
   *) return 0;;
  esac
 }
+# Exercise the real dependency consent/update/install/readback flow with the
+# same command inventory as the system fixture. All package calls stay mocked.
+_toolbox_deps_has() { _toolbox_system_has "$1"; }
+_toolbox_deps_root() { return 0; }
+_toolbox_deps_os() { printf '%s\n' "${TEST_OS:-debian}"; }
+_toolbox_deps_ca_package() { return 0; } # Fixture distribution CA package exists.
 # Only the 1Panel download reaches curl from this shell; Telegram/Telegram-report
 # calls run in child processes and use the PATH stub below.
 curl() {
@@ -68,6 +105,28 @@ sysctl() {
   *) echo 'unexpected sysctl' >&2; return 1;;
  esac
 }
+
+# M2 Debian must verify its command inventory after an apparently successful
+# installation. The fixtures never repair it by silently installing again.
+(
+ _toolbox_system_os() { printf 'debian\n'; }
+ _toolbox_system_confirm() { :; }
+ _toolbox_system_package_installed() { return 1; }
+ _toolbox_system_has() { [[ $1 != "${M2_MISSING:-}" ]]; }
+ apt-get() { printf 'apt-get %s\n' "$*" >> "$log"; }
+ for M2_MISSING in curl socat wget sudo nano iptables; do
+  : > "$log"
+  if toolbox_system MAIN_DEPS > "$safetyroot/m2-out" 2>&1; then
+   printf 'FAIL: M2 accepted missing %s after installation\n' "$M2_MISSING" >&2; exit 1
+  fi
+  [[ $(<"$safetyroot/m2-out") == *"安装后仍缺少基础命令：$M2_MISSING"* ]]
+  [[ $(<"$log") == $'apt-get update\napt-get install -y --no-upgrade curl socat wget sudo nano iptables' ]]
+ done
+ M2_MISSING=''; : > "$log"
+ toolbox_system MAIN_DEPS >/dev/null
+ [[ $(<"$log") == $'apt-get update\napt-get install -y --no-upgrade curl socat wget sudo nano iptables' ]]
+)
+: > "$log"
 
 # Focused audit regressions share production code; only privileged boundaries mocked.
 # SYSTEM_AUDIT_CASE=S1..S7|S4|WEBTOP runs one slice; ALL runs every slice.
@@ -552,7 +611,7 @@ if printf 'YES\nYES\n' | toolbox_system 1 >/dev/null 2>&1; then exit 1; fi
 [ ! -s "$log" ]
 if toolbox_system B14 </dev/null >/dev/null 2>&1; then exit 1; fi
 [ ! -s "$log" ]
-if printf 'YES\nYES\n' | MISSING_TRACE=1 toolbox_system 14 >/dev/null 2>&1; then exit 1; fi
+if printf 'n\n' | MISSING_TRACE=1 toolbox_system 14 >/dev/null 2>&1; then exit 1; fi
 [ ! -s "$log" ]
 if printf 'YES\nNO\n' | toolbox_system B14 >/dev/null 2>&1; then exit 1; fi
 [ ! -s "$log" ]
@@ -593,7 +652,7 @@ swap_file="$swap_root/swapfile_toolbox"
 export TOOLBOX_SYSTEM_STATE="$swap_state" TOOLBOX_SYSTEM_UNIT_DIR="$swap_units"
 export TOOLBOX_SYSTEMD_RUN="$swap_root/run/systemd/system"
 export TOOLBOX_SWAP_ROOT="$swap_root" TOOLBOX_SWAP_SIZE_MB=256
-trap 'rm -f "$log" "$docker_marker"; rm -rf "$swap_root" "$swap_state"; rm -rf "$safetyroot"' EXIT
+trap 'rc=$?; package_guard_assert || rc=1; rm -f "$log" "$docker_marker"; rm -rf "$swap_root" "$swap_state"; rm -rf "$safetyroot"; exit "$rc"' EXIT
 
 # 只读边界桩。MOCK_* 只在子 shell 内生效，不泄漏到后面的用例。
 findmnt() { printf '%s\n' "${MOCK_FSTYPE:-ext4}"; }
@@ -828,7 +887,7 @@ b6 $'YES\nYES' 6 || { printf 'B6 数字别名失败\n' >&2; exit 1; }
 # ---------------------------------------------------------------- 新增系统工具
 # 全部使用隔离目录与命令桩：不读写真实 /etc、/var/lib、systemd 单元。
 mockroot=$(mktemp -d "${TMPDIR:-/tmp}/toolbox-sys-test.XXXXXX")
-trap 'rm -f "$log" "$docker_marker"; rm -rf "$swap_root" "$swap_state" "$mockroot"; rm -rf "$safetyroot"' EXIT
+trap 'rc=$?; package_guard_assert || rc=1; rm -f "$log" "$docker_marker"; rm -rf "$swap_root" "$swap_state" "$mockroot"; rm -rf "$safetyroot"; exit "$rc"' EXIT
 export TOOLBOX_SYSTEM_ETC="$mockroot/etc/terry-toolbox"
 export TOOLBOX_SYSTEM_STATE="$mockroot/var/lib/terry-toolbox"
 export TOOLBOX_SYSTEM_UNIT_DIR="$mockroot/etc/systemd/system"
@@ -903,6 +962,9 @@ systemctl() {
 }
 
 # --- B7 流量统计：前置条件全部在写盘前失败
+# These cancellation cases begin with dependencies present, so the answers are
+# still interpreted as the threshold and the two business confirmations.
+touch "$mockroot/vnstat-installed"
 : > "$log"
 mv "$TOOLBOX_SYSTEMD_RUN" "$mockroot/run/no-systemd"
 if printf '2\n' | toolbox_system B7 >/dev/null 2>&1; then printf 'B7: 无 systemd 未拒绝\n' >&2; exit 1; fi
@@ -921,13 +983,18 @@ if printf '2\nYES\nNO\n' | toolbox_system B7 >/dev/null 2>&1; then printf 'B7: �
 
 # --- B7 安装失败：包装不上时不留配置
 : > "$log"
-if printf '2\nYES\nYES\n' | MOCK_FAIL=1 toolbox_system B7 >/dev/null 2>&1; then printf 'B7: 安装失败未拒绝\n' >&2; exit 1; fi
+rm -f "$mockroot/vnstat-installed"
+if printf 'y\n2\nYES\nYES\n' | MOCK_FAIL=1 toolbox_system B7 >/dev/null 2>&1; then printf 'B7: 安装失败未拒绝\n' >&2; exit 1; fi
 [ ! -e "$TOOLBOX_SYSTEM_ETC/traffic.conf" ]
+[[ $(<"$log") == *'apt-get update -o APT::Update::Error-Mode=any'* && $(<"$log") != *'apt-get install'* ]]
+[[ ! -e $mockroot/vnstat-installed ]]
 
 # --- B7 成功路径
 : > "$log"; : > "$stublog"; touch "$mockroot/vnstat-ready"
-printf '2\nYES\nYES\n' | toolbox_system B7 > "$mockroot/out" 2>&1
-[[ $(<"$log") == *'apt-get install -y vnstat jq'* ]]
+printf 'y\n2\nYES\nYES\n' | toolbox_system B7 > "$mockroot/out" 2>&1
+[[ $(<"$log") == *'apt-get update -o APT::Update::Error-Mode=any'* ]]
+[[ $(<"$log") == *'apt-get install -y --no-upgrade --no-install-recommends -- vnstat'* ]]
+[[ $(grep -c 'apt-get install' "$log") == 1 && -e $mockroot/vnstat-installed ]]
 [[ $(<"$log") == *'systemctl enable --now terry-toolbox-traffic.timer'* ]]
 [[ $(<"$conf") == *'# terry-toolbox B7 traffic config'* && $(<"$conf") == *'LIMIT_GIB=2'* ]]
 [[ $(stat -c %a "$conf") == 600 ]]
@@ -1000,8 +1067,19 @@ touch "$mockroot/vnstat-ready"
 # B7 用同一个路径放测试凭据（无 B15 标记），先清掉。
 rm -f "$tgconf"
 : > "$log"
-if printf '123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n-1001234567890\nYES\nYES\n' \
- | MOCK_NO_VNSTAT=1 toolbox_system B15 >/dev/null 2>&1; then printf 'B15: 缺 vnstat 未拒绝\n' >&2; exit 1; fi
+if printf 'n\n' | MOCK_NO_VNSTAT=1 toolbox_system B15 >/dev/null 2>&1; then printf 'B15: 拒绝 vnstat 补装后仍继续\n' >&2; exit 1; fi
+[[ $(<"$log") != *'apt-get '* && ! -e $tgconf ]]
+# Missing vnstat is replenished, but Token EOF or business NO must not explicitly
+# enable/start either vnstat or Telegram. Package-manager behavior is mocked.
+for input in y $'y\n123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n-1001234567890\nYES\nNO'; do
+ rm -f "$mockroot/vnstat-installed"
+ : > "$log"
+ if toolbox_system B15 <<< "$input" > "$mockroot/out" 2>&1; then
+  printf 'B15: 补包后取消仍成功\n' >&2; exit 1
+ fi
+ [[ -e $mockroot/vnstat-installed && $(<"$log") == *'apt-get install '* ]]
+ [[ $(<"$log") != *'systemctl enable '* && $(<"$log") != *'systemctl start '* && ! -e $tgconf ]]
+done
 if toolbox_system B15 </dev/null >/dev/null 2>&1; then printf 'B15: EOF 未拒绝\n' >&2; exit 1; fi
 if printf 'bad\n' | toolbox_system B15 >/dev/null 2>&1; then printf 'B15: 非法 token 未拒绝\n' >&2; exit 1; fi
 if printf '123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nbad chat!\n' | toolbox_system B15 >/dev/null 2>&1; then
@@ -1208,7 +1286,7 @@ if toolbox_system B2 </dev/null >/dev/null 2>&1; then printf 'B2: EOF 未取消\
 if printf 'YES\nNO\n' | toolbox_system B2 >/dev/null 2>&1; then printf 'B2: 取消未生效\n' >&2; exit 1; fi
 [ ! -s "$log" ] && [ ! -e "$B2LOG" ]
 # 缺少 mount 时在下载前就拒绝。
-if printf 'YES\nYES\n' | MOCK_MISSING=mount toolbox_system B2 >/dev/null 2>&1; then
+if printf 'n\n' | MOCK_MISSING=mount toolbox_system B2 >/dev/null 2>&1; then
  printf 'B2: 缺 mount 未拒绝\n' >&2; exit 1; fi
 [ ! -s "$log" ] && [ ! -e "$B2LOG" ]
 # 下载失败：fail closed，不执行。
@@ -1283,8 +1361,8 @@ docker() {
  esac
 }
 : > "$log"
-if printf '1\nYES\nYES\n' | MOCK_MISSING=docker toolbox_system B19 >/dev/null 2>&1; then
- printf 'B19: 缺 docker 未拒绝\n' >&2; exit 1; fi
+if printf '1\nn\n' | MOCK_MISSING=docker toolbox_system B19 >/dev/null 2>&1; then
+ printf 'B19: 拒绝 Docker 补装后仍继续\n' >&2; exit 1; fi
 [ ! -s "$log" ]
 if printf '1\nYES\nYES\n' | MOCK_DOCKER_UP=0 toolbox_system B19 >/dev/null 2>&1; then
  printf 'B19: docker 未运行未拒绝\n' >&2; exit 1; fi
@@ -1337,8 +1415,8 @@ ss() { printf 'ss %s\n' "$*" >> "$log"; printf 'UNCONN 0 0 0.0.0.0:443 0.0.0.0:*
 rc-service() { printf 'rc-service %s\n' "$*" >> "$log"; [[ ${MOCK_RC_FAIL:-0} != 1 ]]; }
 hopconf="$TOOLBOX_SYSTEM_ETC/port-hop.conf"
 : > "$log"
-if printf '2\n20000\n30000\n443\n' | MOCK_MISSING=iptables toolbox_system B19 >/dev/null 2>&1; then
- printf 'B19: 缺 iptables 未拒绝\n' >&2; exit 1; fi
+if printf '2\nn\n' | MOCK_MISSING=iptables toolbox_system B19 >/dev/null 2>&1; then
+ printf 'B19: 拒绝 iptables 补装后仍继续\n' >&2; exit 1; fi
 [ ! -s "$log" ]
 # 端口范围校验。
 if printf '2\n30000\n20000\n443\n' | toolbox_system B19 >/dev/null 2>&1; then printf 'B19: 反向范围未拒绝\n' >&2; exit 1; fi

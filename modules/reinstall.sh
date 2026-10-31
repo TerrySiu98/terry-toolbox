@@ -3,15 +3,48 @@
 # This adapter never calls reboot. Upstream's initrd DOES reboot itself once the
 # install finishes (default hold semantics); no --hold is passed (no re-review).
 # Parent build must load reinstall-provenance.sh before this module.
+# Remember the source directory before the caller changes cwd. Bash reports only
+# a basename for `source reinstall.sh` from the module's own directory.
+if [[ ${TOOLBOX_BUNDLED:-0} != 1 ]]; then
+    _toolbox_reinstall_module_dir=$(
+        _toolbox_reinstall_source=${BASH_SOURCE[0]:-}
+        if [[ $_toolbox_reinstall_source == */* ]]; then _toolbox_reinstall_source=${_toolbox_reinstall_source%/*}; else _toolbox_reinstall_source=.; fi
+        CDPATH= builtin cd -- "$_toolbox_reinstall_source" && builtin pwd -P
+    )
+fi
 _toolbox_reinstall_error() { printf '%s\n' "$*" >&2; }
 _toolbox_reinstall_has() { command -v "$1" >/dev/null 2>&1; }
-_toolbox_reinstall_root() { [[ $(id -u) == 0 ]] || { _toolbox_reinstall_error '需要 root；未执行。'; return 1; }; }
+_toolbox_reinstall_root() { [[ ${EUID:-1} == 0 ]] || { _toolbox_reinstall_error '需要 root；未执行。'; return 1; }; }
 _toolbox_reinstall_state_dir() { printf '%s\n' "${TOOLBOX_REINSTALL_STATE:-/var/lib/terry-toolbox/reinstall}"; }
 _toolbox_reinstall_host_root() { printf '%s\n' "${TOOLBOX_REINSTALL_ROOT:-/}"; }
 _toolbox_reinstall_need() {
     local c missing=()
     for c in "$@"; do _toolbox_reinstall_has "$c" || missing+=("$c"); done
-    (( ${#missing[@]} == 0 )) || { _toolbox_reinstall_error "缺少依赖：${missing[*]}；不会自动安装。"; return 1; }
+    (( ${#missing[@]} != 0 )) || return 0
+    # Normal menu/bundle entry loads the shared core. Standalone source remains
+    # side-effect free; load its sibling only when commands really are missing.
+    if ! declare -F toolbox_require_commands >/dev/null; then
+        local core="${_toolbox_reinstall_module_dir:-}/dependencies.sh"
+        [[ ${TOOLBOX_BUNDLED:-0} != 1 && -n ${_toolbox_reinstall_module_dir:-} ]] || {
+            _toolbox_reinstall_error '打包入口未加载共享依赖模块，未执行。'; return 1;
+        }
+        [[ -r $core ]] || { _toolbox_reinstall_error "缺少依赖：${missing[*]}；共享依赖模块不可用，未执行。"; return 1; }
+        source "$core" || return
+    fi
+    toolbox_require_commands 'M3 重装普通工具' "${missing[@]}" || return
+    # Keep the caller's own probe authoritative (also used by offline fixtures).
+    for c in "${missing[@]}"; do
+        _toolbox_reinstall_has "$c" || { _toolbox_reinstall_error "依赖安装后仍缺少命令：$c；未执行。"; return 1; }
+    done
+    _toolbox_reinstall_error 'M3 普通工具依赖已按确认安装；此步骤修改了系统软件包，cancel 不会卸载这些包。磁盘/引导预检仍只读，不安装或转换 GRUB/init。'
+}
+_toolbox_reinstall_need_bootloader() {
+    local c missing=()
+    for c in "$@"; do _toolbox_reinstall_has "$c" || missing+=("$c"); done
+    (( ${#missing[@]} == 0 )) || {
+        _toolbox_reinstall_error "缺少现有 BIOS GRUB 命令：${missing[*]}；不会自动安装或转换引导器/init，不接管当前引导，未执行重装 prepare。"
+        return 1
+    }
 }
 _toolbox_reinstall_container() {
     local r rc=0 out line vm=0
@@ -447,22 +480,25 @@ PY
 _toolbox_reinstall_preflight() {
     # Host init is reviewed independently of the future distribution. Upstream
     # prepares the bootloader on this host and installs a different OS after boot.
-    local rc=0 arch inventory mounts efi='' r disk secure init want=${1:-}
+    local rc=0 arch inventory mounts efi='' r disk secure init want=${1:-} commands=()
     case $want in ''|debian|ubuntu|alpine) ;; *) _toolbox_reinstall_error "preflight 目标未审定: $want"; return 1;; esac
     _toolbox_reinstall_root || return
-    _toolbox_reinstall_need bash python3 curl sha256sum ssh-keygen lsblk findmnt flock uname stat cp mv rm mkdir rmdir env cat id \
-        grep sed awk sort head tail wc cut tr xargs find readlink fdisk gzip cpio lsmem dmidecode virt-what || return
+    r=$(_toolbox_reinstall_host_root)
+    commands=(bash python3 curl sha256sum ssh-keygen lsblk findmnt flock uname stat cp mv rm mkdir rmdir env cat id
+        grep sed awk sort head tail wc cut tr xargs find readlink fdisk gzip cpio lsmem dmidecode virt-what)
+    # Gather mode-specific ordinary tools before asking once. EFI inspection
+    # tools do not install a bootloader or bypass the existing ESP/firmware gate.
+    [[ ! -d $r/sys/firmware/efi ]] || commands+=(efibootmgr mokutil)
+    _toolbox_reinstall_need "${commands[@]}" || return
     # Init is decided from PID1, not from an optional detector; unknown refuses.
     init=$(_toolbox_reinstall_init) || return 1
     _toolbox_reinstall_container || rc=$?
     case $rc in 1) ;; 0) _toolbox_reinstall_error '拒绝 container；未执行。'; return 1;; *) _toolbox_reinstall_error 'container 状态未知；未执行。'; return 1;; esac
-    r=$(_toolbox_reinstall_host_root)
     arch=$(uname -m) || return
     inventory=$(_toolbox_reinstall_lsblk) || { _toolbox_reinstall_error 'lsblk 回读失败'; return 1; }
     mounts=$(_toolbox_reinstall_mounts) || { _toolbox_reinstall_error 'mount 回读失败'; return 1; }
     disk=$(_toolbox_reinstall_data inventory "$r" "$(_toolbox_reinstall_state_dir)" "$inventory" "$mounts" "$arch") || return
     if [[ -d $r/sys/firmware/efi ]]; then
-        _toolbox_reinstall_need efibootmgr mokutil || return
         secure=$(mokutil --sb-state) || { _toolbox_reinstall_error 'Secure Boot 状态未知'; return 1; }
         [[ $secure == *'SecureBoot disabled'* ]] || { _toolbox_reinstall_error '要求 Secure Boot 明确 disabled'; return 1; }
         efi=$(_toolbox_reinstall_efi) || return
@@ -483,7 +519,7 @@ PY
     else
         # Upstream BIOS extlinux mutates MENU HIDDEN/TIMEOUT and opaque --once.
         # Refuse it rather than inventing a reversible cancellation path.
-        _toolbox_reinstall_need grub-mkconfig grub-editenv grub-reboot update-grub || return
+        _toolbox_reinstall_need_bootloader grub-mkconfig grub-editenv grub-reboot update-grub || return
         local grub='' f
         for f in /boot/grub /boot/grub2; do
             [[ ! -f $r$f/grub.cfg ]] || { [[ -z $grub ]] || { _toolbox_reinstall_error 'GRUB 布局不唯一'; return 1; }; grub=$f; }
@@ -496,7 +532,7 @@ PY
     _toolbox_reinstall_boot_id >/dev/null || return
     printf 'Init: %s（PID1 审定）\n' "$init"
     printf 'Exact whole physical disk destructive scope（所有分区/全部数据）: %s\n' "$disk"
-    printf 'preflight 只读通过；不等于安装验收。上游可能补装 runtime 包、修改 boot 文件与 kexec。本阶段不重启；重启进 initrd 后由上游自动 reboot。\n'
+    printf 'preflight 磁盘/引导只读检查通过；不等于安装验收。缺失普通工具的安装须另经确认。上游可能补装 runtime 包、修改 boot 文件与 kexec。本阶段不重启；重启进 initrd 后由上游自动 reboot。\n'
     _toolbox_reinstall_disk=$disk
     _toolbox_reinstall_efi_before=$efi
     _toolbox_reinstall_host_init=$init
@@ -631,10 +667,11 @@ PY
     printf '仅 prepare 完成并回读；尚未安装，本阶段不会重启。重启交接：先 toolbox_reinstall status，核实备份/rescue 后由操作者重启；进入 initrd 后上游安装完成会自行 reboot（未用 --hold），需自行观察第二次重启结果——本工具从不执行 reboot。\n'
 )
 _toolbox_reinstall_status() {
-    local r state efi='' boot
-    _toolbox_reinstall_need python3 || return
+    local r state efi='' boot commands=(python3 cat)
     r=$(_toolbox_reinstall_host_root);state=$(_toolbox_reinstall_state_dir)
     [[ -e $state/active || -L $state/active ]] || { printf '没有本工具 owned plan；只读，未调用上游。\n'; return 0; }
+    [[ ! -d $r/sys/firmware/efi ]] || commands+=(efibootmgr)
+    _toolbox_reinstall_need "${commands[@]}" || return
     [[ -f $state/active/seal && ! -L $state/active ]] || { _toolbox_reinstall_error "blocking: unsealed/unknown plan $state/active；下载/准备中断；保留 report，禁止 reset"; return 1; }
     boot=$(_toolbox_reinstall_boot_id) || return
     [[ ! -d $r/sys/firmware/efi ]] || efi=$(_toolbox_reinstall_efi) || return
@@ -642,14 +679,15 @@ _toolbox_reinstall_status() {
 }
 _toolbox_reinstall_cancel() (
     umask 077
-    local r state efi='' boot rc=0 lockfd init lock_identity
+    local r state efi='' boot rc=0 lockfd init lock_identity commands=(python3 flock uname lsblk findmnt bash sha256sum cat)
     _toolbox_reinstall_root || return
-    _toolbox_reinstall_need python3 flock uname lsblk findmnt bash sha256sum || return
+    r=$(_toolbox_reinstall_host_root);state=$(_toolbox_reinstall_state_dir)
+    [[ ! -d $r/sys/firmware/efi ]] || commands+=(efibootmgr)
+    _toolbox_reinstall_need "${commands[@]}" || return
     init=$(_toolbox_reinstall_init) || return 1
     local container_rc=0
     _toolbox_reinstall_container || container_rc=$?
     [[ $container_rc == 1 ]] || { _toolbox_reinstall_error 'cancel container/unknown state；拒绝 reset'; return 1; }
-    r=$(_toolbox_reinstall_host_root);state=$(_toolbox_reinstall_state_dir)
     [[ -e $state/active/seal && -f $state/lock && ! -L $state/lock ]] || { _toolbox_reinstall_error '没有可验证 owned plan；拒绝调用上游 reset'; return 1; }
     python3 - "$state/lock" <<'PY' || return
 import os,stat,sys

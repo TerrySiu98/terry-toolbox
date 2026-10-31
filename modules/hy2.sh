@@ -9,6 +9,17 @@
 # 固定上游：HyNetworks/hysteria app/v2.13.0 官方发布二进制 + SHA-256 白名单。
 # 不使用官方一键脚本，也不从「latest」解析版本号。
 
+# Remember only the source directory; dependency work remains lazy. Bundles
+# already contain the core and must never look beside the downloaded script.
+_TOOLBOX_HY2_MODULE_DIR=''
+if [[ ${TOOLBOX_BUNDLED:-0} != 1 ]]; then
+    case ${BASH_SOURCE[0]} in
+        */*) _TOOLBOX_HY2_MODULE_DIR=${BASH_SOURCE[0]%/*};;
+        *) _TOOLBOX_HY2_MODULE_DIR=.;;
+    esac
+    _TOOLBOX_HY2_MODULE_DIR=$(CDPATH= builtin cd -- "$_TOOLBOX_HY2_MODULE_DIR" && builtin pwd -P) || _TOOLBOX_HY2_MODULE_DIR=''
+fi
+
 hy2_const() { # name value
     [[ -n ${!1+set} ]] && return 0
     printf -v "$1" '%s' "$2"
@@ -43,9 +54,11 @@ hy2_require_root() {
 
 # 只接受 ID=debian。衍生版（如 kali、raspbian）的包和 systemd 行为有差异，不冒险。
 hy2_require_debian() {
-    local file=${TOOLBOX_HY2_OS_RELEASE:-/etc/os-release} id=''
+    local file=${TOOLBOX_HY2_OS_RELEASE:-/etc/os-release} id='' line
     [[ -r $file ]] || { hy2_die "无法读取 $file，不能确认发行版。"; return 1; }
-    id=$(sed -n 's/^ID=//p' "$file" | head -n1)
+    while IFS= read -r line || [[ -n $line ]]; do
+        case $line in ID=*) id=${line#ID=}; break;; esac
+    done < "$file"
     id=${id%\"}; id=${id#\"}; id=${id%\'}; id=${id#\'}
     [[ ${id,,} == debian ]] || hy2_die "仅支持 Debian（当前 ID=${id:-未知}）；不支持 Alpine/Ubuntu/衍生版。"
 }
@@ -56,12 +69,20 @@ hy2_require_systemd() {
     [[ -d $run_dir ]] || hy2_die 'systemd 未作为 init 运行（缺少 /run/systemd/system）。'
 }
 
-hy2_require_tools() {
+hy2_require_commands() {
     local missing=() c
-    for c in openssl sha256sum curl flock ss awk sed mktemp stat install ln timeout; do
+    for c in "$@"; do
         command -v "$c" >/dev/null 2>&1 || missing+=("$c")
     done
-    (( ${#missing[@]} == 0 )) || hy2_die "缺少必需命令：${missing[*]}"
+    if (( ${#missing[@]} )); then
+        declare -F toolbox_require_commands >/dev/null || { [[ -n ${_TOOLBOX_HY2_MODULE_DIR:-} ]] && source "$_TOOLBOX_HY2_MODULE_DIR/dependencies.sh"; } || return 1
+        toolbox_require_commands 'Hysteria 2' "${missing[@]}" || return 1
+    fi
+}
+
+hy2_require_tools() {
+    hy2_require_commands openssl sha256sum curl flock ss awk sed mktemp stat install ln timeout \
+        uname grep date cut tr readlink cp chmod mkdir rm rmdir dirname cat sleep
 }
 
 hy2_arch() {
@@ -684,6 +705,11 @@ _hy2_uninstall() {
     hy2_require_root || return 1
     hy2_require_systemd || return 1
     unit=$(hy2_unit); etc=$(hy2_etc); bin=$(hy2_bin)
+    if [[ ! -e $unit && ! -L $unit && ! -e $bin && ! -L $bin && ! -e $etc && ! -L $etc ]]; then
+        hy2_die '没有找到本模块的安装（单元、二进制、配置都不存在）。'
+        return 1
+    fi
+    hy2_require_commands grep flock rm || return 1
     state=$(hy2_unit_state)
     if [[ $state == absent && ! -e $bin && ! -L $bin && ! -e $etc && ! -L $etc ]]; then
         hy2_die '没有找到本模块的安装（单元、二进制、配置都不存在）。'
@@ -731,6 +757,10 @@ hy2_status() {
         printf '未安装。\n'
         return 1
     fi
+    hy2_require_systemd || return 1
+    hy2_require_commands sed ss readlink grep cut || {
+        hy2_err '状态读取不完整：缺失工具未补齐，无法确认服务监听归属。'; return 1;
+    }
     IFS='|' read -r host port _insecure version < "$(hy2_etc)/meta" 2>/dev/null || true
     printf '单元: %s\n版本: %s\n' "$(hy2_unit)" "${version:-未知}"
     systemctl --no-pager -l status "$HY2_UNIT_NAME" 2>&1 | sed -n '1,6p'

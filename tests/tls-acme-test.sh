@@ -38,10 +38,37 @@ export T
 eval "$(declare -f tls_acme_confirm | python3 -c 'import sys;print(sys.stdin.read().replace("tls_acme_confirm", "tls_acme_original_confirm", 1))')"
 cleanup() {
     local rc=$?
+    if [[ -s $T/package-boundary.log ]]; then
+        printf 'FAIL: unmocked package command\n' >&2
+        command cat "$T/package-boundary.log" >&2
+        rc=1
+    fi
     if (( rc != 0 )); then printf 'Failed TLS fixture retained: %s\n' "$T" >&2
     else python3 -c 'import shutil,sys; shutil.rmtree(sys.argv[1])' "$T"; fi
+    exit "$rc"
 }
 trap cleanup EXIT
+# Physical package guards also cover child Bash and an empty environment.
+mkdir -p "$T/package-deny"
+: > "$T/package-boundary.log"
+for manager in sudo apt apt-get apt-cache aptitude apk dpkg dpkg-query dpkg-deb dnf yum rpm; do
+    {
+        printf '#!/bin/sh\n'
+        printf 'printf "%%s\\n" "$0 $*" >> %q\n' "$T/package-boundary.log"
+        printf 'exit 99\n'
+    } > "$T/package-deny/$manager"
+    chmod 0755 "$T/package-deny/$manager"
+done
+export PATH="$T/package-deny:$PATH"
+for guard_env in inherited empty; do
+    if [[ $guard_env == empty ]]; then
+        env -i PATH="$PATH" bash --noprofile --norc -c 'apt-get --fixture-guard-probe' && exit 1 || [[ $? == 99 ]]
+    else
+        bash --noprofile --norc -c 'apt-get --fixture-guard-probe' && exit 1 || [[ $? == 99 ]]
+    fi
+done
+[[ $(wc -l < "$T/package-boundary.log") -eq 2 ]]
+: > "$T/package-boundary.log"
 python3 - "$T" <<'PY'
 import sys,os,datetime
 from cryptography import x509
@@ -180,17 +207,26 @@ for input in '' 'YES' $'YES\nYES' $'YES\nNO\n'; do
     no_mutation
 done
 pass 'issue cancellation/EOF has zero external mutation'
+source "$ROOT/modules/dependencies.sh"
 for kind in certbot python3 openssl systemctl ss timeout; do
     fixture "missing-$kind"
     command() { if [[ $* == "-v $kind" ]]; then return 1; fi; builtin command "$@"; }
-    reject issue; unset -f command
+    # A missing-command case declines the dependency prompt independently of
+    # the two legacy business confirmations; package metadata is fixture data.
+    (
+        _toolbox_deps_os() { printf 'debian\n'; }
+        _toolbox_deps_ca_package() { return 0; }
+        _toolbox_deps_confirm() { printf 'fixture: dependency installation declined\n' >&2; return 1; }
+        reject issue
+    )
+    unset -f command
     no_mutation
     python3 - "$C/output" "$kind" <<'PY'
 import sys
-assert '缺少必需命令：'+sys.argv[2] in open(sys.argv[1]).read()
+assert '缺少命令：'+sys.argv[2] in open(sys.argv[1]).read()
 PY
 done
-pass 'named missing command refusal, no auto install'
+pass 'named missing command refusal, dependency refusal before execution'
 for kind in port ss-error ss-malformed os systemd fixture-seal parent-symlink foreign-root lock; do
     fixture "preflight-$kind"
     case $kind in

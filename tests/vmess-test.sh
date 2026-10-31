@@ -11,6 +11,12 @@ mkdir -p -- "$test_tmp"
 T=$(mktemp -d "$test_tmp/vmess-test.XXXXXXXX")
 export T
 cleanup() {
+    local rc=$?
+    if [[ -s $T/package-boundary.log ]]; then
+        printf 'FAIL: unmocked package command\n' >&2
+        command cat "$T/package-boundary.log" >&2
+        rc=1
+    fi
     python3 - "$T" <<'PY'
 import os, signal, shutil, sys
 root = sys.argv[1]
@@ -24,8 +30,30 @@ for path, _, files in os.walk(root):
     except (OSError, ValueError): pass
 shutil.rmtree(root)
 PY
+    exit "$rc"
 }
 trap cleanup EXIT
+# Physical package guards also cover child Bash and an empty environment.
+mkdir -p "$T/package-deny"
+: > "$T/package-boundary.log"
+for manager in sudo apt apt-get apt-cache aptitude apk dpkg dpkg-query dpkg-deb dnf yum rpm; do
+    {
+        printf '#!/bin/sh\n'
+        printf 'printf "%%s\\n" "$0 $*" >> %q\n' "$T/package-boundary.log"
+        printf 'exit 99\n'
+    } > "$T/package-deny/$manager"
+    chmod 0755 "$T/package-deny/$manager"
+done
+export PATH="$T/package-deny:$PATH"
+for guard_env in inherited empty; do
+    if [[ $guard_env == empty ]]; then
+        env -i PATH="$PATH" bash --noprofile --norc -c 'apt-get --fixture-guard-probe' && exit 1 || [[ $? == 99 ]]
+    else
+        bash --noprofile --norc -c 'apt-get --fixture-guard-probe' && exit 1 || [[ $? == 99 ]]
+    fi
+done
+[[ $(wc -l < "$T/package-boundary.log") -eq 2 ]]
+: > "$T/package-boundary.log"
 fail() {
     [[ -z ${C:-} || ! -f $C/output ]] || command cat "$C/output" >&2
     printf 'FAIL: %s\n' "$*" >&2; exit 1;
@@ -147,9 +175,15 @@ printf 'ID=ubuntu\n' > "$C/os-release"; reject install_yes; empty_targets; no_mu
 printf 'ID=debian\n' > "$C/os-release"
 rm -d "$C/run"; reject install_yes; empty_targets; no_mutation
 pass 'explicit prerequisite failure under conditional caller'
+source "$ROOT/modules/dependencies.sh"
 fixture missing-command
 command() { if [[ $* == '-v python3' ]]; then return 1; fi; builtin command "$@"; }
-reject install_yes; empty_targets; no_mutation
+(
+    _toolbox_deps_os() { printf 'debian\n'; }
+    _toolbox_deps_confirm() { printf 'fixture: dependency installation declined\n' >&2; return 1; }
+    reject install_yes
+)
+empty_targets; no_mutation
 unset -f command
 pass 'missing mandatory command under conditional caller'
 for conflict in etc binary unit symlink dropin loaded lock port ss-error show-error; do

@@ -5,19 +5,39 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 source "$ROOT/tests/scratch-root.sh"
 toolbox_test_scratch
 R=$(mktemp -d "$TMPDIR/toolbox-system-alpine-feedback.XXXXXXXX")
-trap 'if [[ ${SYSTEM_ALPINE_KEEP:-0} == 1 ]]; then printf "Mock evidence: %s\n" "$R"; else rm -rf -- "$R"; fi' EXIT
+trap 'rc=$?; if [[ -s $R/package-boundary.log ]]; then printf "FAIL: unmocked package execution was attempted\n" >&2; cat "$R/package-boundary.log" >&2; rc=1; fi; if [[ ${SYSTEM_ALPINE_KEEP:-0} == 1 ]]; then printf "Mock evidence: %s\n" "$R"; else rm -rf -- "$R"; fi; exit "$rc"' EXIT
 export HOME="$R/home" PATH="$R/deny:/usr/bin:/bin"
 mkdir -p -- "$HOME" "$R/deny"
 # Any unmocked privileged boundary fails rather than reaching the host.
-for cmd in apk docker dockerd containerd runc apt-get systemctl rc-service rc-status rc-update \
+for cmd in sudo apt apt-get apt-cache aptitude apk dpkg dpkg-query dpkg-deb docker dockerd containerd runc systemctl rc-service rc-status rc-update \
            sysctl reboot passwd mount umount chroot iptables ip6tables curl wget; do
     printf '#!/usr/bin/env bash\nprintf "UNMOCKED boundary: %s\\n" >&2\nexit 99\n' "$cmd" > "$R/deny/$cmd"
     chmod 0755 -- "$R/deny/$cmd"
 done
+: > "$R/package-boundary.log"
+for cmd in sudo apt apt-get apt-cache aptitude apk dpkg dpkg-query dpkg-deb; do
+    {
+        printf '#!/usr/bin/env bash\n'
+        printf 'printf "%%s\\n" "$0 $*" >> %q\n' "$R/package-boundary.log"
+        printf 'printf "UNMOCKED package boundary: %%s\\n" "$0" >&2\nexit 99\n'
+    } > "$R/deny/$cmd"
+done
+package_guard_probe='for manager in sudo apt apt-get apk dpkg; do [[ $(command -v "$manager") == "$1/$manager" ]] || exit 1; rc=0; "$manager" --fixture-guard-probe || rc=$?; [[ $rc == 99 ]] || exit 1; done'
+bash --noprofile --norc -c "$package_guard_probe" guard "$R/deny" >/dev/null 2>&1
+env -i PATH="$PATH" bash --noprofile --norc -c "$package_guard_probe" guard "$R/deny" >/dev/null 2>&1
+[[ $(wc -l < "$R/package-boundary.log") == 10 ]]
+: > "$R/package-boundary.log"
 # shellcheck disable=SC1090
 source "${SYSTEM_MODULE_UNDER_TEST:-$ROOT/modules/system.sh}"
+source "$ROOT/modules/dependencies.sh"
 _toolbox_system_root() { return 0; }
 _toolbox_system_os() { printf 'alpine\n'; }
+# New dependency paths must use the fixture inventory and distribution, never
+# the Debian/Ubuntu host running this Alpine mock suite.
+_toolbox_deps_has() { _toolbox_system_has "$1"; }
+_toolbox_deps_root() { return 0; }
+_toolbox_deps_os() { printf 'alpine\n'; }
+_toolbox_deps_ca_package() { return 0; }
 fail() {
     printf 'FAIL %s: %s\n' "$CASE" "$*" >&2
     for file in "$F/out" "$LOG"; do [[ ! -f $file ]] || /usr/bin/cat -- "$file" >&2; done
