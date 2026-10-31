@@ -8,8 +8,10 @@
 #     resolvectl / systemctl。所有路径都在临时目录，绝不碰本机 /etc、/usr/local/bin、
 #     /run 或 systemd。
 set -euo pipefail
+source "$(dirname -- "${BASH_SOURCE[0]}")/scratch-root.sh"
+toolbox_test_scratch
 ROOT=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-work=$(mktemp -d "${TMPDIR:-/root/.hermes/cache/scratch}/toolbox-net-alpine-test.XXXXXXXX")
+work=$(mktemp -d "${TMPDIR:-/root/.cache/terry-toolbox-tests}/toolbox-net-alpine-test.XXXXXXXX")
 cleanup() {
     python3 -c '
 import os, signal, time
@@ -289,11 +291,9 @@ mk_cert() { # <名> <CN/SAN>
 }
 mk_cert good a1.example.test
 mk_cert other wrong.example.test
-openssl req -x509 -newkey rsa:2048 -nodes -sha256 \
-    -keyout "$work/past.key" -out "$work/past.crt" \
-    -not_before 20200101000000Z -not_after 20200102000000Z \
-    -subj '/CN=a1.example.test' -addext 'subjectAltName=DNS:a1.example.test' >/dev/null 2>&1 \
-    && HAVE_PAST=1 || HAVE_PAST=0
+# Keep the same real expiry rejection on OpenSSL 1.1 and newer releases.
+python3 "$ROOT/tests/certificate-fixture.py" "$work/past.crt" "$work/past.key" \
+    20200101000000Z 20200102000000Z --hostname a1.example.test
 
 H=a1.example.test
 
@@ -341,11 +341,10 @@ if printf 'YES\n' | toolbox_network A1 install "$work/good.crt" "$work/other.key
 fi
 out=$(printf 'YES\n' | toolbox_network A1 install "$work/good.crt" "$work/good.key" other.example.test 2>&1 || true)
 [[ $out == *'不包含主机名'* ]] || fail 'A1 域名不符未报错'
-if [[ $HAVE_PAST == 1 ]]; then
-    if printf 'YES\n' | toolbox_network A1 install "$work/past.crt" "$work/past.key" "$H" >/dev/null 2>&1; then
-        fail 'A1 过期证书被接受'
-    fi
+if out=$(printf 'YES\n' | toolbox_network A1 install "$work/past.crt" "$work/past.key" "$H" 2>&1); then
+    fail 'A1 过期证书被接受'
 fi
+[[ $out == *'证书已过期'* ]] || fail 'A1 过期证书未到达时间校验'
 printf 'not-a-cert\n' > "$work/junk.crt"
 if printf 'YES\n' | toolbox_network A1 install "$work/junk.crt" "$work/good.key" "$H" >/dev/null 2>&1; then
     fail 'A1 垃圾证书被接受'

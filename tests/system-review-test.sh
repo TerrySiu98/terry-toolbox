@@ -2,7 +2,8 @@
 # Focused post-review regressions. Only scratch files + mocked privileged commands.
 set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-export TMPDIR=/root/.hermes/cache/scratch
+source "$ROOT/tests/scratch-root.sh"
+toolbox_test_scratch
 R=$(mktemp -d "$TMPDIR/toolbox-system-review.XXXXXXXX")
 trap 'rm -rf -- "$R"' EXIT
 export HOME=$R/home PATH=$R/deny:/usr/bin:/bin

@@ -2,10 +2,8 @@
 # Mock regressions, NOT a real Alpine/OpenRC/Docker integration test.
 set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-export TMPDIR=${TMPDIR:-/root/.hermes/cache/scratch}
-mkdir -p -- "$TMPDIR"
-TMPDIR=$(cd -- "$TMPDIR" && pwd -P)
-case $TMPDIR in /root/.hermes/cache/scratch|/root/.hermes/cache/scratch/*) ;; *) printf 'unsafe TMPDIR\n' >&2; exit 1;; esac
+source "$ROOT/tests/scratch-root.sh"
+toolbox_test_scratch
 R=$(mktemp -d "$TMPDIR/toolbox-system-alpine-feedback.XXXXXXXX")
 trap 'if [[ ${SYSTEM_ALPINE_KEEP:-0} == 1 ]]; then printf "Mock evidence: %s\n" "$R"; else rm -rf -- "$R"; fi' EXIT
 export HOME="$R/home" PATH="$R/deny:/usr/bin:/bin"

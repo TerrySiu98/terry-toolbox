@@ -1,6 +1,52 @@
+# Generated bundles and local test output
 dist/
 *.log
+__pycache__/
+*.py[cod]
+.wrangler/
+
+# Local environment and deployment credentials
 .env
 .env.*
+.dev.vars
+.dev.vars.*
+secrets/
+credentials/
+credentials.json
+credentials.*.json
+cloudflare-tunnel.json
+token
+tokens
+token.json
+tokens.json
+*.token
+*.secret
+*.secrets
+.git-credentials
+.netrc
+
+# Private keys and credential stores
 *.key
 *.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa
+id_ecdsa
+id_ed25519
+.ssh/
+
+# Runtime data and disposable machine images (not source fixtures)
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.qcow2
+*.img
+*.iso
+*.vmdk
+*.vdi
+*.raw

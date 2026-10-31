@@ -54,7 +54,7 @@ toolbox_app() (
         27) name=stirling-pdf; image=docker.stirlingpdf.com/stirlingtools/stirling-pdf:latest; default_port=8080; target_port=8080; data_target=/configs; note='默认不启用登录（SECURITY_ENABLELOGIN=false）：任何可达者都能使用，公网访问前须开启登录并配置 TLS。' ;;
         28) name=mfa-start; image=lovele/mfa-start@sha256:d328fb3d8046192356b7e693bb4afdea160a897ac6d227a8260aa23f89077572; default_port=9999; target_port=9999; data_target=/mfa-start/data; environment=mfa-start; note='release 配置自带默认 admin/admin1234；本工具改用固定用户名 mfa-start-user 和自设密码，经 SPRING_SECURITY_USER_* 环境变量传入（不进入命令行）。只有表单登录，无 HTTPS、无 2FA：公网前须自行配置反向代理与 TLS。数据是未加密的 H2 单文件（/mfa-start/data），容器以 root 运行且文件属主为 root，其中保存的 TOTP 种子泄露即可生成验证码，须定期备份并限制读取。镜像只有 linux/amd64 架构。' ;;
         29) name=ddns-go; image=jeessy/ddns-go@sha256:0336e6eddcb4052e978c90f0aa530f77205b1dd08fe28057869dbc77a60c5671; default_port=9876; target_port=9876; data_target=/root; note='无默认凭据：首次访问须自行设置管理员账号和复杂密码；bridge 模式可能无法读取宿主机网卡/IPv6。' ;;
-        30) name=vaultwarden; image=vaultwarden/server@sha256:efb3cde962015fcc036b2ea625242248611943b27212ebf4392841fb30fad055; default_port=3003; target_port=80; data_target=/data; note='默认允许注册（SIGNUPS_ALLOWED=true）：首个注册账号即管理员，初始化后立即关闭注册。正式使用需可信域名、HTTPS、备份及上游安全配置。' ;;
+        30) name=vaultwarden; image=vaultwarden/server@sha256:efb3cde962015fcc036b2ea625242248611943b27212ebf4392841fb30fad055; default_port=3003; target_port=80; data_target=/data; note='默认允许注册（SIGNUPS_ALLOWED=true）：注册得到普通密码库账号，不会自动成为服务器管理员；管理员面板需另行配置 ADMIN_TOKEN。初始化后按需关闭注册。正式使用需可信域名、HTTPS、备份及上游安全配置。' ;;
         *) printf '未知应用编号: %s\n' "$id" >&2; return 2 ;;
     esac
     if ! command -v docker >/dev/null 2>&1; then

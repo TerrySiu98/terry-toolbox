@@ -122,10 +122,11 @@ _tb_banner() {
 _tb_main_screen() {
   _tb_banner
   _tb_head '请选择要执行的操作'
-  _tb_pair '🌐 1. 网络服务' '💽 4. 重装系统（未实现）'
+  _tb_pair '🌐 1. 网络服务' '💽 4. 重装系统（开发中）'
   _tb_pair '⚡ 2. 安装 BBR' '🛠️  5. 常用工具'
   _tb_pair '📦 3. 安装基础依赖' '🔄 99. 重新启动'
   _tb_pair '🩺  DIAG 只读体检' '🚪 0. 退出脚本'
+  _tb_row '🔐 TLS 证书管理（本地开发）'
   _tb_bot
   if (( TB_WIDTH < 64 )); then
     printf '\n %s· 输入编号回车；A1 / B9 快捷可用%s\n' "$TB_DIM" "$TB_RESET"

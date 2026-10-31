@@ -36,7 +36,11 @@ def main():
     (OUT / 'welcome.txt').write_bytes(page)
     (OUT / 'router.mjs').write_bytes((ROOT / 'web' / 'router.mjs').read_bytes())
     (OUT / 'worker.mjs').write_text(main_module)
-    (OUT / 'manifest.json').write_text(json.dumps({'sha256': sha, 'content_security_policy': csp}, indent=2) + '\n')
+    files = {name: {'sha256': hashlib.sha256((OUT / name).read_bytes()).hexdigest(),
+                    'bytes': (OUT / name).stat().st_size}
+             for name in ('worker.mjs', 'router.mjs', 'toolbox.txt', 'welcome.txt')}
+    (OUT / 'manifest.json').write_text(json.dumps({'schema': 1, 'sha256': sha,
+        'content_security_policy': csp, 'files': files}, indent=2) + '\n')
     print(f'Worker bundle: {OUT}\nBash SHA-256: {sha}')
 
 

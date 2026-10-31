@@ -4,7 +4,9 @@
 # under a fresh temporary directory via the TOOLBOX_WEBSSH_* path override.
 set -euo pipefail
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-export TMPDIR=/root/.hermes/cache/scratch
+source "$script_dir/scratch-root.sh"
+toolbox_test_scratch
+TEST_SCRATCH=$TMPDIR
 TEST_DIR=$(mktemp -d "$TMPDIR/toolbox-webssh.XXXXXXXX")
 trap 'rm -rf -- "$TEST_DIR"' EXIT
 export HOME="$TEST_DIR/home" TMPDIR="$TEST_DIR/tmp"
@@ -54,7 +56,7 @@ pid_seq=$((pid_max + 10000))
 
 test_isolation() {
     local path boundary
-    [[ $TEST_DIR == /root/.hermes/cache/scratch/toolbox-webssh.* && -d $TEST_DIR && ! -L $TEST_DIR ]] \
+    [[ $TEST_DIR == "$TEST_SCRATCH"/toolbox-webssh.* && -d $TEST_DIR && ! -L $TEST_DIR ]] \
         || fail 'unsafe test root'
     for path in "$HOME" "$TMPDIR" "$LOG" "$STATE" "$TOOLBOX_WEBSSH_ETC" "$TOOLBOX_WEBSSH_OPT" \
         "$TOOLBOX_WEBSSH_LIB" "$TOOLBOX_WEBSSH_LOG" "$TOOLBOX_WEBSSH_RUN" "$TOOLBOX_WEBSSH_UNIT_DIR" \
@@ -236,6 +238,10 @@ EOS
 }
 python3() {
     printf 'python3 %s\n' "$*" >> "$LOG"
+    if [[ ${2-} == '# webssh-python-capabilities'* ]]; then
+        [[ ${MOCK_PYTHON_OLD:-0} == 0 ]] || return 1
+        command python3 "$@"; return
+    fi
     if [[ ${2-} == '# webssh-owned-fs'* ]]; then
         if [[ ${3-} == create-dir && ${4-} == "${MOCK_RACE_DIR:-}" ]]; then
             mkdir -p "${4}"; printf 'foreign-race\n' > "${4}/sentinel"
@@ -316,7 +322,7 @@ reset() {
     rm -f "$TOOLBOX_WEBSSH_UNIT_DIR/terry-toolbox-webssh.service" \
         "$TOOLBOX_WEBSSH_UNIT_DIR/terry-toolbox-webssh-nginx.service" "$TOOLBOX_WEBSSH_LOCK"
     mkdir -p "$STATE/active" "$STATE/pid"
-    unset MOCK_PIP_FAIL MOCK_ENABLE_WEBSSH_FAIL MOCK_ENABLE_NGINX_FAIL MOCK_ACTIVE_WEBSSH_FAIL \
+    unset MOCK_PYTHON_OLD MOCK_PIP_FAIL MOCK_ENABLE_WEBSSH_FAIL MOCK_ENABLE_NGINX_FAIL MOCK_ACTIVE_WEBSSH_FAIL \
         MOCK_NGINX_T_FAIL MOCK_ALWAYS_200 MOCK_WS_401 MOCK_BAD_VERSION MOCK_VENV_FAIL MOCK_DL_FAIL \
         MOCK_DISABLE_FAIL MOCK_DISABLE_FAIL_UNIT MOCK_DISABLE_LIES MOCK_STATUS_UNREADABLE MOCK_STATUS_EMPTY \
         MOCK_RACE_DIR MOCK_RACE_UNIT MOCK_REPLACE_LIB_ON_FAIL MOCK_UNIT_WRITE_FAIL MOCK_REPLACE_ETC_ON_SUCCESS MOCK_STATUS_PARTIAL MOCK_STATUS_CONFLICT MOCK_REPLACE_LIB_ON_STOP MOCK_REMOVE_RACE MOCK_RELOAD_FAIL_AT MOCK_REMOVE_IO_FAIL MOCK_VENV_SHOW_FAIL || :
@@ -471,6 +477,20 @@ regression_missing_tool() {
     [[ $out == *'缺少必需命令'* && ! -e $TOOLBOX_WEBSSH_ETC && ! -e $TOOLBOX_WEBSSH_LOCK ]] || fail 'missing curl wrote state'
     assert_no_log 'apt-get'
 }
+regression_python_old() {
+    reset
+    export MOCK_PYTHON_OLD=1
+    if out=$(install_ok 2>&1); then fail 'unsupported Python install accepted'; fi
+    [[ $out == *'Python 3.11+'* && ! -e $TOOLBOX_WEBSSH_ETC && ! -e $TOOLBOX_WEBSSH_LOCK ]] || fail 'unsupported Python wrote installation'
+    assert_no_log 'apt-get'
+    unset MOCK_PYTHON_OLD
+    install_ok >/dev/null 2>&1 || fail 'Python uninstall setup'
+    : > "$LOG"
+    export MOCK_PYTHON_OLD=1
+    if out=$(toolbox_webssh uninstall <<< 'YES' 2>&1); then fail 'unsupported Python uninstall accepted'; fi
+    [[ $out == *'Python 3.11+'* && -d $TOOLBOX_WEBSSH_ETC ]] || fail 'unsupported Python damaged installation'
+    assert_no_log 'systemctl disable'
+}
 regression_reload_failure() {
     local action=$1
     reset
@@ -562,7 +582,7 @@ run_regressions() {
             if ( regression_foreign_path "$name" "$kind" ); then printf 'PASS foreign/%s/%s\n' "$name" "$kind"; else failures=$((failures + 1)); fi
         done
     done
-    for label in race_dir race_unit replaced_dir secret_output parent_symlink stop_retry conditional_write replaced_config stop_replacement remove_race missing_tool remove_io_failure venv_show_failure; do
+    for label in race_dir race_unit replaced_dir secret_output parent_symlink stop_retry conditional_write replaced_config stop_replacement remove_race missing_tool python_old remove_io_failure venv_show_failure; do
         if ( "regression_$label" ); then printf 'PASS %s\n' "$label"; else failures=$((failures + 1)); fi
     done
     for action in install uninstall rollback; do

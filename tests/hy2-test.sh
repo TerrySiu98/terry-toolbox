@@ -7,8 +7,10 @@
 # 桩：systemctl / ss / curl / hysteria 二进制 / sleep。
 # 所有路径都在临时目录，绝不碰本机 /etc、/usr/local/bin、systemd。
 set -euo pipefail
+source "$(dirname -- "${BASH_SOURCE[0]}")/scratch-root.sh"
+toolbox_test_scratch
 ROOT=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-work=$(mktemp -d "${TMPDIR:-/root/.hermes/cache/scratch}/toolbox-hy2-test.XXXXXXXX")
+work=$(mktemp -d "${TMPDIR:-/root/.cache/terry-toolbox-tests}/toolbox-hy2-test.XXXXXXXX")
 cleanup() {
     python3 -c '
 import os, signal, time
@@ -157,7 +159,7 @@ wrote() {
 assert_clean() { if wrote; then fail "$1：留下了写入"; fi; }
 called() { grep -qF -- "$1" "$SD/systemctl.log" 2>/dev/null || fail "缺少 systemctl 调用: $1"; }
 
-# ---- 证书夹具：全部由 openssl 真实生成
+# ---- 证书夹具：真实 PEM；固定过期时间兼容 OpenSSL 1.1
 mk_cert() { # <名> <CN/SAN> [额外 openssl 参数...]
     local name=$1 host=$2
     shift 2
@@ -169,12 +171,9 @@ mk_cert() { # <名> <CN/SAN> [额外 openssl 参数...]
 mk_cert good hy2.example.test
 mk_cert other wrong.example.test
 mk_cert wild '*.wild.test'
-# 过去有效期的证书：openssl 3.x 的 -not_before/-not_after；旧版跳过该场景。
-openssl req -x509 -newkey rsa:2048 -nodes -sha256 \
-    -keyout "$work/past.key" -out "$work/past.crt" \
-    -not_before 20200101000000Z -not_after 20200102000000Z \
-    -subj '/CN=hy2.example.test' -addext 'subjectAltName=DNS:hy2.example.test' >/dev/null 2>&1 \
-    && HAVE_PAST=1 || HAVE_PAST=0
+# The shared helper avoids newer openssl req date flags; never skip expiry.
+python3 "$ROOT/tests/certificate-fixture.py" "$work/past.crt" "$work/past.key" \
+    20200101000000Z 20200102000000Z --hostname hy2.example.test
 
 GOOD_H=hy2.example.test
 
@@ -223,11 +222,10 @@ if toolbox_hy2 install "$work/none.crt" "$work/good.key" "$GOOD_H" <<< 'YES' >/d
 if toolbox_hy2 install "$work/good.crt" "$work/other.key" "$GOOD_H" <<< 'YES' >/dev/null 2>&1; then fail '不配对私钥被接受'; fi
 out=$(toolbox_hy2 install "$work/good.crt" "$work/good.key" "other.example.test" <<< 'YES' 2>&1 || true)
 if [[ $out != *'不包含主机名'* ]]; then printf 'GOT:[%s]\n' "$out" >&2; fail '域名不符未报错'; fi
-if [[ $HAVE_PAST == 1 ]]; then
-    if toolbox_hy2 install "$work/past.crt" "$work/past.key" "$GOOD_H" <<< 'YES' >/dev/null 2>&1; then
-        fail '过期证书被接受'
-    fi
+if out=$(toolbox_hy2 install "$work/past.crt" "$work/past.key" "$GOOD_H" <<< 'YES' 2>&1); then
+    fail '过期证书被接受'
 fi
+[[ $out == *'证书已过期'* ]] || fail '过期证书未到达时间校验'
 assert_clean '证书校验'
 # 通配符证书必须匹配子域
 if ! hy2_check_cert "$work/wild.crt" "$work/wild.key" "a.wild.test" >/dev/null 2>&1; then
@@ -485,7 +483,9 @@ if toolbox_hy2 install >/dev/null 2>&1; then fail '缺少参数仍安装'; fi
 assert_clean '参数错误'
 
 # 24a. 真 CA → 中间 CA → 叶证书链，信任锚与服务端证书独立。
-openssl req -x509 -newkey rsa:2048 -nodes -days 30 -subj /CN=Root-CA \
+# Isolate extensions from the host's v3_ca defaults (1.1 may duplicate -addext).
+printf '[req]\ndistinguished_name=dn\n[dn]\n' > "$work/ca.cnf"
+openssl req -x509 -newkey rsa:2048 -nodes -days 30 -subj /CN=Root-CA -config "$work/ca.cnf" \
     -addext 'basicConstraints=critical,CA:TRUE' -addext 'keyUsage=critical,keyCertSign,cRLSign' \
     -keyout "$work/ca.key" -out "$work/ca.crt" >/dev/null 2>&1
 openssl req -new -newkey rsa:2048 -nodes -subj /CN=Intermediate-CA \
@@ -502,14 +502,43 @@ cat "$work/leaf.crt" "$work/intermediate.crt" > "$work/fullchain.crt"
 TOOLBOX_HY2_CAFILE=$work/ca.crt hy2_tls_trusted "$work/fullchain.crt" || fail 'HY2 完整中间证书链校验失败'
 if TOOLBOX_HY2_CAFILE=$work/ca.crt hy2_tls_trusted "$work/leaf.crt"; then fail '缺中间证书仍验证成功'; fi
 if TOOLBOX_HY2_CAFILE=$work/other.crt hy2_tls_trusted "$work/fullchain.crt"; then fail '错误 CA 接受完整链'; fi
+# Option discovery must precede exactly one strict verification, including when
+# verification fails. Exercise both OpenSSL help shapes on either host version.
+for ca_store in absent present; do
+    (
+        unset -f net_tls_verify
+        verify_log=$work/verify-$ca_store.log
+        openssl() {
+            if [[ $* == 'verify -help' ]]; then
+                [[ $ca_store != present ]] || printf '%s\n' ' -no-CAstore Do not load the default CA store'
+                return 0
+            fi
+            printf '%s\n' "$*" >> "$verify_log"
+            return 42
+        }
+        if TOOLBOX_HY2_CAFILE=$work/ca.crt hy2_tls_trusted "$work/fullchain.crt"; then fail '证书验证失败被当作成功'; fi
+        [[ $(wc -l < "$verify_log") == 1 ]] || fail '证书验证失败后重试'
+        expected="verify -CAfile $work/ca.crt -no-CApath"
+        [[ $ca_store != present ]] || expected+=' -no-CAstore'
+        expected+=" -purpose sslserver -untrusted $work/fullchain.crt $work/fullchain.crt"
+        [[ $(<"$verify_log") == "$expected" ]] || fail 'HY2 独立验证选项不完整'
+    )
+done
 (
     source "$ROOT/modules/network.sh"
     TOOLBOX_NET_CAFILE=$work/ca.crt net_tls_trusted "$work/fullchain.crt" || fail 'network 完整链校验失败'
     TOOLBOX_NET_CAFILE=$work/other.crt TOOLBOX_HY2_CAFILE=$work/ca.crt hy2_tls_trusted "$work/fullchain.crt" || fail 'HY2 CA 被 NET 覆盖'
+    if TOOLBOX_HY2_CAFILE=$work/ca.crt hy2_tls_trusted "$work/leaf.crt"; then fail 'HY2 共享验证接受缺中间证书'; fi
+    if TOOLBOX_HY2_CAFILE=$work/other.crt hy2_tls_trusted "$work/fullchain.crt"; then fail 'HY2 共享验证接受错误 CA'; fi
 )
 
 # 仅 loopback 的真实 TLS 握手：服务端发完整链，正确根 CA/SNI 成功，错误 CA/SNI 失败。
 if [[ ${TOOLBOX_NETWORK_REAL_TESTS:-0} == 1 ]]; then
+    tls_ca_flags=(-no-CApath)
+    # OpenSSL 1.1 has no URI CA store; OpenSSL 3 must also disable its default.
+    if openssl s_client -help 2>&1 | grep -F -- '-no-CAstore' >/dev/null; then
+        tls_ca_flags+=(-no-CAstore)
+    fi
     tls_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
     openssl s_server -accept "127.0.0.1:$tls_port" -cert "$work/leaf.crt" \
         -cert_chain "$work/intermediate.crt" -key "$work/leaf.key" -www >"$work/tls-server.log" 2>&1 &
@@ -524,13 +553,13 @@ for _ in range(100):
 else: sys.exit("TLS loopback server not ready")' "$tls_port" || fail 'TLS loopback 未就绪'
     timeout 10 openssl s_client -connect "127.0.0.1:$tls_port" -servername "$GOOD_H" \
         -verify_hostname "$GOOD_H" -verify_return_error -CAfile "$work/ca.crt" \
-        -no-CApath -no-CAstore </dev/null >"$work/tls-good.log" 2>&1 || fail '真实 TLS 根 CA 校验失败'
+        "${tls_ca_flags[@]}" </dev/null >"$work/tls-good.log" 2>&1 || fail '真实 TLS 根 CA 校验失败'
     if timeout 10 openssl s_client -connect "127.0.0.1:$tls_port" -servername "$GOOD_H" \
         -verify_hostname "$GOOD_H" -verify_return_error -CAfile "$work/other.crt" \
-        -no-CApath -no-CAstore </dev/null >"$work/tls-wrong-ca.log" 2>&1; then fail '真实 TLS 接受错误 CA'; fi
+        "${tls_ca_flags[@]}" </dev/null >"$work/tls-wrong-ca.log" 2>&1; then fail '真实 TLS 接受错误 CA'; fi
     if timeout 10 openssl s_client -connect "127.0.0.1:$tls_port" -servername "$GOOD_H" \
         -verify_hostname wrong.example.test -verify_return_error -CAfile "$work/ca.crt" \
-        -no-CApath -no-CAstore </dev/null >"$work/tls-wrong-sni.log" 2>&1; then fail '真实 TLS 接受错误 SNI'; fi
+        "${tls_ca_flags[@]}" </dev/null >"$work/tls-wrong-sni.log" 2>&1; then fail '真实 TLS 接受错误 SNI'; fi
     kill "$tls_pid" 2>/dev/null || true
     wait "$tls_pid" 2>/dev/null || true
     printf 'TLS loopback fullchain/CA/SNI verification passed\n'

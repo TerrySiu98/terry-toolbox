@@ -1,12 +1,8 @@
 #!/usr/bin/env bash
 set -eu
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-# All fixtures, HOME, downloads and evidence live under Hermes scratch, never /tmp.
-export TMPDIR=${TMPDIR:-/root/.hermes/cache/scratch}
-case $TMPDIR in /root/.hermes/cache/scratch|/root/.hermes/cache/scratch/*) ;; *) printf 'unsafe TMPDIR\n' >&2; exit 1;; esac
-mkdir -p "$TMPDIR"
-TMPDIR=$(cd "$TMPDIR" && pwd -P)
-case $TMPDIR in /root/.hermes/cache/scratch|/root/.hermes/cache/scratch/*) ;; *) printf 'unsafe resolved TMPDIR\n' >&2; exit 1;; esac
+source "$ROOT/tests/scratch-root.sh"
+toolbox_test_scratch
 safetyroot=$(mktemp -d "$TMPDIR/toolbox-system-safety.XXXXXX")
 export HOME="$safetyroot/home"
 mkdir -p "$HOME" "$safetyroot/bin"
@@ -527,6 +523,18 @@ printf 'YES\nNO\n' | toolbox_system MAIN_REBOOT >/dev/null 2>&1 && exit 1
 printf 'YES\nYES\n' | toolbox_system MAIN_REBOOT >/dev/null
 [ "$(<"$log")" = reboot ]
 : > "$log"
+# A pending/unknown M3 plan must gate the reboot; no reinstall module keeps the old path.
+toolbox_reinstall() { case $1 in status) printf 'M3 phase=prepared target=debian 13 disk=/dev/vda commit=abc\n';; esac; }
+printf 'YES\nYES\n' | toolbox_system MAIN_REBOOT >/dev/null 2>&1 && exit 1
+[ ! -s "$log" ]
+printf 'YES\nYES\n/dev/vda\n' | toolbox_system MAIN_REBOOT >/dev/null
+[ "$(<"$log")" = reboot ]
+: > "$log"
+toolbox_reinstall() { printf 'blocking: unknown plan\n'; return 1; }
+printf 'YES\nYES\nREBOOT\n' | toolbox_system MAIN_REBOOT >/dev/null 2>&1 && exit 1
+[ ! -s "$log" ]
+: > "$log"
+unset -f toolbox_reinstall
 printf 'YES\nYES\n' | toolbox_system B8 >/dev/null
 [ "$(<"$log")" = 'passwd root' ]
 : > "$log"
@@ -1248,11 +1256,16 @@ unset TOOLBOX_NODEQUALITY_URL TOOLBOX_NODEQUALITY_SHA256 MOCK_DOWNLOAD
 if printf '1\nYES\nYES\n' | toolbox_system B19 >/dev/null 2>&1; then printf 'B19: Debian 未拒绝\n' >&2; exit 1; fi
 [ ! -s "$log" ]
 TEST_OS=alpine; export TEST_OS
-# swap 分支保持显式禁用且不改动任何东西。
-: > "$log"
-if printf '4\n' | toolbox_system B19 > "$mockroot/out" 2>&1; then printf 'B19: swap 未拒绝\n' >&2; exit 1; fi
-[[ $(<"$mockroot/out") == *'暂未启用'* && $(<"$mockroot/out") == *'未改动'* ]]
-[ ! -s "$log" ]
+# This suite sources only system.sh; every swap action must refuse a missing module.
+# Real module behavior is covered by alpine-swap-test.sh and dispatch-test.sh.
+for choice in 4 5 6; do
+ : > "$log"
+ if printf '%s\n' "$choice" | toolbox_system B19 > "$mockroot/out" 2>&1; then
+  printf 'B19: missing swap module did not refuse action %s\n' "$choice" >&2; exit 1
+ fi
+ [[ $(<"$mockroot/out") == *'模块未加载'* && $(<"$mockroot/out") == *'未改动'* ]]
+ [ ! -s "$log" ]
+done
 if printf '9\n' | toolbox_system B19 >/dev/null 2>&1; then printf 'B19: 非法选项未拒绝\n' >&2; exit 1; fi
 
 # Webtop：缺 docker 与服务不健康都拒绝。

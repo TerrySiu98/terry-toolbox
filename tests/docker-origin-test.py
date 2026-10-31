@@ -4,12 +4,14 @@ No network or package installation; privileged production commands are intercept
 """
 from pathlib import Path
 import hashlib
+import os
 import shlex
 import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRATCH = Path('/root/.hermes/cache/scratch')
+SCRATCH = Path(os.environ.get('TOOLBOX_TEST_TMPDIR', Path.home() / '.cache/terry-toolbox-tests'))
+SCRATCH.mkdir(mode=0o700, parents=True, exist_ok=True)
 PACKAGES = ('docker-ce', 'docker-ce-cli', 'containerd.io', 'docker-buildx-plugin', 'docker-compose-plugin')
 VERSION = '5:29.1.1-1~debian.13~trixie'
 with tempfile.TemporaryDirectory(prefix='toolbox-apt-origin-test.', dir=SCRATCH) as tmp:
@@ -24,6 +26,7 @@ with tempfile.TemporaryDirectory(prefix='toolbox-apt-origin-test.', dir=SCRATCH)
     for pkg in PACKAGES:
         control = r / f'build-{pkg}/DEBIAN'
         control.mkdir(parents=True)
+        control.chmod(0o755)  # dpkg requires this even with the private runner's umask.
         (control / 'control').write_text(f'Package: {pkg}\nVersion: {VERSION}\nArchitecture: amd64\nMaintainer: offline fixture\nDescription: synthetic empty package, never installed\n')
         subprocess.run(['/usr/bin/dpkg-deb', '--build', str(control.parent), str(r / f'fixtures/{pkg}.deb')],
                        env=env, check=True, capture_output=True)
