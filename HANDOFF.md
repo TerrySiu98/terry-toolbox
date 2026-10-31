@@ -2,38 +2,38 @@
 
 更新日期：2026-11-01。本文件记录 Codex 接续后的当前维护入口；原 Hermes 交接已逐字节保存为 [2026-10-31 历史快照](docs/handoff-hermes-20261031.md)。快照中的 Claude Code 称谓、旧测试限制、失败记录及授权说明只描述当时状态，不代表当前分工或新的操作授权。后续工作以 Terry 的当前指示和本文件的证据边界为准。
 
-## 本次依赖补装修复候选
+## 本次依赖补装修复已发布
 
 [PR #2](https://github.com/TerrySiu98/terry-toolbox/pull/2) 的候选分支为 `codex/confirm-missing-dependencies`，产品源码与构建冻结提交为 `f229d25ae66ba0929d3805f0d170ad294ac0ba38`，最终测试提交为 `971d4f3f76eb1a9d36e0fb5a813030a8cc42715f`（仅测试断言修正），基于已发布的 `main` commit `58a5a7171432c6980f860795a13ff60a681504c2`，保留 Hermes 的重装状态及重启保护。线上缺 `virt-what` 就退出的问题已经从发布脚本逐字节确认，并非遗漏上传。
 
-本候选补齐普通依赖的 `y` 确认安装、命令回读及原操作继续执行；M3 目标选择、两次重装确认和磁盘核对仍独立生效。候选 SHA-256 为 `f1a84fed003b0fc344006a6a82ce63a2b42ce552ce9b4301c63ca3e321956777`（701519 字节），测试证据及[固定候选下载命令](docs/dependency-fix-20261031.md#试用固定候选)见依赖补装修复记录。本候选尚未上传 Worker；当前线上仍是 Hermes 的上一版发布。普通包安装不会随 M3 cancel 卸载，也不会自动安装或转换 init/引导器。
+本候选补齐普通依赖的 `y` 确认安装、命令回读及原操作继续执行；M3 目标选择、两次重装确认和磁盘核对仍独立生效。候选 SHA-256 为 `f1a84fed003b0fc344006a6a82ce63a2b42ce552ce9b4301c63ca3e321956777`（701519 字节），测试证据及[固定候选下载命令](docs/dependency-fix-20261031.md#试用固定候选)见依赖补装修复记录。PR #2 已合并为 `36508eafb5234614241b7500f9c89c2fa49a05b5` 并发布到现有 Worker；内容、配置、域名/DNS 及公网已精确回读，见 [2026-11-01 发布记录](docs/release-20261101.md)。普通包安装不会随 M3 cancel 卸载，也不会自动安装或转换 init/引导器。
 
 本次 33 项检查均取得有效通过，0 跳过；按源码哈希汇总四次冻结运行，软件包数据库/日志字节未变、源码无漂移、子进程清理完成。各项来源、原始失败及未验范围见[修复记录](docs/dependency-fix-20261031.md)和[机器可读证据](docs/dependency-fix-20261031.json)。
 
 本次 M3 原生证据为仓库外 `evidence/m3-deps-native-euid-y14fjhon/public-native.json`，对应源码提交 `f229d25ae66ba0929d3805f0d170ad294ac0ba38`：全新 VM 中拒绝补装保持原状态，一次 `y` 真实安装 `virt-what` 后同次 Alpine 预检通过，prepare 确认处 NO/EOF 退出。未执行上游 prepare、擦盘或新系统启动；VM 已关闭。公开摘要及归档校验见本次修复记录。
 
-在新目录取用本次待发布候选（已有目录先检查工作区，不覆盖）：
+在新目录取用本次已发布源码（已有目录先检查工作区，不覆盖）：
 
 ```bash
-git clone --branch codex/confirm-missing-dependencies --single-branch https://github.com/TerrySiu98/terry-toolbox.git
+git clone --branch main --single-branch https://github.com/TerrySiu98/terry-toolbox.git
 cd terry-toolbox
 git log -3 --oneline
 sha256sum docs/index.html
 ```
 
-脚本哈希应与上方候选一致。PR 合并与 Worker 发布各自独立；后续文档提交不改变已验脚本字节。先看本次回归记录，再按下方 Workers 流程发布并回读。
+脚本哈希应与上方发布版本一致。PR 合并与 Worker 发布各自独立，本次二者均已完成；后续文档提交不改变已验脚本字节。后续更新先看回归及当前发布记录，再按下方 Workers 流程备份、发布和回读。
 
-## 首次交付与当前生产版本
+## 首次交付与上一版生产记录
 
 - 仓库：<https://github.com/TerrySiu98/terry-toolbox>；当前发布分支：`main`；[PR #1](https://github.com/TerrySiu98/terry-toolbox/pull/1) 已合并。Codex 接续开发历史位于 `codex/complete-toolbox`。
 - 接续基线：`handoff/hermes`，commit `d884aae024485ff0632011e52a8d37c4a79effb2`。该基线仅用于原始交接，不是依赖修复候选。
 - 首次交付的源码与构建 commit：`f880a583adc75a0241fbbea9cc54e6b7d358b4ec`。该提交是 Codex 的验收源码基线。其后文档提交及 Hermes 修复 `dbe845331dd9ab7f54372c85f4e9c4727d2c927e` 一起经 PR #1 合并为 `5a41fee49a852c0e1964114b8f9b60c078185ed1`；当前发布及原验收范围分别见下方。
-- Codex 原候选 SHA-256：`eb7fdfa9c6ad729efe3206e67d0b73142f5fb39f280b86e06e910ae1b1c83e9a`。Hermes 重启门禁修复后当前发布 SHA-256：`e6b0641d725550245fe18c154321cd3e59e0ef199d63732ee60f5d3c157f6155`（664523 字节）；2026-10-31 已完成 Worker、配置及公网精确回读，见[发布记录](docs/release-20261031.md)。
-- 上一版线上 SHA-256 `cdac369c7d03e118a5317071b3db90cf7bae3bb81a343115ef08d5a19355a542` 已保留在私有回滚快照。提交源码、构建产物和上传 Worker 仍是三个独立动作；线上以 `/sha256` 回读为准。
+- Codex 原候选 SHA-256：`eb7fdfa9c6ad729efe3206e67d0b73142f5fb39f280b86e06e910ae1b1c83e9a`。Hermes 重启门禁修复后的上一版 SHA-256：`e6b0641d725550245fe18c154321cd3e59e0ef199d63732ee60f5d3c157f6155`（664523 字节）；2026-10-31 已完成 Worker、配置及公网精确回读，见[发布记录](docs/release-20261031.md)。
+- 更早线上 SHA-256 `cdac369c7d03e118a5317071b3db90cf7bae3bb81a343115ef08d5a19355a542` 已保留在历史私有回滚快照。提交源码、构建产物和上传 Worker 仍是三个独立动作；线上以 `/sha256` 回读为准。
 
 接手先运行 `git status --short --branch`、`git rev-parse HEAD` 和 `git diff --stat`，保留已有修改。不要用覆盖式复制、`reset --hard`、`clean -fd` 或强推处理不明工作。
 
-Hermes 在新目录取用已发布分支（不含 PR #2 依赖修复候选）：
+Hermes 在新目录取用已发布分支（包含 PR #2 依赖修复）：
 
 ```bash
 git clone --branch main --single-branch https://github.com/TerrySiu98/terry-toolbox.git
@@ -83,7 +83,7 @@ bash scripts/build.sh /absolute/path/to/new-candidate.sh
 
 ## Workers 发布与失败恢复
 
-2026-10-31 只读复查：`sh.uw.cx` 的系统信任验证成功，证书 SAN 覆盖该域名，颁发者为 Google Trust Services WE1，当前有效期至 2027-01-28。DNS 返回 Cloudflare 边缘地址。GitHub Pages 仍保留 `main:/docs`、`cname=sh.uw.cx`、`https_enforced=false` 的历史配置；当前资料不足以确定过去证书报错的原因。建议继续由 Workers 分流网页/脚本，GitHub 保存源码与版本。Terry 已指定先完成修复验收，托管/上线决定届时再定；本轮未迁移或部署。
+2026-10-31 只读复查：`sh.uw.cx` 的系统信任验证成功，证书 SAN 覆盖该域名，颁发者为 Google Trust Services WE1，当前有效期至 2027-01-28。DNS 返回 Cloudflare 边缘地址。GitHub Pages 仍保留 `main:/docs`、`cname=sh.uw.cx`、`https_enforced=false` 的历史配置；当前资料不足以确定过去证书报错的原因。建议继续由 Workers 分流网页/脚本，GitHub 保存源码与版本。该段为 2026-10-31 的历史预检。本次 2026-11-01 已按 Terry 授权发布依赖修复，托管与 DNS 未迁移，见当前发布记录。
 
 生产平台是 **Cloudflare Workers**：Worker `terry-toolbox`，自定义域名 `sh.uw.cx`。浏览器根路径返回欢迎页；CLI 根路径和 `/toolbox.sh` 返回单文件 Bash；`/sha256` 返回脚本哈希。内容全在 Worker 中，不向 GitHub 或原开发机回源。GitHub Pages 的 `/docs` 配置及 `docs/CNAME` 是历史后备，不是当前域名入口。
 

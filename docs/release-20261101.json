@@ -1,0 +1,250 @@
+{
+  "schema": 1,
+  "date": "2026-11-01",
+  "deployment_status": "deployed_verified",
+  "source_commit": "36508eafb5234614241b7500f9c89c2fa49a05b5",
+  "reviewed_pr_head": "1ccf30ad663662dcf16727f71f82d164627c3dae",
+  "pull_request": "https://github.com/TerrySiu98/terry-toolbox/pull/2",
+  "worker": "terry-toolbox",
+  "hostname": "sh.uw.cx",
+  "production_sha256": "f1a84fed003b0fc344006a6a82ce63a2b42ce552ce9b4301c63ca3e321956777",
+  "script_bytes": 701519,
+  "previous_sha256": "e6b0641d725550245fe18c154321cd3e59e0ef199d63732ee60f5d3c157f6155",
+  "verified_at_utc": "2026-10-31T21:51:19.376127+00:00",
+  "settings_preservation": {
+    "settings_exact": true,
+    "subdomain_exact": true,
+    "domains_exact": true,
+    "dns_exact": true,
+    "upload_count": 1,
+    "sha256": "f1a84fed003b0fc344006a6a82ce63a2b42ce552ce9b4301c63ca3e321956777"
+  },
+  "parent_focused_regression": {
+    "passed": 13,
+    "single_full_suite": false,
+    "source_drift": [],
+    "all_cleanup_complete": true,
+    "tests": [
+      "syntax",
+      "build-test.sh",
+      "dependencies-test.sh",
+      "dependency-entrypoints-test.sh",
+      "diagnostics-test.sh",
+      "entry-test.sh",
+      "network-test.sh",
+      "reinstall-test.sh",
+      "system-test.sh",
+      "menu-test.py",
+      "entry-feedback-test.py",
+      "docker-origin-test.py",
+      "worker-test.mjs"
+    ]
+  },
+  "release_focused_regression": {
+    "passed": 3,
+    "tests": [
+      "system-reboot-plan-test.sh",
+      "deploy-cloudflare-test.py",
+      "worker-test.mjs"
+    ],
+    "source_drift": []
+  },
+  "candidate_regression_reference": "dependency-fix-20261031.json",
+  "historical_candidate_regression_independently_rerun": false,
+  "public": {
+    "source_commit": "36508eafb5234614241b7500f9c89c2fa49a05b5",
+    "script_sha256": "f1a84fed003b0fc344006a6a82ce63a2b42ce552ce9b4301c63ca3e321956777",
+    "script_bytes": 701519,
+    "public_checks": [
+      {
+        "name": "cli-root",
+        "status": 200,
+        "bytes": 701519,
+        "sha256": "f1a84fed003b0fc344006a6a82ce63a2b42ce552ce9b4301c63ca3e321956777",
+        "matched": true
+      },
+      {
+        "name": "wget-root",
+        "status": 200,
+        "bytes": 701519,
+        "sha256": "f1a84fed003b0fc344006a6a82ce63a2b42ce552ce9b4301c63ca3e321956777",
+        "matched": true
+      },
+      {
+        "name": "browser-root",
+        "status": 200,
+        "bytes": 11055,
+        "sha256": "b48dadad5a1fbac8d007efeaf615a3a08468a3b0b47383a898a8c1c99b93b8f4",
+        "matched": true
+      },
+      {
+        "name": "explicit-toolbox",
+        "status": 200,
+        "bytes": 701519,
+        "sha256": "f1a84fed003b0fc344006a6a82ce63a2b42ce552ce9b4301c63ca3e321956777",
+        "matched": true
+      },
+      {
+        "name": "sha256",
+        "status": 200,
+        "bytes": 77,
+        "sha256": "8d6da82a6eaec378b854b5a4c28ed1eb9a66b047eb62096170718768b3868162",
+        "matched": true
+      },
+      {
+        "name": "cli-root-fresh",
+        "status": 200,
+        "bytes": 701519,
+        "sha256": "f1a84fed003b0fc344006a6a82ce63a2b42ce552ce9b4301c63ca3e321956777",
+        "matched": true
+      },
+      {
+        "name": "wget-root-fresh",
+        "status": 200,
+        "bytes": 701519,
+        "sha256": "f1a84fed003b0fc344006a6a82ce63a2b42ce552ce9b4301c63ca3e321956777",
+        "matched": true
+      },
+      {
+        "name": "browser-root-fresh",
+        "status": 200,
+        "bytes": 11055,
+        "sha256": "b48dadad5a1fbac8d007efeaf615a3a08468a3b0b47383a898a8c1c99b93b8f4",
+        "matched": true
+      },
+      {
+        "name": "explicit-toolbox-fresh",
+        "status": 200,
+        "bytes": 701519,
+        "sha256": "f1a84fed003b0fc344006a6a82ce63a2b42ce552ce9b4301c63ca3e321956777",
+        "matched": true
+      },
+      {
+        "name": "sha256-fresh",
+        "status": 200,
+        "bytes": 77,
+        "sha256": "8d6da82a6eaec378b854b5a4c28ed1eb9a66b047eb62096170718768b3868162",
+        "matched": true
+      },
+      {
+        "name": "head",
+        "status": 200,
+        "matched": true
+      },
+      {
+        "name": "404",
+        "status": 404,
+        "matched": true
+      },
+      {
+        "name": "405",
+        "status": 405,
+        "matched": true
+      },
+      {
+        "name": "http-redirect",
+        "status": 301,
+        "matched": true
+      }
+    ],
+    "public_checks_count": 14,
+    "downloaded_artifact_smokes": [
+      {
+        "name": "syntax",
+        "exit_code": 0,
+        "stderr_empty": true
+      },
+      {
+        "name": "help",
+        "exit_code": 0,
+        "stderr_empty": true
+      },
+      {
+        "name": "list",
+        "exit_code": 0,
+        "stderr_empty": true
+      },
+      {
+        "name": "menu-exit",
+        "exit_code": 0,
+        "stderr_empty": true
+      },
+      {
+        "name": "submenu",
+        "exit_code": 0,
+        "stderr_empty": true
+      },
+      {
+        "name": "stdin-list",
+        "exit_code": 0,
+        "stderr_empty": true
+      },
+      {
+        "name": "stdin-exit",
+        "exit_code": 0,
+        "stderr_empty": true
+      }
+    ],
+    "smokes_count": 7,
+    "tls": {
+      "verified": true,
+      "protocol": "TLSv1.3",
+      "expires": "Jan 28 05:00:51 2027 GMT",
+      "subjectAltName": [
+        [
+          "DNS",
+          "uw.cx"
+        ],
+        [
+          "DNS",
+          "sh.uw.cx"
+        ],
+        [
+          "DNS",
+          "*.sh.uw.cx"
+        ]
+      ]
+    },
+    "verified_at_utc": "2026-10-31T21:52:15.559978+00:00",
+    "original_harness_failure_preserved": true
+  },
+  "browser": [
+    {
+      "view": "desktop",
+      "title": "Terry Toolbox · 服务器工具箱",
+      "width": 1440,
+      "clientWidth": 1425,
+      "documentWidth": 1425,
+      "command": "bash <(curl -fsSL sh.uw.cx)",
+      "http_status": 200,
+      "copy_command": "passed",
+      "disclosure": "passed",
+      "console_errors": [],
+      "no_horizontal_overflow": true,
+      "clipboard_permission": "granted in isolated test profile only"
+    },
+    {
+      "view": "mobile",
+      "title": "Terry Toolbox · 服务器工具箱",
+      "width": 390,
+      "clientWidth": 390,
+      "documentWidth": 390,
+      "command": "bash <(curl -fsSL sh.uw.cx)",
+      "http_status": 200,
+      "copy_command": "passed",
+      "disclosure": "passed",
+      "console_errors": [],
+      "no_horizontal_overflow": true,
+      "clipboard_permission": "granted in isolated test profile only"
+    }
+  ],
+  "independent_security_review": "no_merge_blocker",
+  "nonblocking_followup": "Reboot status captures stderr: an active M3 plan with missing status tools may hide the dependency prompt and safely refuse reboot. Unchanged in this release.",
+  "native_vm_retested_during_publication": false,
+  "no_dns_or_hosting_migration": true,
+  "original_harness_failures": [
+    "Source-exit smoke initially retained an inherited file-path argument; actual bash -s exit passed without product changes.",
+    "Browser no-overflow equality assertion initially ignored scrollbar width; corrected scrollWidth <= clientWidth passed without product changes.",
+    "Isolated browser clipboard permission was initially denied; native clipboard read/write passed after granting permissions only in the test profile."
+  ]
+}

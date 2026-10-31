@@ -1,5 +1,7 @@
 # 缺失依赖确认补装修复
 
+> **2026-11-01 已上线。** PR #2 已合并，Worker 与公网已精确回读，见 [当前发布记录](release-20261101.md)。下方候选、回归及 VM 数据保留原始验收时间边界。
+
 ## 原因与行为
 
 Hermes 已把 PR #1 及重装重启门禁补丁部署到 Cloudflare Workers。本次从 `sh.uw.cx` 读回的脚本 SHA-256 为 `e6b0641d725550245fe18c154321cd3e59e0ef199d63732ee60f5d3c157f6155`，与发布记录一致。其 M3 缺 `virt-what` 时只有拒绝逻辑，因此用户无法继续；主菜单“重装系统（开发中）”也是该版本留下的标签。
@@ -52,10 +54,10 @@ printf '%s  %s\n' \
 bash "$candidate"
 ```
 
-`bash <(curl -fsSL sh.uw.cx)` 仍读取已发布版本，须在 Hermes 发布本候选并完成公网回读后才包含此次修复。
+`bash <(curl -fsSL sh.uw.cx)` 现已读取包含此次修复的发布版本，线上哈希与上述固定候选一致。
 
 ## 发布与维护
 
-本候选尚未部署。继续使用 Cloudflare Workers 承载 `sh.uw.cx`，GitHub 保存源码和版本；不涉及 DNS 或托管迁移。
+本候选已于 2026-11-01 部署并完成精确回读。继续使用 Cloudflare Workers 承载 `sh.uw.cx`，GitHub 保存源码和版本；不涉及 DNS 或托管迁移。
 
 发布前按 [HANDOFF.md](../HANDOFF.md#workers-发布与失败恢复) 保存生产快照，并处理 [Hermes 发布记录](release-20261031.md#线上回读与实际发布异常) 中 `/content` 清除版本 annotations 的已知限制。上传成功不等于发布完成，必须精确回读 Worker 内容、既有配置、域名绑定和公网脚本/哈希。更新公开线上哈希之前，不得把候选测试结果写成线上已修复。
