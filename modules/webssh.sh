@@ -58,7 +58,7 @@ webssh_die() { webssh_err "$*"; return 1; }
 # ---------------------------------------------------------------- 前置条件
 
 webssh_require_root() {
-    [[ ${TOOLBOX_WEBSSH_UID:-${EUID:-$(id -u)}} -eq 0 ]] \
+    [[ ${TOOLBOX_WEBSSH_UID:-${EUID:-1}} == 0 ]] \
         || webssh_die '需要 root 权限运行（会写 /etc、/opt、/var/lib 和 systemd 单元）。'
 }
 
@@ -78,11 +78,22 @@ webssh_require_systemd() {
     [[ -d $run_dir ]] || webssh_die 'systemd 未作为 init 运行（缺少 /run/systemd/system）。'
 }
 
-webssh_require_python() {
-    if ! command -v python3 >/dev/null 2>&1; then
+webssh_require_commands() {
+    local missing=() c
+    for c in "$@"; do
+        command -v "$c" >/dev/null 2>&1 || missing+=("$c")
+    done
+    if (( ${#missing[@]} )); then
         declare -F toolbox_require_commands >/dev/null || { [[ -n ${_TOOLBOX_WEBSSH_MODULE_DIR:-} ]] && source "$_TOOLBOX_WEBSSH_MODULE_DIR/dependencies.sh"; } || return 1
-        toolbox_require_commands 'WebSSH' python3 || return 1
+        toolbox_require_commands 'WebSSH' "${missing[@]}" || return 1
+        for c in "${missing[@]}"; do
+            command -v "$c" >/dev/null 2>&1 || { webssh_die "安装后仍缺少必需命令：$c"; return 1; }
+        done
     fi
+}
+
+webssh_require_python() {
+    webssh_require_commands python3 || return 1
     python3 -c '# webssh-python-capabilities
 import ctypes, inspect, shutil, sys
 assert sys.version_info >= (3, 11)
@@ -92,14 +103,10 @@ assert hasattr(ctypes.CDLL(None), "renameat2")
 }
 
 webssh_require_tools() {
-    local missing=() c
-    for c in openssl sha256sum curl flock ss awk sed mktemp install python3 getent; do
-        command -v "$c" >/dev/null 2>&1 || missing+=("$c")
-    done
-    if (( ${#missing[@]} )); then
-        declare -F toolbox_require_commands >/dev/null || { [[ -n ${_TOOLBOX_WEBSSH_MODULE_DIR:-} ]] && source "$_TOOLBOX_WEBSSH_MODULE_DIR/dependencies.sh"; } || return 1
-        toolbox_require_commands 'WebSSH' "${missing[@]}" || return 1
-    fi
+    # Include commands used later by credentials, verification and rollback so
+    # missing tools cannot be misreported as foreign units or bad downloads.
+    webssh_require_commands openssl sha256sum curl flock ss awk sed mktemp install python3 getent \
+        grep cut tr cat cp rm chmod chown date sleep || return 1
     webssh_require_python || return 1
     # venv 模块可能缺（python3-venv 未装），交给 ensure_packages 补装后再复查。
     getent passwd "$WEBSSH_WEB_USER" >/dev/null 2>&1 \
@@ -920,6 +927,7 @@ _webssh_uninstall() {
     local -A WEBSSH_OWNED=()
     webssh_require_root || return 1
     webssh_require_systemd || return 1
+    webssh_require_commands python3 grep flock || return 1
     webssh_require_python || return 1
     etc=$(webssh_etc); opt=$(webssh_opt); lib=$(webssh_lib); log=$(webssh_log); run=$(webssh_run)
     state=$(webssh_unit_state "$(webssh_unit)" "ExecStart=$(webssh_wssh)")
@@ -971,6 +979,8 @@ webssh_status() {
         printf '未安装。\n'
         return 1
     fi
+    webssh_require_systemd || return 1
+    webssh_require_commands ss awk || return 1
     IFS='|' read -r user pass port internal version installed < "$(webssh_etc)/meta" 2>/dev/null || true
     printf '单元: %s\n' "$(webssh_unit)"
     webssh_unit_summary "$WEBSSH_UNIT_NAME" || return 1

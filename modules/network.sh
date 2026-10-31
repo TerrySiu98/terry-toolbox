@@ -377,6 +377,7 @@ net_kernel_release() { printf '%s\n' "${TOOLBOX_NET_KERNEL_RELEASE:-$(uname -r)}
 
 net_brutal_require_kernel() {
     local rel major minor
+    [[ -n ${TOOLBOX_NET_KERNEL_RELEASE:-} ]] || net_require_cmds uname || return 1
     rel=$(net_kernel_release)
     [[ $rel =~ ^([0-9]+)\.([0-9]+) ]] || { net_die "无法解析内核版本：$rel"; return 1; }
     major=${BASH_REMATCH[1]}; minor=${BASH_REMATCH[2]}
@@ -395,7 +396,8 @@ net_brutal_require_kernel() {
 }
 
 net_brutal_require_toolchain() {
-    net_require_cmds dkms make cc sha256sum curl flock mktemp modprobe sysctl lsmod tar depmod sed || return 1
+    net_require_cmds dkms make cc sha256sum curl flock mktemp modprobe sysctl lsmod tar depmod sed \
+        awk grep tr cut cp chmod rm rmmod install dirname || return 1
     net_require_cmds ip || true
 }
 
@@ -614,6 +616,7 @@ _net_brutal_uninstall() {
         net_die "缺少 $etc：不像是本模块的安装，未删除；请人工确认。"
         return 1
     fi
+    net_require_cmds flock sysctl tr rmmod sleep lsmod awk grep rm dkms depmod uname || return 1
     if [[ -f $etc/meta ]]; then
         IFS='|' read -r prev version rel < "$etc/meta" || true
     fi
@@ -656,11 +659,14 @@ net_brutal_status() {
     bin=$(net_brutal_bin)
     if [[ ! -d $etc && ! -e $modload && ! -e $bin ]]; then
         printf '未安装。\n'
-        if net_brutal_module_loaded; then
+        # No installation: a missing optional reader must not trigger installation.
+        if command -v lsmod >/dev/null && command -v awk >/dev/null && command -v grep >/dev/null \
+            && command -v sysctl >/dev/null && command -v tr >/dev/null && net_brutal_module_loaded; then
             printf '注意：brutal 模块仍在内存里（通常是卸载后仍有连接在用），重启后消失；默认算法 %s。\n' "$(net_current_cc)"
         fi
         return 1
     fi
+    net_require_cmds uname lsmod awk grep sysctl tr || { net_err '状态读取不完整：无法确认内核模块与拥塞控制状态。'; return 1; }
     if [[ -f $etc/meta ]]; then
         IFS='|' read -r prev version rel < "$etc/meta" || true
     fi
@@ -773,7 +779,8 @@ _net_tuic_install() {
     net_require_root || return 1
     net_require_debian || return 1
     net_require_systemd || return 1
-    net_require_cmds openssl sha256sum curl flock ss stat sed mktemp || return 1
+    net_require_cmds openssl sha256sum curl flock ss stat sed mktemp uname grep date cut tr \
+        readlink cp chmod install dirname cat rm sleep || return 1
     arch=$(net_tuic_arch) || return 1
 
     # 菜单只传动作：缺的项逐一问；EOF 在写盘前就退出。
@@ -935,6 +942,8 @@ _net_tuic_uninstall() {
     net_require_root || return 1
     net_require_systemd || return 1
     unit=$(net_tuic_unit); etc=$(net_tuic_etc); bin=$(net_tuic_bin)
+    if [[ ! -e $unit && ! -e $bin && ! -d $etc ]]; then net_die '没有找到本模块的安装。'; return 1; fi
+    net_require_cmds grep flock rm || return 1
     state=$(net_unit_state "$unit" "$bin")
     if [[ $state == absent && ! -e $bin && ! -d $etc ]]; then
         net_die '没有找到本模块的安装。'
@@ -958,6 +967,8 @@ net_tuic_status() {
         printf '未安装。\n'
         return 1
     fi
+    net_require_systemd || return 1
+    net_require_cmds sed ss readlink grep cut || { net_err '状态读取不完整：无法确认服务监听归属。'; return 1; }
     printf '单元: %s\n' "$unit"
     systemctl --no-pager -l status "$TUIC_UNIT_NAME" 2>&1 | sed -n '1,6p'
     if [[ -f $etc/meta ]]; then
@@ -1072,7 +1083,7 @@ _net_relay_install() {
     net_require_root || return 1
     net_require_debian || return 1
     net_require_systemd || return 1
-    net_require_cmds flock ss sed mktemp || return 1
+    net_require_cmds flock ss sed mktemp grep cut readlink cat chmod rm sleep || return 1
     [[ -n ${TOOLBOX_NET_SOCAT:-} ]] || net_require_cmds socat || return 1
 
     # 菜单只传动作：缺的参数问，协议给默认 tcp；EOF 在写盘前退出。
@@ -1178,6 +1189,7 @@ _net_relay_uninstall() {
 
     mapfile -t units < <(net_relay_units)
     (( ${#units[@]} > 0 )) || { net_die '没有找到本模块的转发单元。'; return 1; }
+    net_require_cmds grep flock rm || return 1
 
     if (( $# == 0 )) || [[ ${1:-} == all ]]; then
         :
@@ -1221,6 +1233,8 @@ net_relay_status() {
         printf '没有任何本模块的转发。\n'
         return 1
     fi
+    net_require_systemd || return 1
+    net_require_cmds sed ss || { net_err '状态读取不完整：无法读取转发单元或监听状态。'; return 1; }
     for unit in "${units[@]}"; do
         name=${unit##*/}
         read -r proto lport < <(net_relay_parse_unit "$name") || continue
@@ -2479,7 +2493,8 @@ _net_a5_install() {
     net_require_root || return 1
     net_require_debian || return 1
     net_require_systemd || return 1
-    net_require_cmds openssl sha256sum curl install flock ss cut unzip mktemp timeout sed || return 1
+    net_require_cmds openssl sha256sum curl install flock ss cut unzip mktemp timeout sed \
+        uname grep readlink cp chmod mkdir mv rm rmdir dirname cat sleep || return 1
     arch=$(net_alpine_arch) || return 1
 
     # 菜单只传动作：缺的项逐一问；EOF 在写盘前就退出。
@@ -2756,6 +2771,10 @@ _net_a5_uninstall() {
     net_require_root || return 1
     net_require_systemd || return 1
     unit=$(net_a5_unit); etc=$(net_a5_etc); bin=$(net_a5_bin)
+    if [[ ! -e $unit && ! -e $bin && ! -d $etc ]]; then
+        net_die '没有找到本模块的安装（单元、二进制、配置都不存在）。'; return 1
+    fi
+    net_require_cmds grep flock rm || return 1
     state=$(net_unit_state "$unit" "$bin")
     if [[ $state == absent && ! -e $bin && ! -d $etc ]]; then
         net_die '没有找到本模块的安装（单元、二进制、配置都不存在）。'
@@ -2789,6 +2808,8 @@ net_a5_status() {
         printf '未安装。\n'
         return 1
     fi
+    net_require_systemd || return 1
+    net_require_cmds sed ss readlink grep cut || { net_err '状态读取不完整：无法确认服务监听归属。'; return 1; }
     printf '单元: %s（%s）\n' "$unit" "$(net_unit_state "$unit" "$bin")"
     systemctl --no-pager -l status "$NET_A5_UNIT_NAME" 2>&1 | sed -n '1,6p'
     if [[ -f $meta ]]; then
@@ -2822,6 +2843,7 @@ net_dns_run()    { printf '%s\n' "${TOOLBOX_DNS_RESOLVE_RUN:-/run/systemd/resolv
 
 net_dns_require_resolved() {
     command -v resolvectl >/dev/null 2>&1 || { net_die '未找到 resolvectl，本机没有 systemd-resolved。'; return 1; }
+    command -v systemctl >/dev/null 2>&1 || { net_die '未找到 systemctl，无法确认 systemd-resolved 服务。'; return 1; }
     systemctl is-active --quiet systemd-resolved 2>/dev/null \
         || { net_die 'systemd-resolved 未运行（容器或被禁用）。'; return 1; }
     [[ -e $(net_dns_run)/stub-resolv.conf ]] \
@@ -2833,7 +2855,7 @@ net_dns_check_resolv() {
     conf=$(net_dns_resolv)
     [[ -e $conf || -L $conf ]] || { net_die "$conf 不存在。"; return 1; }
     [[ -L $conf ]] || { net_die "$conf 是普通文件（不是 systemd-resolved 的 stub 链接），解析权不在 resolved。"; return 1; }
-    target=$(readlink -- "$conf")
+    target=$(readlink -- "$conf") || { net_die "无法读取 $conf 的链接目标，未修改 DNS。"; return 1; }
     case $target in
         *systemd/resolve/stub-resolv.conf|*systemd/resolve/resolv.conf) return 0 ;;
         *) net_die "$conf 指向 $target，不是 systemd-resolved 的 stub，被其他程序接管。" ;;
@@ -3023,6 +3045,9 @@ _net_dns_apply() {
     local servers=("$@") link='' s other had_backup=0
     net_require_root || return 1
     net_dns_require_resolved || return 1
+    # Check ordinary tools before ownership/IP checks and before any writer or
+    # rollback can run; resolved itself remains an existing-host capability.
+    net_require_cmds readlink grep wc tr dirname install cp chmod mv rm flock sleep || return 1
     net_dns_check_resolv || return 1
     (( ${#servers[@]} > 0 )) || { net_die '没有要设置的 DNS 服务器。'; return 1; }
     (( ${#servers[@]} <= 2 )) || { net_die '最多两个 DNS 服务器。'; return 1; }
@@ -3081,6 +3106,9 @@ _net_dns_apply() {
 
 net_dns_status() {
     local file other
+    command -v resolvectl >/dev/null 2>&1 || { net_die '未找到 resolvectl，无法读取 systemd-resolved 解析状态。'; return 1; }
+    command -v systemctl >/dev/null 2>&1 || { net_die '未找到 systemctl，无法读取 systemd-resolved 服务状态。'; return 1; }
+    net_require_cmds readlink sed || { net_err 'DNS 状态读取不完整：无法读取解析器链接或配置内容。'; return 1; }
     file=$(net_dns_dropin)
     printf 'systemd-resolved: '
     if systemctl is-active --quiet systemd-resolved 2>/dev/null; then printf '运行中\n'; else printf '未运行\n'; fi
@@ -3108,6 +3136,7 @@ _net_dns_restore() {
         net_die '没有本工具写入的 DNS 配置，无需恢复。'
         return 1
     fi
+    net_require_cmds grep sed mv rm sleep || return 1
     # 恢复过备份后文件还在，但已经不含本工具的标记；再恢复一次就会误删别人的配置。
     if [[ -e $file && ! -e $file.pre-toolbox ]] \
         && ! grep -qF '由 Terry Toolbox B23 生成' "$file" 2>/dev/null; then

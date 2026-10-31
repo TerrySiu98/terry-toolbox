@@ -14,7 +14,8 @@
 # app/db.js prints initial credentials, app/config/index.js stores DB + logs in
 # /easynode/app/db. Retain them privately; never print Docker logs/inspect secrets.
 # guacd is required by upstream guacamole-lite RDP service and has no host port.
-# No package installation, hostnet, socket mount, watchtower or image mirrors.
+# Missing ordinary tools need confirmation; no hostnet, socket mount, watchtower
+# or image mirrors.
 # Loopback and bridge are not a firewall against host users/privileged routing.
 # Pins are byte reproducibility, not signature verification or a security audit.
 
@@ -372,14 +373,14 @@ wsc_create_start() {
 
 wsc_dependencies() {
     local dependency
-    for dependency in docker python3 ss flock mktemp; do
+    for dependency in docker python3 ss flock mktemp rm sleep; do
         if ! command -v "$dependency" >/dev/null 2>&1; then
             declare -F toolbox_require_commands >/dev/null || { [[ -n ${_TOOLBOX_WEBSSH_CONTAINERS_MODULE_DIR:-} ]] && source "$_TOOLBOX_WEBSSH_CONTAINERS_MODULE_DIR/dependencies.sh"; } || return 1
             if ! command -v docker >/dev/null 2>&1; then
                 declare -F toolbox_require_docker >/dev/null || { [[ -n ${_TOOLBOX_WEBSSH_CONTAINERS_MODULE_DIR:-} ]] && source "$_TOOLBOX_WEBSSH_CONTAINERS_MODULE_DIR/dependencies.sh"; } || return 1
                 toolbox_require_docker 'B10 WebSSH 容器' || return 1
             fi
-            toolbox_require_commands 'B10 WebSSH 容器' python3 ss flock mktemp || return 1
+            toolbox_require_commands 'B10 WebSSH 容器' python3 ss flock mktemp rm sleep || return 1
             return 0
         fi
     done

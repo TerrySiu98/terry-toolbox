@@ -110,6 +110,11 @@ _toolbox_deps_package() {
         ssh-keygen) if [[ $os == alpine ]]; then package=openssh-keygen; else package=openssh-client; fi;;
         ssh|scp|sftp) if [[ $os == alpine ]]; then package=openssh-client-default; else package=openssh-client; fi;;
         getent) if [[ $os == alpine ]]; then package=musl-utils; else package=libc-bin; fi;;
+        passwd)
+            # Alpine's community/shadow owns /usr/bin/passwd; BusyBox remains
+            # sufficient when its passwd applet is already available.
+            # https://pkgs.alpinelinux.org/contents?file=passwd&path=%2Fusr%2Fbin&name=shadow&branch=v3.24&repo=community&arch=x86_64
+            if [[ $os == alpine ]]; then package=shadow; else package=passwd; fi;;
         tput) if [[ $os == alpine ]]; then package=ncurses; else package=ncurses-bin; fi;;
         lsblk|findmnt|flock|blkid|lscpu|losetup|uuidgen|wipefs|fstrim|sfdisk|partx|mount|umount|dmesg|logger|hexdump)
             # Alpine splits these out of util-linux. Installing the meta-package

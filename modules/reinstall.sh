@@ -14,7 +14,7 @@ if [[ ${TOOLBOX_BUNDLED:-0} != 1 ]]; then
 fi
 _toolbox_reinstall_error() { printf '%s\n' "$*" >&2; }
 _toolbox_reinstall_has() { command -v "$1" >/dev/null 2>&1; }
-_toolbox_reinstall_root() { [[ $(id -u) == 0 ]] || { _toolbox_reinstall_error '需要 root；未执行。'; return 1; }; }
+_toolbox_reinstall_root() { [[ ${EUID:-1} == 0 ]] || { _toolbox_reinstall_error '需要 root；未执行。'; return 1; }; }
 _toolbox_reinstall_state_dir() { printf '%s\n' "${TOOLBOX_REINSTALL_STATE:-/var/lib/terry-toolbox/reinstall}"; }
 _toolbox_reinstall_host_root() { printf '%s\n' "${TOOLBOX_REINSTALL_ROOT:-/}"; }
 _toolbox_reinstall_need() {

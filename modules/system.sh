@@ -18,7 +18,7 @@ _toolbox_system_unimplemented() {
     return 1
 }
 _toolbox_system_root() {
-    if [[ $(id -u) != 0 ]]; then _toolbox_system_error '此操作需要 root。'; return 1; fi
+    if (( EUID != 0 )); then _toolbox_system_error '此操作需要 root。'; return 1; fi
 }
 _toolbox_system_confirm() {
     local answer
@@ -141,7 +141,7 @@ _toolbox_system_missing_packages() {
     done
 }
 _toolbox_system_deps() {
-    local os
+    local os c
     local -a missing_packages=()
     _toolbox_system_root || return
     os=$(_toolbox_system_os) || return
@@ -151,9 +151,11 @@ _toolbox_system_deps() {
         if (( ${#missing_packages[@]} == 0 )); then printf '基础依赖包已齐全；未升级或安装。\n'; return 0; fi
         _toolbox_system_confirm "将先 apt-get update，再仅补缺失包：${missing_packages[*]}（--no-upgrade；依赖仍可能改变）。" || return
         apt-get update </dev/null || return
-        apt-get install -y --no-upgrade "${missing_packages[@]}" </dev/null
+        apt-get install -y --no-upgrade "${missing_packages[@]}" </dev/null || return
+        for c in curl socat wget sudo nano iptables; do
+            _toolbox_system_has "$c" || { _toolbox_system_error "安装后仍缺少基础命令：${c}；请检查包状态与 PATH。"; return 1; }
+        done
     else
-        local c
         local -a required_commands=(curl socat wget sudo nano iptables ss)
         # BusyBox wget is sufficient when present. ss is a split Alpine package:
         # https://pkgs.alpinelinux.org/package/v3.24/main/x86_64/iproute2-ss
@@ -304,6 +306,7 @@ _toolbox_system_docker_alpine_logged() {
 _toolbox_system_docker_alpine() {
     local service conf stamp conf_stamp i ready=0 install_log='' state
     _toolbox_system_docker_alpine_preflight || return 1
+    _toolbox_system_need_tools mkdir mktemp chmod stat sha256sum sleep || return 1
     printf 'Alpine Docker：使用本机已配置的签名校验仓库（需启用同版本 community；不改包源、不执行 upgrade）。\n'
     printf '  包：docker docker-cli-compose docker-openrc；依赖可能改变。\n'
     printf '  OpenRC：只启动本次新安装的 docker；依赖 sysfs/cgroups/net 也可能启动，不设置开机自启。\n'
@@ -314,7 +317,6 @@ _toolbox_system_docker_alpine() {
     # Repeat absence checks after confirmation; never overwrite a new conflict.
     _toolbox_system_docker_alpine_preflight || return 1
     state=$(_toolbox_system_state)
-    _toolbox_system_need_tools mkdir mktemp chmod stat sha256sum || return 1
     [[ ! -L $state ]] && mkdir -p -- "$state" || { _toolbox_system_error '无法安全创建安装日志目录；未安装。'; return 1; }
     install_log=$(mktemp "$state/docker-alpine.log.XXXXXXXX") || return 1
     chmod 0600 -- "$install_log" || { _toolbox_system_error "安装日志权限设置失败，未安装：$install_log"; return 1; }
@@ -400,6 +402,7 @@ _toolbox_system_docker() {
     for tmp in "$key" "$source" "$aptroot/keyrings/docker.asc" "$aptroot/sources.list.d/docker.sources" "$aptroot/sources.list.d/docker.list"; do
         [[ ! -e $tmp && ! -L $tmp ]] || { _toolbox_system_error "Docker 仓库目标已存在：$tmp；不覆盖。"; return 1; }
     done
+    _toolbox_system_need_tools mktemp mkdir chmod install cp stat ln rm awk || return
     _toolbox_system_missing_packages ca-certificates curl gnupg || return
     printf '将添加 Docker 官方 stable 仓库 https://download.docker.com/linux/%s（%s/%s）。\n' "$distro" "$codename" "$arch"
     printf '  GPG: %s（固定主密钥指纹 %s）\n  仓库: %s（Signed-By 专用 keyring）\n' "$key" "$_TOOLBOX_DOCKER_GPG_FINGERPRINT" "$source"
@@ -490,6 +493,7 @@ _toolbox_system_docker() {
 }
 _toolbox_system_password() {
     _toolbox_system_root || return
+    _toolbox_system_need_tools passwd || return
     _toolbox_system_confirm '将交由 passwd 交互式修改 root 密码。请确保保留独立登录方式。' || return
     passwd root
 }
@@ -546,7 +550,7 @@ _toolbox_system_nodequality_sha() { printf '%s\n' "${TOOLBOX_NODEQUALITY_SHA256:
 _toolbox_system_nodequality() {
     local tmp script actual expected rc=0 left failed=0
     _toolbox_system_root || return
-    _toolbox_system_need_tools bash curl sha256sum tar mount chroot || return
+    _toolbox_system_need_tools bash curl sha256sum tar mount chroot cut mktemp rm find || return
 
     printf 'NodeQuality：官方综合测试（不安装软件，只在临时系统内跑一遍）\n'
     printf '  脚本地址 : %s\n' "$(_toolbox_system_nodequality_url)"
@@ -835,7 +839,9 @@ _toolbox_system_traffic() {
     os=$(_toolbox_system_os) || return
     [[ $os == debian ]] || { _toolbox_system_error '流量统计目前只支持 Debian/Ubuntu 的 vnstat 包；Alpine 未验证。'; return 1; }
     _toolbox_system_systemd || return
-    _toolbox_system_need_tools curl || return
+    # Include both the file transaction and the generated timer script's tools.
+    _toolbox_system_need_tools curl grep install mktemp cp stat sha256sum cat chmod ln mv rm \
+        bash env date awk logger hostname mkdir sleep || return
     etc=$(_toolbox_system_etc); state=$(_toolbox_system_state)
     bin=$(_toolbox_system_bin_dir); unit_dir=$(_toolbox_system_unit_dir)
     conf="$etc/traffic.conf"
@@ -1000,7 +1006,8 @@ _toolbox_system_tg() {
     _toolbox_system_root || return
     _toolbox_system_os >/dev/null || return
     _toolbox_system_systemd || return
-    _toolbox_system_need_tools curl hostname || return
+    _toolbox_system_need_tools curl hostname grep install mktemp cp stat sha256sum cat chmod ln mv rm \
+        bash env date awk logger || return
     if ! _toolbox_system_has vnstat; then
         vnstat_was_missing=1
         _toolbox_system_need_tools vnstat jq || return 1
@@ -1169,7 +1176,7 @@ _toolbox_system_netopt_apply() {
     file=$(_toolbox_system_netopt_file); state=$(_toolbox_system_netopt_state)
     _toolbox_system_root || return
     [[ $(_toolbox_system_os) == debian ]] || { _toolbox_system_error 'B16 只面向 Debian/Ubuntu 的 sysctl.d。'; return 1; }
-    _toolbox_system_need_tools sysctl || return 1
+    _toolbox_system_need_tools sysctl grep stat sha256sum install mktemp cat chmod ln mv rm || return 1
 
     local available
     available=$(sysctl -n net.ipv4.tcp_available_congestion_control) || return
@@ -1298,7 +1305,7 @@ _toolbox_system_netopt_rollback() {
     local -a file_keys=()
     file=$(_toolbox_system_netopt_file); state=$(_toolbox_system_netopt_state)
     _toolbox_system_root || return
-    _toolbox_system_need_tools sysctl || return 1
+    _toolbox_system_need_tools sysctl grep stat sha256sum rm || return 1
     if [[ ! -r $state ]]; then
         _toolbox_system_error "没有回滚记录（$state）；可能从未应用，或记录已被删除。"
         return 1
@@ -1370,7 +1377,7 @@ _toolbox_system_panel() {
     _toolbox_system_root || return
     os=$(_toolbox_system_os) || return
     [[ $os == debian ]] || { _toolbox_system_error '1Panel 官方脚本面向 Debian/Ubuntu；Alpine 未验证。'; return 1; }
-    _toolbox_system_need_tools curl sha256sum tar bash || return
+    _toolbox_system_need_tools curl sha256sum tar bash cut mktemp rm || return
     if _toolbox_system_1panel_present; then
         _toolbox_system_error '检测到 1Panel（1pctl / 1panel / /opt/1panel）；为保护面板数据不做重复安装。'
         _toolbox_system_error '升级请用面板自带的 1pctl update；卸载请用官方脚本后人工确认数据目录。'
@@ -1447,6 +1454,7 @@ _toolbox_system_alpine_webtop() {
         _toolbox_system_error "容器 $_TOOLBOX_WEBTOP_NAME 已存在；不删除、不重建。查看：docker logs $_TOOLBOX_WEBTOP_NAME"
         return 1
     fi
+    _toolbox_system_need_tools install || return
     dir=${TOOLBOX_WEBTOP_ROOT:-/opt/terry-toolbox-webtop}
     printf '将运行 Webtop 桌面容器：\n'
     printf '  镜像   : %s（latest，不固定摘要）\n' "$_TOOLBOX_WEBTOP_IMAGE"
@@ -1481,7 +1489,7 @@ _toolbox_system_alpine_hop_apply() {
     local etc conf start end target port
     local -a spec=()
     _toolbox_system_alpine_require || return
-    _toolbox_system_need_tools iptables ss || { _toolbox_system_error '缺少 iptables 或 ss（iproute2-ss）；Alpine 可 apk add iptables iproute2-ss。'; return 1; }
+    _toolbox_system_need_tools iptables ss awk grep install mktemp cat chmod mv rm || return
     etc=$(_toolbox_system_etc); conf="$etc/$_TOOLBOX_HOP_CONF_NAME"
     if [[ -e $conf ]] && ! _toolbox_system_ours "$conf" "$_TOOLBOX_SYS_MARK_B19"; then
         _toolbox_system_error "$conf 已存在但不是本工具生成的，未覆盖。"
@@ -1558,7 +1566,7 @@ _toolbox_system_alpine_hop_apply() {
 _toolbox_system_alpine_hop_remove() {
     local etc conf start end target
     _toolbox_system_alpine_require || return
-    _toolbox_system_need_tools iptables || return
+    _toolbox_system_need_tools iptables grep rm || return
     etc=$(_toolbox_system_etc); conf="$etc/$_TOOLBOX_HOP_CONF_NAME"
     if [[ ! -r $conf ]]; then
         _toolbox_system_error "没有端口跳跃配置（$conf）；未改动规则。"
@@ -1643,7 +1651,10 @@ _toolbox_system_swap_supported() {
     _toolbox_system_root || return
     [[ $(_toolbox_system_os) == debian ]] || { _toolbox_system_error 'swap 事务只在 Debian/Ubuntu 上验证过；未改动。'; return 1; }
     _toolbox_system_systemd || return
-    _toolbox_system_need_tools flock dd mkswap swapon swapoff findmnt df stat || return
+    # Includes lock creation, space parsing, ownership checks and rollback, so
+    # ordinary dependency consent finishes before opening a transaction lock.
+    _toolbox_system_need_tools install flock dd mkswap swapon swapoff findmnt df stat \
+        tail grep mktemp cat chmod ln mv rm sha256sum sleep || return
 }
 
 # 活动 swap 精确匹配：逐个路径串比较，不做前缀/设备号推断。
@@ -1910,7 +1921,7 @@ _toolbox_system_swap_size() {
 
 _toolbox_system_swap() {
     local file unit fstab size=1024 mode_before=0
-    _toolbox_system_root || return
+    _toolbox_system_swap_supported || return
     file=$(_toolbox_system_swap_file); unit=$(_toolbox_system_swap_unit); fstab="$(_toolbox_system_swap_root)/etc/fstab"
 
     _toolbox_system_swap_lock_acquire || return

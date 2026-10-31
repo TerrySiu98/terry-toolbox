@@ -42,6 +42,17 @@ install() {
 # shellcheck source=modules/system.sh
 source "${SYSTEM_MODULE_UNDER_TEST:-$ROOT/modules/system.sh}"
 source "$ROOT/modules/dependencies.sh"
+# Root discovery must work before external dependencies are available. The
+# function override used below remains the fixture seam for privileged cases.
+(
+ id() { printf 'unexpected id call\n' > "$safetyroot/id-called"; return 127; }
+ if (( EUID == 0 )); then
+  _toolbox_system_root
+ else
+  if _toolbox_system_root >/dev/null 2>&1; then exit 1; fi
+ fi
+ [[ ! -e $safetyroot/id-called ]]
+)
 package_status_impl=$(declare -f _toolbox_system_package_installed)
 log=$(mktemp "$TMPDIR/toolbox-system-test.XXXXXX")
 docker_marker="${log}.docker"
@@ -94,6 +105,28 @@ sysctl() {
   *) echo 'unexpected sysctl' >&2; return 1;;
  esac
 }
+
+# M2 Debian must verify its command inventory after an apparently successful
+# installation. The fixtures never repair it by silently installing again.
+(
+ _toolbox_system_os() { printf 'debian\n'; }
+ _toolbox_system_confirm() { :; }
+ _toolbox_system_package_installed() { return 1; }
+ _toolbox_system_has() { [[ $1 != "${M2_MISSING:-}" ]]; }
+ apt-get() { printf 'apt-get %s\n' "$*" >> "$log"; }
+ for M2_MISSING in curl socat wget sudo nano iptables; do
+  : > "$log"
+  if toolbox_system MAIN_DEPS > "$safetyroot/m2-out" 2>&1; then
+   printf 'FAIL: M2 accepted missing %s after installation\n' "$M2_MISSING" >&2; exit 1
+  fi
+  [[ $(<"$safetyroot/m2-out") == *"安装后仍缺少基础命令：$M2_MISSING"* ]]
+  [[ $(<"$log") == $'apt-get update\napt-get install -y --no-upgrade curl socat wget sudo nano iptables' ]]
+ done
+ M2_MISSING=''; : > "$log"
+ toolbox_system MAIN_DEPS >/dev/null
+ [[ $(<"$log") == $'apt-get update\napt-get install -y --no-upgrade curl socat wget sudo nano iptables' ]]
+)
+: > "$log"
 
 # Focused audit regressions share production code; only privileged boundaries mocked.
 # SYSTEM_AUDIT_CASE=S1..S7|S4|WEBTOP runs one slice; ALL runs every slice.

@@ -108,11 +108,168 @@ done
     toolbox_network B23 install 1.1.1.1 >"$work/dns-missing.out" 2>&1 && fail 'B23 accepted missing resolver'
     [[ $(<"$work/dns-missing.out") == *'未找到 resolvectl'* ]] || fail 'B23 missing-resolver refusal'
 )
+# B23 ordinary dependencies must be resolved before interpreting readlink/grep
+# failures as foreign ownership. Package and service calls below are fixtures.
+(
+    dns_work=$work/dns-dependencies
+    export TOOLBOX_NET_UID=0 TOOLBOX_DNS_DROPIN_DIR=$dns_work/dropin
+    export TOOLBOX_DNS_RESOLVE_RUN=$dns_work/systemd/resolve
+    export TOOLBOX_DNS_RESOLV_CONF=$dns_work/resolv.conf TOOLBOX_NET_LOCK_DIR=$dns_work/locks
+    mkdir -p "$TOOLBOX_DNS_DROPIN_DIR" "$TOOLBOX_DNS_RESOLVE_RUN" "$TOOLBOX_NET_LOCK_DIR" "$dns_work/installed"
+    dns_file=$(net_dns_dropin)
+    command() {
+        if [[ ${1:-} == -v ]]; then
+            [[ ${2:-} != "${DNS_CAPABILITY:-}" ]] || return 1
+            [[ " ${DNS_MISSING:-} " != *" ${2:-} "* || -e $dns_work/installed/${2:-} ]] || return 1
+        fi
+        builtin command "$@"
+    }
+    _toolbox_deps_exec() {
+        local dependency
+        printf 'package:%s\n' "$*" >> "$dns_work/trace"
+        [[ ${1:-} == apt-get ]] || return 99
+        case ${2:-} in
+            update) return 0;;
+            install)
+                [[ ${DNS_INSTALL_FAIL:-0} == 0 ]] || return 71
+                for dependency in $DNS_MISSING; do : > "$dns_work/installed/$dependency"; done;;
+            *) return 99;;
+        esac
+    }
+    systemctl() {
+        printf 'service:%s\n' "$*" >> "$dns_work/trace"
+        case ${1:-} in
+            is-active) [[ ${DNS_INACTIVE:-0} == 0 ]];;
+            restart) return 0;;
+            *) return 99;;
+        esac
+    }
+    resolvectl() {
+        printf 'resolver:%s\n' "$*" >> "$dns_work/trace"
+        case ${1:-} in
+            status) printf 'Global\n       DNS Servers: 1.1.1.1\n';;
+            query|revert|dns|domain) return 0;;
+            *) return 99;;
+        esac
+    }
+    flock() { printf 'lock\n' >> "$dns_work/trace"; }
+    sleep() { :; }
+    dns_reset() {
+        DNS_MISSING='' DNS_CAPABILITY='' DNS_INACTIVE=0 DNS_INSTALL_FAIL=0
+        rm -f -- "$dns_work/installed/"* "$TOOLBOX_DNS_DROPIN_DIR/"* "$TOOLBOX_NET_LOCK_DIR/"* "$TOOLBOX_DNS_RESOLV_CONF"
+        : > "$TOOLBOX_DNS_RESOLVE_RUN/stub-resolv.conf"
+        ln -s "$TOOLBOX_DNS_RESOLVE_RUN/stub-resolv.conf" "$TOOLBOX_DNS_RESOLV_CONF"
+        : > "$dns_work/trace"
+        if [[ $dns_action == restore ]]; then
+            printf '# 由 Terry Toolbox B23 生成\n[Resolve]\nDNS=1.1.1.1\n' > "$dns_file"
+        fi
+    }
+    dns_call() {
+        if [[ $dns_action == install ]]; then toolbox_network B23 install 1.1.1.1
+        else toolbox_network B23 restore; fi
+    }
+    dns_untouched() {
+        if [[ $dns_action == install ]]; then [[ ! -e $dns_file ]] || fail 'B23 refused apply wrote drop-in'
+        else [[ $(<"$dns_file") == $'# 由 Terry Toolbox B23 生成\n[Resolve]\nDNS=1.1.1.1' ]] || fail 'B23 refused restore changed drop-in'; fi
+        [[ ! -e $dns_file.pre-toolbox && ! -e $TOOLBOX_NET_LOCK_DIR/terry-toolbox-dns.lock ]] || fail 'B23 refusal wrote backup/lock'
+        ! builtin command grep -qE '^service:restart|^resolver:(dns|domain|revert)|^lock' "$dns_work/trace" || fail 'B23 refusal crossed service/write boundary'
+    }
+    for dns_action in install restore; do
+        if [[ $dns_action == install ]]; then dns_tools='readlink grep wc tr dirname install cp chmod mv rm flock sleep'
+        else dns_tools='grep sed mv rm sleep'; fi
+        for dependency in $dns_tools; do
+            dns_reset; DNS_MISSING=$dependency
+            dns_call <<< n > "$dns_work/out" 2>&1 && fail "B23 $dns_action accepted missing $dependency"
+            [[ $(<"$dns_work/out") == *"网络服务 缺少命令：$dependency"* && $(<"$dns_work/out") == *'已取消补装'* ]] || fail "B23 $dns_action missing $dependency was misdiagnosed"
+            [[ $(<"$dns_work/out") != *'确认执行'* ]] || fail 'B23 reached feature confirmation before dependencies'
+            ! builtin command grep -q '^package:' "$dns_work/trace" || fail 'B23 declined dependency called package boundary'
+            dns_untouched
+        done
+        # Init/service capability must fail before asking to install ordinary tools.
+        for capability in resolvectl systemctl inactive stub; do
+            dns_reset; DNS_MISSING=$dns_tools
+            case $capability in
+                resolvectl|systemctl) DNS_CAPABILITY=$capability;;
+                inactive) DNS_INACTIVE=1;;
+                stub) rm -f "$TOOLBOX_DNS_RESOLVE_RUN/stub-resolv.conf";;
+            esac
+            dns_call <<< y > "$dns_work/out" 2>&1 && fail "B23 $dns_action accepted missing capability $capability"
+            [[ $(<"$dns_work/out") != *'缺少命令'* && $(<"$dns_work/out") != *'仅补装'* ]] || fail 'B23 ordinary installation preceded resolved capability'
+            ! builtin command grep -q '^package:' "$dns_work/trace" || fail 'B23 missing capability called package boundary'
+            dns_untouched
+        done
+        dns_reset; DNS_MISSING=$dns_tools
+        dns_call </dev/null > "$dns_work/out" 2>&1 && fail 'B23 dependency EOF accepted'
+        [[ $(<"$dns_work/out") == *'未收到完整确认（EOF）'* ]] || fail 'B23 dependency EOF unexplained'
+        dns_untouched
+        dns_reset; DNS_MISSING=$dns_tools; DNS_INSTALL_FAIL=1
+        dns_call <<< y > "$dns_work/out" 2>&1 && fail 'B23 failed dependency install continued'
+        [[ $(<"$dns_work/out") == *'apt-get install 失败'* ]] || fail 'B23 dependency failure unexplained'
+        dns_untouched
+        dns_reset; DNS_MISSING=$dns_tools
+        dns_call <<< $'y\nn' > "$dns_work/out" 2>&1 && fail 'B23 dependency y replaced feature confirmation'
+        [[ $(<"$dns_work/out") == *'确认执行'* ]] || fail 'B23 dependency install did not resume same action'
+        dns_untouched
+        dns_reset; DNS_MISSING=$dns_tools
+        dns_call <<< $'y\nYES' > "$dns_work/out" 2>&1 || fail "B23 $dns_action did not continue after dependency installation"
+        [[ $(builtin command grep -c '^package:apt-get install ' "$dns_work/trace") == 1 ]] || fail 'B23 dependencies were not batched once'
+        builtin command grep -q '^service:restart systemd-resolved' "$dns_work/trace" || fail 'B23 successful action did not restart fixture service'
+        if [[ $dns_action == install ]]; then
+            builtin command grep -qx 'DNS=1.1.1.1' "$dns_file" || fail 'B23 successful apply did not write fixture config'
+        else [[ ! -e $dns_file ]] || fail 'B23 successful restore retained owned config'; fi
+        # Successful dependency installation must not override ownership refusal.
+        dns_reset; DNS_MISSING=$dns_tools
+        if [[ $dns_action == install ]]; then
+            rm -f "$TOOLBOX_DNS_RESOLV_CONF"
+            ln -s "$dns_work/NetworkManager/resolv.conf" "$TOOLBOX_DNS_RESOLV_CONF"
+        else printf 'foreign config\n' > "$dns_file"; fi
+        dns_call <<< $'y\nYES' > "$dns_work/out" 2>&1 && fail 'B23 dependency success bypassed ownership'
+        if [[ $dns_action == install ]]; then
+            [[ $(<"$dns_work/out") == *'被其他程序接管'* && ! -e $dns_file ]] || fail 'B23 foreign resolver gate changed'
+        else [[ $(<"$dns_file") == 'foreign config' && $(<"$dns_work/out") == *'不是本工具生成'* ]] || fail 'B23 foreign drop-in gate changed'; fi
+        ! builtin command grep -q '^service:restart' "$dns_work/trace" || fail 'B23 ownership refusal restarted resolver'
+    done
+    dns_action=install; dns_reset
+    ( readlink() { return 1; }; dns_call ) <<< YES > "$dns_work/out" 2>&1 && fail 'B23 accepted unreadable link target'
+    [[ $(<"$dns_work/out") == *'无法读取'* && $(<"$dns_work/out") != *'被其他程序接管'* ]] || fail 'B23 readlink failure misreported ownership'
+    dns_untouched
+    for dependency in readlink sed; do
+        dns_reset; DNS_MISSING=$dependency
+        toolbox_network B23 status <<< n > "$dns_work/out" 2>&1 && fail 'B23 status silently accepted missing reader'
+        [[ $(<"$dns_work/out") == *'DNS 状态读取不完整'* ]] || fail 'B23 missing status reader unexplained'
+        [[ ! -s $dns_work/trace ]] || fail 'B23 declined status dependency crossed package/service boundary'
+    done
+    for capability in resolvectl systemctl; do
+        dns_reset; DNS_MISSING='readlink sed'; DNS_CAPABILITY=$capability
+        toolbox_network B23 status <<< y > "$dns_work/out" 2>&1 && fail "B23 status accepted missing $capability"
+        [[ $(<"$dns_work/out") == *"未找到 $capability"* && $(<"$dns_work/out") != *'缺少命令'* && ! -s $dns_work/trace ]] || fail 'B23 status misreported missing resolver capability'
+    done
+)
 toolbox_network B23 bogus >"$work/out" 2>&1 && fail 'B23 未知动作被接受'
 printf '9\n' | toolbox_network B23 >"$work/out" 2>&1 && fail 'B23 非法菜单编号被接受'
-# status 是只读的，任何环境都应给出可读输出
-toolbox_network B23 status >"$work/out" 2>&1 || fail 'B23 status 失败'
-grep -q 'systemd-resolved' "$work/out" || fail 'B23 status 未报告解析器状态'
+# 具备解析器能力时，status 用显式读取桩报告状态，不依赖宿主机命令。
+(
+    status_trace=$work/dns-status.trace
+    : > "$status_trace"
+    systemctl() {
+        printf 'systemctl:%s\n' "$*" >> "$status_trace"
+        [[ $# == 3 && $1 == is-active && $2 == --quiet && $3 == systemd-resolved ]] || {
+            printf 'B23 status unexpected systemctl:%s\n' "$*" >> "$NETWORK_TEST_MARKER"; return 99;
+        }
+        return 3
+    }
+    resolvectl() {
+        printf 'resolvectl:%s\n' "$*" >> "$status_trace"
+        [[ $# == 1 && $1 == status ]] || {
+            printf 'B23 status unexpected resolvectl:%s\n' "$*" >> "$NETWORK_TEST_MARKER"; return 99;
+        }
+        printf 'Global\n       DNS Servers: 1.1.1.1\n'
+    }
+    toolbox_network B23 status >"$work/out" 2>&1 || fail 'B23 status 失败'
+    [[ $(<"$work/out") == *'systemd-resolved: 未运行'* && $(<"$work/out") == *'DNS Servers: 1.1.1.1'* ]] || fail 'B23 status 未报告读取桩的解析器状态'
+    [[ $(<"$status_trace") == $'systemctl:is-active --quiet systemd-resolved\nresolvectl:status\nresolvectl:status' ]] || fail 'B23 status 执行了预期读取以外的命令'
+    [[ ! -e $NETWORK_TEST_MARKER ]] || fail 'B23 status 跨过写入/包管理边界'
+)
 if toolbox_network BAD >"$work/out" 2>&1; then fail 'invalid choice accepted'; fi
 if toolbox_network >"$work/out" 2>&1; then fail 'missing choice accepted'; fi
 if toolbox_network A1 unexpected >"$work/out" 2>&1; then fail 'extra argument accepted'; fi
@@ -1209,5 +1366,100 @@ for key in A3 A5; do
 done
 reset
 
+# Extra ordinary commands must be checked before CPU/certificate/ownership
+# probes; accepted dependency installation resumes this call at the same gate.
+(
+    net_dep_trace=$work/network-dependency.trace
+    command() {
+        if [[ ${1:-} == -v ]]; then
+            [[ ${2:-} != "${NET_MISSING_CAPABILITY:-}" ]] || return 1
+            [[ " ${NET_MISSING:-} " != *" ${2:-} "* || ${NET_DEPS_READY:-0} == 1 ]] || return 1
+            return 0
+        fi
+        builtin command "$@"
+    }
+    _toolbox_deps_exec() {
+        printf 'package:%s\n' "$*" >> "$net_dep_trace"
+        [[ ${1:-} == apt-get ]] || return 99
+        case ${2:-} in update) return 0;; install) NET_DEPS_READY=1;; *) return 99;; esac
+    }
+    net_require_root() { :; }
+    net_require_debian() { :; }
+    net_tuic_arch() { printf 'next-gate\n' >> "$net_dep_trace"; return 71; }
+    net_alpine_arch() { printf 'next-gate\n' >> "$net_dep_trace"; return 71; }
+    net_prompt() { printf 'next-gate\n' >> "$net_dep_trace"; return 71; }
+    for entry in A3 A5 B31; do
+        case $entry in
+            A3) added='uname grep date cut tr readlink cp chmod install dirname cat rm sleep';;
+            A5) added='uname grep readlink cp chmod mkdir mv rm rmdir dirname cat sleep';;
+            B31) added='grep cut readlink cat chmod rm sleep';;
+        esac
+        for dependency in $added; do
+            : > "$net_dep_trace"; NET_MISSING=$dependency; NET_DEPS_READY=0
+            toolbox_network "$entry" install <<< n > "$work/net-deps.out" 2>&1 && fail "$entry accepted missing $dependency"
+            [[ $(<"$work/net-deps.out") == *"网络服务 缺少命令：$dependency"* && ! -s $net_dep_trace ]] || fail "$entry reached a probe before dependency $dependency"
+        done
+        : > "$net_dep_trace"; NET_MISSING=$added; NET_DEPS_READY=0
+        toolbox_network "$entry" install <<< y > "$work/net-deps.out" 2>&1 && fail "$entry mocked next gate ignored"
+        [[ $(<"$net_dep_trace") == *$'package:apt-get install '*$'\nnext-gate' ]] || fail "$entry dependency install did not resume same call"
+    done
+    # The kernel reader precedes B12's build-tool check; version refusal stays.
+    unset TOOLBOX_NET_KERNEL_RELEASE
+    uname() { printf 'kernel-read\n' >> "$net_dep_trace"; printf '5.4.0-fixture\n'; }
+    : > "$net_dep_trace"; NET_MISSING=uname; NET_DEPS_READY=0
+    net_brutal_require_kernel <<< n > "$work/net-deps.out" 2>&1 && fail 'B12 missing uname accepted'
+    [[ ! -s $net_dep_trace && $(<"$work/net-deps.out") == *'缺少命令：uname'* ]] || fail 'B12 missing uname misreported kernel version'
+    net_brutal_require_kernel <<< y > "$work/net-deps.out" 2>&1 && fail 'B12 dependency install bypassed old kernel'
+    [[ $(<"$net_dep_trace") == *$'\nkernel-read' && $(<"$work/net-deps.out") == *'过旧'* ]] || fail 'B12 did not resume original kernel gate'
+    for dependency in awk grep tr cut cp chmod rm rmmod install dirname; do
+        : > "$net_dep_trace"; NET_MISSING=$dependency; NET_DEPS_READY=0
+        net_brutal_require_toolchain <<< n > "$work/net-deps.out" 2>&1 && fail "B12 omitted $dependency"
+        [[ ! -s $net_dep_trace ]] || fail 'B12 declined dependency reached package execution'
+    done
+    # No installation means no package request for uninstall/status.
+    for entry in A3 A5 B31 B12; do
+        for action in uninstall status; do
+            : > "$net_dep_trace"; NET_MISSING='grep flock rm sed ss readlink cut uname lsmod awk sysctl tr'; NET_DEPS_READY=0
+            toolbox_network "$entry" "$action" <<< n > "$work/net-deps.out" 2>&1 && fail "$entry absent installation returned success"
+            [[ ! -s $net_dep_trace ]] || fail "$entry absent installation requested packages"
+        done
+    done
+    mkdir -p "$(net_brutal_etc)"
+    printf 'ExecStart=%s\n' "$(net_tuic_bin)" > "$(net_tuic_unit)"
+    printf 'ExecStart=%s\n' "$(net_a5_bin)" > "$(net_a5_unit)"
+    printf 'ExecStart=%s -d -d TCP-LISTEN:18443,fork,reuseaddr TCP:example.test:8443\n' \
+        "$(net_relay_socat)" > "$(net_relay_unit tcp 18443)"
+    for entry in A3 A5 B31 B12; do
+        if [[ $entry == B12 ]]; then added='flock sysctl tr rmmod sleep lsmod awk grep rm dkms depmod uname'
+        else added='grep flock rm'; fi
+        for dependency in $added; do
+            : > "$net_dep_trace"; NET_MISSING=$dependency; NET_DEPS_READY=0
+            toolbox_network "$entry" uninstall <<< n > "$work/net-deps.out" 2>&1 && fail "$entry uninstall accepted missing $dependency"
+            [[ $(<"$work/net-deps.out") == *"网络服务 缺少命令：$dependency"* && ! -s $net_dep_trace ]] || fail "$entry uninstall misreported missing $dependency"
+        done
+        : > "$net_dep_trace"; NET_MISSING=$added; NET_DEPS_READY=0
+        toolbox_network "$entry" uninstall <<< $'y\nn' > "$work/net-deps.out" 2>&1 && fail "$entry package y replaced uninstall confirmation"
+        [[ $(<"$work/net-deps.out") == *'确认执行'* ]] || fail "$entry did not retain uninstall confirmation"
+        case $entry in
+            A3|A5) added='sed ss readlink grep cut';;
+            B31) added='sed ss';;
+            B12) added='uname lsmod awk grep sysctl tr';;
+        esac
+        for dependency in $added; do
+            : > "$net_dep_trace"; NET_MISSING=$dependency; NET_DEPS_READY=0
+            toolbox_network "$entry" status <<< n > "$work/net-deps.out" 2>&1 && fail "$entry status accepted missing reader"
+            [[ $(<"$work/net-deps.out") == *'状态读取不完整'* && ! -s $net_dep_trace ]] || fail "$entry status misreported missing $dependency"
+        done
+        if [[ $entry != B12 ]]; then
+            : > "$net_dep_trace"; NET_MISSING=$added; NET_MISSING_CAPABILITY=systemctl
+            toolbox_network "$entry" status <<< y > "$work/net-deps.out" 2>&1 && fail "$entry status accepted missing systemctl"
+            [[ $(<"$work/net-deps.out") == *'未找到 systemctl'* && $(<"$work/net-deps.out") != *'缺少命令'* && ! -s $net_dep_trace ]] || fail "$entry status confused missing init with state or ordinary dependencies"
+            NET_MISSING_CAPABILITY=''
+            TOOLBOX_NET_SYSTEMD_RUN=$work/no-systemd toolbox_network "$entry" status <<< y > "$work/net-deps.out" 2>&1 && fail "$entry status accepted inactive init"
+            [[ $(<"$work/net-deps.out") == *'systemd 未作为 init 运行'* && ! -s $net_dep_trace ]] || fail "$entry status did not preserve init gate"
+        fi
+    done
+)
+reset
 [[ ! -e $NETWORK_TEST_MARKER ]] || fail '命中了真实命令兜底拒绝桩'
 printf 'network tests passed\n'

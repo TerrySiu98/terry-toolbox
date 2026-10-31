@@ -113,7 +113,7 @@ done
 reset; MISSING=docker
 wsc_dependencies
 seen 'docker-route:B10 WebSSH 容器'
-seen 'require:B10 WebSSH 容器:python3 ss flock mktemp'
+seen 'require:B10 WebSSH 容器:python3 ss flock mktemp rm sleep'
 [[ $(head -n 1 "$trace") == docker-route:* ]] || fail 'Docker route ordering'
 reset; MISSING=docker
 toolbox_docker_ipv6 apply
@@ -134,6 +134,21 @@ for call in 'wsc_dependencies' 'toolbox_docker_ipv6 apply'; do
     absent 'require:'; absent engine-python
 done
 
+# Probe cleanup and Engine readiness also need ordinary tools before WebSSH's
+# temporary directory or embedded engine can run.
+for dependency in rm sleep; do
+    for rc in 1 7; do
+        reset; MISSING=$dependency; DEPENDENCY_RC=$rc
+        reject wsc_dependencies
+        seen 'require:B10 WebSSH 容器:python3 ss flock mktemp rm sleep'
+        absent engine-python; absent docker-route:
+    done
+    reset; MISSING=$dependency
+    wsc_dependencies
+    seen 'require:B10 WebSSH 容器:python3 ss flock mktemp rm sleep'
+    absent engine-python; absent docker-route:
+done
+
 # Platform/program checks still run after successful dependency preparation.
 if (( EUID == 0 )); then
     reset; MISSING=python3
@@ -152,7 +167,7 @@ if (( EUID == 0 )); then
         mktemp() { printf 'wsc-probe\n' >> "$trace"; return 1; }
         wsc_local_gate() { printf 'wsc-gate\n' >> "$trace"; return 1; }
         reject toolbox_webssh_container personal status
-        seen 'require:B10 WebSSH 容器:python3 ss flock mktemp'
+        seen 'require:B10 WebSSH 容器:python3 ss flock mktemp rm sleep'
         absent wsc-probe; absent wsc-gate
     )
 fi
@@ -188,6 +203,107 @@ absent 'require:'; absent 'docker-route:'
     reset; MISSING=hostname; DEPENDENCY_RC=1
     reject _toolbox_system_tg
     seen 'require:系统工具:hostname'
+
+    # B6 must resolve ordinary tools before install creates its state directory
+    # or exec opens swap.lock. Stop at that first write boundary after success;
+    # no real swap, service, package manager or filesystem mutation is reached.
+    (
+        export TOOLBOX_SYSTEM_STATE="$work/b6-dependency-state"
+        install() { printf 'swap-directory\n' >> "$trace"; return 1; }
+        flock() { fail 'B6 reached flock before the directory stop boundary'; }
+        for dependency in install flock tail grep mktemp cat chmod ln mv rm sha256sum sleep; do
+            for rc in 1 7; do
+                reset; MISSING=$dependency; DEPENDENCY_RC=$rc
+                reject toolbox_system B6 </dev/null
+                seen "require:系统工具:$dependency"; absent swap-directory
+                [[ ! -e $TOOLBOX_SYSTEM_STATE ]] || fail 'B6 wrote before dependency refusal'
+            done
+            reset; MISSING=$dependency
+            reject toolbox_system B6 </dev/null
+            seen "require:系统工具:$dependency"; seen swap-directory
+            [[ $(head -n 1 "$trace") == require:* ]] || fail 'B6 directory preceded dependency consent'
+            [[ $(grep -c '^require:' "$trace") == 1 ]] || fail 'B6 duplicated dependency request'
+            [[ ! -e $TOOLBOX_SYSTEM_STATE ]] || fail 'B6 passed the directory stop boundary'
+        done
+        reset
+        reject toolbox_system B6 </dev/null
+        absent require:; seen swap-directory
+    )
+
+    # Every system-owned command list reaches the shared installer before its
+    # first business boundary. Each success stops there; no package, network,
+    # service, firewall or transaction operation executes in this matrix.
+    (
+        export TOOLBOX_SYSTEM_ETC="$work/system-dependencies/etc"
+        export TOOLBOX_SYSTEM_STATE="$work/system-dependencies/state"
+        export TOOLBOX_DOCKER_APT_ROOT="$work/system-dependencies/apt"
+        export TOOLBOX_DOCKER_DATA_ROOT="$work/system-dependencies/data"
+        mkdir -p "$TOOLBOX_SYSTEM_ETC" "$TOOLBOX_SYSTEM_STATE"
+        : > "$TOOLBOX_SYSTEM_ETC/port-hop.conf"
+        : > "$TOOLBOX_SYSTEM_STATE/net-opt.previous"
+        _toolbox_system_os() { printf '%s\n' "$SYSTEM_DEP_OS"; }
+        _toolbox_system_has() {
+            if [[ $1 == docker ]]; then [[ $SYSTEM_DEP_DOCKER == 1 ]]; return; fi
+            command -v "$1" >/dev/null 2>&1
+        }
+        _toolbox_system_1panel_present() { return 1; }
+        _toolbox_system_docker_release() { printf 'debian trixie\n'; }
+        _toolbox_system_package_installed() { return 1; }
+        _toolbox_system_docker_alpine_preflight() { :; }
+        dpkg() { [[ $* == --print-architecture ]] || fail 'unexpected dpkg query'; printf 'amd64\n'; }
+        docker() { case $1 in info|ps) return 0;; *) fail 'unexpected Docker mutation';; esac; }
+        apt-get() { fail 'system dependency matrix reached apt-get'; }
+        apk() { fail 'system dependency matrix reached apk'; }
+        system_stop() { printf 'system-stop\n' >> "$trace"; return 1; }
+        _toolbox_system_confirm() { system_stop; }
+        _toolbox_system_timer_preflight() { system_stop; }
+        _toolbox_system_netopt_state_valid() { system_stop; }
+        _toolbox_system_ours() { system_stop; }
+        sysctl() { system_stop; }
+        toolbox_require_commands() {
+            local label=$1; shift
+            printf 'require:%s:%s\n' "$label" "$*" >> "$trace"
+            [[ $DEPENDENCY_RC == 0 ]] || return "$DEPENDENCY_RC"
+            [[ ${NO_READBACK:-0} == 1 ]] || MISSING=''
+        }
+        system_dependency_cases() {
+            local action=$1 dependency rc; shift
+            for dependency in "$@"; do
+                for rc in 1 7; do
+                    reset; MISSING=$dependency; DEPENDENCY_RC=$rc
+                    reject "$action" </dev/null >/dev/null 2>&1
+                    seen "require:系统工具:$dependency"; absent system-stop
+                done
+                reset; MISSING=$dependency; NO_READBACK=1
+                reject "$action" </dev/null >/dev/null 2>&1
+                seen "require:系统工具:$dependency"; absent system-stop
+                NO_READBACK=0
+                reset; MISSING=$dependency
+                reject "$action" </dev/null >/dev/null 2>&1
+                seen "require:系统工具:$dependency"; seen system-stop
+                [[ $(head -n 1 "$trace") == require:* ]] || fail "$action reached its boundary before $dependency"
+                [[ $(grep -c '^require:' "$trace") == 1 ]] || fail "$action duplicated dependency consent"
+            done
+            reset
+            reject "$action" </dev/null >/dev/null 2>&1
+            absent require:; seen system-stop
+        }
+        SYSTEM_DEP_OS=debian SYSTEM_DEP_DOCKER=0
+        system_dependency_cases _toolbox_system_docker mktemp mkdir chmod install cp stat ln rm awk
+        system_dependency_cases _toolbox_system_nodequality cut mktemp rm find
+        system_dependency_cases _toolbox_system_panel cut mktemp rm
+        system_dependency_cases _toolbox_system_password passwd
+        system_dependency_cases _toolbox_system_traffic grep install mktemp cp stat sha256sum cat chmod ln mv rm bash env date awk logger hostname mkdir sleep
+        system_dependency_cases _toolbox_system_tg grep install mktemp cp stat sha256sum cat chmod ln mv rm bash env date awk logger
+        system_dependency_cases _toolbox_system_netopt_apply grep stat sha256sum install mktemp cat chmod ln mv rm
+        system_dependency_cases _toolbox_system_netopt_rollback grep stat sha256sum rm
+        SYSTEM_DEP_OS=alpine
+        system_dependency_cases _toolbox_system_docker mkdir mktemp chmod stat sha256sum sleep
+        system_dependency_cases _toolbox_system_alpine_hop_apply awk grep install mktemp cat chmod mv rm
+        system_dependency_cases _toolbox_system_alpine_hop_remove grep rm
+        SYSTEM_DEP_DOCKER=1
+        system_dependency_cases _toolbox_system_alpine_webtop install
+    )
 
     # B7 completes only dependency preparation here. The test stops before any
     # real filesystem transaction while checking consent order and input use.

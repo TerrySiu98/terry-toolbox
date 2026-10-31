@@ -179,6 +179,41 @@ assert_log 'apk add --no-cache -- virt-what lsblk findmnt flock blkid util-linux
 [[ $(< "$deps_test_dir/manager.log") != *apt-get* ]] || fail 'Alpine invoked apt'
 [[ ! -s $deps_test_dir/stdout ]] || fail 'apk wrote stdout'
 
+# B8 passwd uses the distro provider and retains the ordinary consent/readback
+# contract. Existing BusyBox/packaged passwd never triggers installation.
+for distro in debian ubuntu alpine; do
+    if [[ $distro == alpine ]]; then provider=shadow; else provider=passwd; fi
+    for result in declined install-failed no-readback installed present; do
+        reset_case
+        printf 'ID=%s\n' "$distro" > "$TOOLBOX_OS_RELEASE"
+        MOCK_COMMANDS=(passwd)
+        case $result in
+            declined)
+                if run_require passwd <<< n; then fail "$distro passwd accepted refusal"; fi
+                assert_untouched;;
+            install-failed)
+                MOCK_FAIL_INSTALL=1
+                if run_require passwd <<< y; then fail "$distro passwd ignored install failure"; fi;;
+            no-readback)
+                MOCK_SKIP_COMMAND=passwd
+                if run_require passwd <<< y; then fail "$distro passwd ignored missing readback"; fi
+                assert_stderr 'passwd';;
+            installed)
+                run_require passwd <<< y || fail "$distro passwd install failed"
+                assert_stderr '命令回读通过';;
+            present)
+                make_command passwd
+                run_require passwd </dev/null || fail "$distro existing passwd refused"
+                assert_untouched;;
+        esac
+        case $result in
+            install-failed|no-readback|installed)
+                if [[ $distro == alpine ]]; then assert_log "apk add --no-cache -- $provider"
+                else assert_log "apt-get install -y --no-upgrade --no-install-recommends -- $provider"; fi;;
+        esac
+    done
+done
+
 # HTTPS tools include an absent CA package in the same confirmation and read it
 # back. Existing CA packages and explicit trust paths are not repaired/replaced.
 for distro in debian alpine; do

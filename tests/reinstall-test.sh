@@ -67,6 +67,19 @@ assert 'is_in_china && mirror=http://mirror.nju.edu.cn/alpine' not in s
 assert 'command curl --insecure --connect-timeout' not in s
 PY
 pass 'reviewed source digest and HTTPS boot images/injected packages'
+(
+    # Root detection precedes the dependency prompt, so it must not need id.
+    id() { printf 'called\n' >> "$case_root/root-id-called"; return 127; }
+    root_rc=0
+    _toolbox_reinstall_root > "$case_root/root-check" 2>&1 || root_rc=$?
+    if [[ $EUID == 0 ]]; then
+        [[ $root_rc == 0 ]] || fail 'root was rejected because id is missing'
+    else
+        [[ $root_rc != 0 && $(< "$case_root/root-check") == *'需要 root'* ]] || fail 'non-root check did not fail closed'
+    fi
+    [[ ! -e $case_root/root-id-called ]] || fail 'root check executed id before dependency handling'
+) || fail 'builtin EUID root check'
+pass 'root check uses builtin EUID before dependencies; existing fixture override remains isolated'
 _toolbox_reinstall_root() { return 0; }
 _toolbox_reinstall_has() {
     [[ $1 != "${MISSING:-}" && $1 != "${MISSING2:-}" ]] || [[ -e $fixture/deps-installed/$1 ]]
