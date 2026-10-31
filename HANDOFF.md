@@ -2,6 +2,10 @@
 
 更新日期：2026-11-01。本文件记录 Codex 接续后的当前维护入口；原 Hermes 交接已逐字节保存为 [2026-10-31 历史快照](docs/handoff-hermes-20261031.md)。快照中的 Claude Code 称谓、旧测试限制、失败记录及授权说明只描述当时状态，不代表当前分工或新的操作授权。后续工作以 Terry 的当前指示和本文件的证据边界为准。
 
+## 本次 M3 旧版 lsblk 修复待发布
+
+候选分支 `codex/m3-lsblk-compat` 修复 util-linux 2.36.1 不支持 `MOUNTPOINTS` 导致 M3 准备失败的问题，改用 `MOUNTPOINT` 并递归归一，保留挂载与磁盘身份门禁。新候选 SHA-256 为 `042bffafc28c9e47c5fddf485a4c60ac7e0d14cae39ae18f677cbea293f40da4`（702279 字节）。相关 7 项检查和真实旧版只读采集/inventory 已通过；最终调用次数断言补跑的 79 项模拟检查也已通过，完整来源与边界见[本次修复记录](docs/m3-lsblk-fix-20261101.md)。**本次未合并、未部署；线上仍是下方 PR #2 的依赖修复版本。** Hermes 后续发布需按既有 Worker 流程备份并精确回读，不能把此候选哈希写为当前线上哈希。
+
 ## 本次依赖补装修复已发布
 
 [PR #2](https://github.com/TerrySiu98/terry-toolbox/pull/2) 的候选分支为 `codex/confirm-missing-dependencies`，产品源码与构建冻结提交为 `f229d25ae66ba0929d3805f0d170ad294ac0ba38`，最终测试提交为 `971d4f3f76eb1a9d36e0fb5a813030a8cc42715f`（仅测试断言修正），基于已发布的 `main` commit `58a5a7171432c6980f860795a13ff60a681504c2`，保留 Hermes 的重装状态及重启保护。线上缺 `virt-what` 就退出的问题已经从发布脚本逐字节确认，并非遗漏上传。
