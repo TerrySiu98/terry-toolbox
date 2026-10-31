@@ -172,7 +172,7 @@ done
         if [[ $dns_action == install ]]; then [[ ! -e $dns_file ]] || fail 'B23 refused apply wrote drop-in'
         else [[ $(<"$dns_file") == $'# 由 Terry Toolbox B23 生成\n[Resolve]\nDNS=1.1.1.1' ]] || fail 'B23 refused restore changed drop-in'; fi
         [[ ! -e $dns_file.pre-toolbox && ! -e $TOOLBOX_NET_LOCK_DIR/terry-toolbox-dns.lock ]] || fail 'B23 refusal wrote backup/lock'
-        ! builtin command grep -qE '^service:restart|^resolver:(dns|domain|revert)|^lock' "$dns_work/trace" || fail 'B23 refusal crossed service/write boundary'
+        ! grep -qE '^service:restart|^resolver:(dns|domain|revert)|^lock' "$dns_work/trace" || fail 'B23 refusal crossed service/write boundary'
     }
     for dns_action in install restore; do
         if [[ $dns_action == install ]]; then dns_tools='readlink grep wc tr dirname install cp chmod mv rm flock sleep'
@@ -182,7 +182,7 @@ done
             dns_call <<< n > "$dns_work/out" 2>&1 && fail "B23 $dns_action accepted missing $dependency"
             [[ $(<"$dns_work/out") == *"网络服务 缺少命令：$dependency"* && $(<"$dns_work/out") == *'已取消补装'* ]] || fail "B23 $dns_action missing $dependency was misdiagnosed"
             [[ $(<"$dns_work/out") != *'确认执行'* ]] || fail 'B23 reached feature confirmation before dependencies'
-            ! builtin command grep -q '^package:' "$dns_work/trace" || fail 'B23 declined dependency called package boundary'
+            ! grep -q '^package:' "$dns_work/trace" || fail 'B23 declined dependency called package boundary'
             dns_untouched
         done
         # Init/service capability must fail before asking to install ordinary tools.
@@ -195,7 +195,7 @@ done
             esac
             dns_call <<< y > "$dns_work/out" 2>&1 && fail "B23 $dns_action accepted missing capability $capability"
             [[ $(<"$dns_work/out") != *'缺少命令'* && $(<"$dns_work/out") != *'仅补装'* ]] || fail 'B23 ordinary installation preceded resolved capability'
-            ! builtin command grep -q '^package:' "$dns_work/trace" || fail 'B23 missing capability called package boundary'
+            ! grep -q '^package:' "$dns_work/trace" || fail 'B23 missing capability called package boundary'
             dns_untouched
         done
         dns_reset; DNS_MISSING=$dns_tools
@@ -212,10 +212,10 @@ done
         dns_untouched
         dns_reset; DNS_MISSING=$dns_tools
         dns_call <<< $'y\nYES' > "$dns_work/out" 2>&1 || fail "B23 $dns_action did not continue after dependency installation"
-        [[ $(builtin command grep -c '^package:apt-get install ' "$dns_work/trace") == 1 ]] || fail 'B23 dependencies were not batched once'
-        builtin command grep -q '^service:restart systemd-resolved' "$dns_work/trace" || fail 'B23 successful action did not restart fixture service'
+        [[ $(grep -c '^package:apt-get install ' "$dns_work/trace") == 1 ]] || fail 'B23 dependencies were not batched once'
+        grep -q '^service:restart systemd-resolved' "$dns_work/trace" || fail 'B23 successful action did not restart fixture service'
         if [[ $dns_action == install ]]; then
-            builtin command grep -qx 'DNS=1.1.1.1' "$dns_file" || fail 'B23 successful apply did not write fixture config'
+            grep -qx 'DNS=1.1.1.1' "$dns_file" || fail 'B23 successful apply did not write fixture config'
         else [[ ! -e $dns_file ]] || fail 'B23 successful restore retained owned config'; fi
         # Successful dependency installation must not override ownership refusal.
         dns_reset; DNS_MISSING=$dns_tools
@@ -227,7 +227,7 @@ done
         if [[ $dns_action == install ]]; then
             [[ $(<"$dns_work/out") == *'被其他程序接管'* && ! -e $dns_file ]] || fail 'B23 foreign resolver gate changed'
         else [[ $(<"$dns_file") == 'foreign config' && $(<"$dns_work/out") == *'不是本工具生成'* ]] || fail 'B23 foreign drop-in gate changed'; fi
-        ! builtin command grep -q '^service:restart' "$dns_work/trace" || fail 'B23 ownership refusal restarted resolver'
+        ! grep -q '^service:restart' "$dns_work/trace" || fail 'B23 ownership refusal restarted resolver'
     done
     dns_action=install; dns_reset
     ( readlink() { return 1; }; dns_call ) <<< YES > "$dns_work/out" 2>&1 && fail 'B23 accepted unreadable link target'
