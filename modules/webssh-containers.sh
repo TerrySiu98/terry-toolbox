@@ -419,7 +419,9 @@ toolbox_webssh_container() (
     exec {lockfd}< "$data/lock" && flock -xn "$lockfd" || return 1
     log=$(mktemp "$data/install.XXXXXXXX.log") || return 1
     # Failure/signal rollback only touches resources validated against THIS claim.
-    trap 'trap - INT TERM; wsc_error "收到信号；停止/读回仅owned资源，保留所有数据。"; exit 130' INT TERM
+    # wsc_error deliberately returns 1. Consume that diagnostic status so
+    # errexit cannot unwind this function before EXIT reads its local claim.
+    trap 'trap - INT TERM; wsc_error "收到信号；停止/读回仅owned资源，保留所有数据。" || :; exit 130' INT TERM
     trap 'rc=$?; trap - EXIT INT TERM; if (( initialized && ! install_ok )); then wsc_cleanup || :; printf "数据/凭据/私有日志保留: %s\n" "$data" >&2; fi; rm -f -- "$probe"; exit "$rc"' EXIT
     # Pull before creating bridge/containers, no mutable fallback or automatic dependency install.
     if ! wsc_docker pull --platform linux/amd64 "$app_image" >> "$log" 2>&1 || ! wsc_docker image inspect "$app_image" > "$probe" 2>> "$log" || ! app_iid=$(wsc_python image "$branch" "$HOME" "$probe" "$app_image"); then wsc_error '固定镜像拉取/arch/digest读回失败；未换产品。'; return 1; fi

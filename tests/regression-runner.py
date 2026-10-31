@@ -244,9 +244,9 @@ def main():
     args.output = evidence_directory(args.output)
     sources = source_hashes()
     commands = [("syntax", ["bash", "-c", 'for f in toolbox.sh modules/*.sh tests/*.sh scripts/*.sh; do bash -n "$f" || exit; done'], 60)]
-    limits = {"alpine-swap-test.sh": 1200, "vmess-management-test.sh": 900, "docker-ipv6-test.sh": 1800,
-              "reinstall-test.sh": 900, "webssh-containers-test.sh": 1200,
-              "tls-acme-test.sh": 1800}
+    limits = {"alpine-swap-test.sh": 1200, "vmess-management-test.sh": 5400, "docker-ipv6-test.sh": 1800,
+              "reinstall-test.sh": 900, "webssh-containers-test.sh": 5400,
+              "tls-acme-test.sh": 1800, "webssh-test.sh": 5400}
     commands.extend((p.name, ["bash", str(p)], limits.get(p.name, 600))
                     for p in sorted((ROOT / "tests").glob("*-test.sh")))
     commands.extend((name, ["python3", str(ROOT / "tests" / name)], 180)

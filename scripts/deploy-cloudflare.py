@@ -89,6 +89,45 @@ def parse_modules(response):
     return modules
 
 
+def dns_restore_payload(record):
+    """Validate a lossless CNAME create payload before any production write.
+
+    Writable fields and settings follow Cloudflare's generated API schema:
+    https://github.com/cloudflare/cloudflare-python/blob/main/src/cloudflare/types/dns/cname_record_param.py
+    IDs, timestamps and other response-only metadata are not replayable. Unknown
+    fields or unsupported value types must stop migration before DNS is deleted.
+    """
+    writable = {'type', 'name', 'content', 'ttl', 'proxied', 'comment', 'tags', 'settings'}
+    response_only = {'id', 'created_on', 'modified_on', 'proxiable', 'meta',
+                     'comment_modified_on', 'tags_modified_on'}
+    need(isinstance(record, dict) and not record.keys() - writable - response_only,
+         'Unsupported DNS baseline fields; refusing migration')
+    need(isinstance(record.get('id'), str) and record['id'] and
+         record.get('type') == 'CNAME' and record.get('name') == HOST and
+         record.get('content') == 'terrysiu98.github.io',
+         'DNS ownership baseline changed; refusing migration')
+    need(type(record.get('ttl')) is int and
+         (record['ttl'] == 1 or 30 <= record['ttl'] <= 86400) and
+         type(record.get('proxied')) is bool,
+         'Unsupported DNS TTL/proxy baseline; refusing migration')
+    need('comment' not in record or isinstance(record['comment'], str),
+         'Unsupported DNS comment baseline; refusing migration')
+    need('tags' not in record or isinstance(record['tags'], list) and
+         all(isinstance(tag, str) for tag in record['tags']),
+         'Unsupported DNS tags baseline; refusing migration')
+    if 'settings' in record:
+        settings = record['settings']
+        need(isinstance(settings, dict) and
+             not settings.keys() - {'flatten_cname', 'ipv4_only', 'ipv6_only'} and
+             all(type(value) is bool for value in settings.values()),
+             'Unsupported DNS settings baseline; refusing migration')
+        need(not record['proxied'] or 'flatten_cname' not in settings,
+             'Unsupported DNS flatten_cname setting on proxied baseline; refusing migration')
+    # Detach nested lists/maps from the readback object and freeze the exact
+    # supported fields, including empty tags/settings, for recovery validation.
+    return json.loads(json.dumps({key: record[key] for key in sorted(writable) if key in record}))
+
+
 class Evidence:
     def __init__(self, requested):
         if requested:
@@ -238,16 +277,17 @@ def main(argv=None, session_factory=None, sleeper=time.sleep):
         need(bound or args.bind, 'Custom domain is not bound; ordinary deployment cannot migrate DNS')
         need(old_modules is not None or not bound, 'Bound Worker has no readable original content')
         public_read('public-before', 'https://'+HOST, require_ok=bool(bound))
-        zone, records = None, []
+        zone, records, dns_payloads = None, [], []
         if args.bind and not bound:
             zones = api('GET', '/zones?name=uw.cx')
             need(len(zones) == 1, 'Expected exactly one uw.cx zone')
             zone = zones[0]['id']
             records = api('GET', f'/zones/{zone}/dns_records?name={HOST}')
-            need(not records or len(records) == 1 and records[0].get('type') == 'CNAME'
-                 and records[0].get('name') == HOST and records[0].get('content') == 'terrysiu98.github.io',
+            need(isinstance(records, list) and len(records) <= 1,
                  'DNS ownership baseline changed; refusing migration')
+            dns_payloads = [dns_restore_payload(record) for record in records]
             evidence.json('dns-before.json', records)
+            evidence.json('dns-restore-payloads.json', dns_payloads)
         evidence.json('release-manifest.json', manifest)
         for name, raw in modules.items():
             evidence.write('release-'+name, raw)
@@ -289,10 +329,10 @@ def main(argv=None, session_factory=None, sleeper=time.sleep):
                  'DNS/domain changed before explicit migration')
             attempted_deletions = []
             try:
-                for record in records:
+                for record, payload in zip(records, dns_payloads):
                     # A DELETE may take effect even when its response is lost or
                     # saving the response fails. Track intent before sending it.
-                    attempted_deletions.append(record)
+                    attempted_deletions.append(payload)
                     api('DELETE', f'/zones/{zone}/dns_records/{record["id"]}')
                 domain = api('PUT', domain_path, json={'hostname': HOST, 'service': NAME,
                              'enabled': True, 'previews_enabled': False, 'zone_id': zone, 'zone_name': 'uw.cx'})
@@ -308,14 +348,14 @@ def main(argv=None, session_factory=None, sleeper=time.sleep):
                     current = api('GET', f'/zones/{zone}/dns_records?name={HOST}', best_effort_evidence=True)
                     need(isinstance(current, list), 'DNS recovery readback is not a record list')
                     if not current:
-                        payloads = [{k: record[k] for k in
-                            ('type', 'name', 'content', 'ttl', 'proxied', 'comment') if k in record}
-                            for record in attempted_deletions]
+                        payloads = attempted_deletions
                         for payload in payloads:
                             api('POST', f'/zones/{zone}/dns_records', json=payload, best_effort_evidence=True)
                         restored = api('GET', f'/zones/{zone}/dns_records?name={HOST}', best_effort_evidence=True)
                         need(isinstance(restored, list) and len(restored) == len(payloads) and
-                             all(all(record.get(k) == value for k, value in payload.items())
+                             all(isinstance(record, dict) and
+                                 all(k in record and json.dumps(record[k], sort_keys=True) ==
+                                     json.dumps(value, sort_keys=True) for k, value in payload.items())
                                  for record, payload in zip(restored, payloads)), 'DNS recovery readback mismatch')
                 raise
         else:

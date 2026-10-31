@@ -60,7 +60,9 @@ class Cloud:
         self.subdomain = {'enabled': False, 'previews_enabled': False}
         self.binding = [{'hostname': deploy.HOST, 'service': deploy.NAME, 'environment': 'production', 'id': 'bound'}]
         self.records = [{'id': 'legacy', 'name': deploy.HOST, 'type': 'CNAME', 'content': 'terrysiu98.github.io',
-                         'ttl': 1, 'proxied': True, 'comment': 'original'}]
+                         'ttl': 1, 'proxied': True, 'comment': 'original',
+                         'tags': ['owner:terry', 'service:toolbox'],
+                         'settings': {'ipv4_only': True, 'ipv6_only': False}}]
         self.uploaded = False
         self.sessions = []
         self.fail_backup = self.race = self.tamper = self.public_bad = self.migration_fail = None
@@ -167,7 +169,7 @@ class Cloud:
             self.records = []
             return result({'id': 'legacy'})
         if path == '/zones/zone/dns_records' and method == 'POST':
-            self.records = [{'id': 'restored', **kwargs['json']}]
+            self.records = [{'id': 'restored', **copy.deepcopy(kwargs['json'])}]
             return result(self.records[0])
         if method == 'PUT' and path in (script, script+'/content'):
             metadata = json.loads(kwargs['files']['metadata'][1])
@@ -346,6 +348,53 @@ class DeployTest(unittest.TestCase):
                          {k: v for k, v in before.items() if k != 'id'})
         self.assertFalse((self.backup/'deployment-verified.json').exists())
 
+    def test_dns_restore_preserves_flattening_tags_and_empty_values(self):
+        for proxied, settings, tags, comment in (
+                (False, {'flatten_cname': True}, ['owner:terry'], 'original'),
+                (False, {}, [], ''),
+                (True, {'ipv4_only': False, 'ipv6_only': True}, ['owner:terry'], 'IPv6 only')):
+            with self.subTest(proxied=proxied, settings=settings, tags=tags, comment=comment):
+                self.cloud.binding = []; self.cloud.migration_fail = True
+                self.cloud.records[0].update(proxied=proxied, ttl=1 if proxied else 300, settings=settings, tags=tags,
+                                             comment=comment, created_on='2026-01-01T00:00:00Z',
+                                             modified_on='2026-10-31T00:00:00Z', proxiable=True,
+                                             meta={}, comment_modified_on='2026-10-31T00:00:00Z',
+                                             tags_modified_on='2026-10-31T00:00:00Z')
+                expected = {'type': 'CNAME', 'name': self.deploy.HOST, 'content': 'terrysiu98.github.io',
+                            'proxied': proxied, 'ttl': 1 if proxied else 300,
+                            'settings': settings, 'tags': tags, 'comment': comment}
+                with self.assertRaisesRegex(RuntimeError, 'Cloudflare API returned HTTP 500'):
+                    self.run_deploy('--bind')
+                restored = {k: v for k, v in self.cloud.records[0].items() if k != 'id'}
+                self.assertEqual(restored, expected)
+                self.assertEqual(json.loads((self.backup/'dns-restore-payloads.json').read_text()), [expected])
+                posted = [c[2]['json'] for c in self.cloud.calls if c[0] == 'POST' and c[1].endswith('/dns_records')]
+                self.assertEqual(posted, [expected])
+                self.assertFalse((self.backup/'deployment-verified.json').exists())
+                shutil.rmtree(self.backup)
+                self.cloud = Cloud(self.deploy, self.backup)
+
+    def test_unsupported_dns_baselines_refused_before_any_write(self):
+        changes = [
+            {'future_record_option': True}, {'settings': {'future_setting': True}},
+            {'settings': {'flatten_cname': None}}, {'settings': {'ipv4_only': 1}},
+            {'settings': {'flatten_cname': False}},
+            {'settings': None}, {'settings': []}, {'tags': None}, {'tags': 'owner:terry'},
+            {'tags': ['owner:terry', 7]}, {'comment': None}, {'proxied': 1}, {'ttl': True},
+        ]
+        for change in changes:
+            with self.subTest(change=change):
+                self.cloud.binding = []
+                self.cloud.records[0].update(change)
+                before = copy.deepcopy(self.cloud.records)
+                with self.assertRaisesRegex(RuntimeError, 'Unsupported DNS .*refusing migration'):
+                    self.run_deploy('--bind')
+                self.no_writes()
+                self.assertEqual(self.cloud.records, before)
+                self.assertFalse((self.backup/'backup-complete.json').exists())
+                shutil.rmtree(self.backup)
+                self.cloud = Cloud(self.deploy, self.backup)
+
     def test_lost_delete_response_restores_verified_legacy_dns(self):
         self.cloud.binding = []
         before = copy.deepcopy(self.cloud.records[0])
@@ -482,6 +531,45 @@ class DeployTest(unittest.TestCase):
                 self.run_deploy('--bind')
         self.assertTrue(restoring[0])
         self.assertFalse((self.backup/'deployment-verified.json').exists())
+
+    def test_dns_restore_rejects_missing_or_changed_tags_and_settings(self):
+        for tamper in ('tags-missing', 'tags-changed', 'settings-missing', 'settings-changed',
+                       'settings-key-missing', 'settings-key-added', 'settings-wrong-type'):
+            with self.subTest(tamper=tamper):
+                self.cloud.binding = []; self.cloud.migration_fail = True
+                expected = copy.deepcopy(self.cloud.records[0])
+                original = self.cloud.request
+
+                def wrong_restored_record(session, method, url, **kwargs):
+                    response = original(session, method, url, **kwargs)
+                    if method == 'POST' and url.endswith('/dns_records'):
+                        record = self.cloud.records[0]
+                        if tamper == 'tags-missing':
+                            del record['tags']
+                        elif tamper == 'tags-changed':
+                            record['tags'].pop()
+                        elif tamper == 'settings-missing':
+                            del record['settings']
+                        elif tamper == 'settings-changed':
+                            record['settings']['ipv4_only'] = False
+                        elif tamper == 'settings-key-missing':
+                            del record['settings']['ipv6_only']
+                        elif tamper == 'settings-wrong-type':
+                            record['settings']['ipv4_only'] = 1
+                        else:
+                            record['settings']['unexpected'] = True
+                    return response
+
+                with patch.object(self.cloud, 'request', side_effect=wrong_restored_record):
+                    with self.assertRaisesRegex(RuntimeError, 'DNS recovery readback mismatch'):
+                        self.run_deploy('--bind')
+                posted = [c[2]['json'] for c in self.cloud.calls if c[0] == 'POST' and c[1].endswith('/dns_records')]
+                self.assertEqual(posted, [{k: v for k, v in expected.items() if k != 'id'}])
+                failure = json.loads((self.backup/'deployment-failed.json').read_text())
+                self.assertEqual(failure['reason'], 'DNS recovery readback mismatch')
+                self.assertFalse((self.backup/'deployment-verified.json').exists())
+                shutil.rmtree(self.backup)
+                self.cloud = Cloud(self.deploy, self.backup)
 
 
 class ReleaseTest(unittest.TestCase):

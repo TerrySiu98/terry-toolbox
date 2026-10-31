@@ -132,11 +132,22 @@ reset_case; export MOCK_START_FAIL=easynode MOCK_STOP_FAIL=1
 reject easynode install <<< $'YES\nYES'; count_state 2 1
 reset_case; export MOCK_START_FAIL=personal MOCK_RUNNING_READBACK=1
 reject personal install <<< $'YES\nYES'; count_state 1 1
+wsc_signal_case() {
+ # Keep the same nested caller shape as other rejected lifecycle operations.
+ # Under Bash errexit, a failing diagnostic in TERM must not unwind the claim.
+ if toolbox_webssh_container personal install <<< $'YES\nYES' >"$work/output" 2>&1; then
+  fail 'SIGTERM installation succeeded'
+ else
+  signal_rc=$?
+ fi
+ [[ $signal_rc == 130 ]] || { cat "$work/output" >&2; fail "SIGTERM lost explicit exit status: $signal_rc"; }
+ [[ $(< "$work/output") != *'unbound variable'* ]] || fail 'SIGTERM EXIT lost its local transaction state'
+}
 for stop_fail in 0 1; do
  printf 'CHECK: SIGTERM stop_fail=%s\n' "$stop_fail"
  reset_case; export MOCK_SIGNAL=1
  [[ $stop_fail == 0 ]] || export MOCK_STOP_FAIL=1
- reject personal install <<< $'YES\nYES'
+ wsc_signal_case
  [[ -f $HOME/.local/share/terry-toolbox/webssh-containers/personal/credentials.txt ]] || fail 'signal deleted secrets'
  if [[ $stop_fail == 0 ]]; then count_state 0 0; else count_state 1 1; fi
  done

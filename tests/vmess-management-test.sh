@@ -79,7 +79,10 @@ no_manage_mutation() { ! grep -Eq 'systemctl (enable|disable|start|stop|daemon-r
 snapshot() { sha256sum "$(vmess_etc)/cert.pem" "$(vmess_etc)/key.pem" "$(vmess_etc)/config.json" "$(vmess_etc)/manifest.json" "$(vmess_etc)/manifest.sha256"; }
 old_intact() { [[ $(snapshot) == "$old" ]] || fail 'old pair/config/ledger changed'; }
 mkdir -m 700 "$T/inject"
-openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj /CN=example.com -addext subjectAltName=DNS:example.com -keyout "$T/new.key" -out "$T/new.pem" >/dev/null 2>&1
+# Give the renewal trust anchor a distinct subject: OpenSSL 1.1 can select the
+# wrong same-subject self-signed certificate from the old/new CA bundle.
+# The SAN still validates exactly the same service hostname.
+openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj '/CN=example.com/OU=VMess renewal fixture' -addext subjectAltName=DNS:example.com -keyout "$T/new.key" -out "$T/new.pem" >/dev/null 2>&1
 fixture boot-happy
 install_yes || fail 'boot setup'
 : > "$C/log"; old=$(snapshot)

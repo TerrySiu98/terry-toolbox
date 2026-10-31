@@ -85,13 +85,32 @@ class IdentityTest(unittest.TestCase):
             send.assert_called_once_with(adopted, supervisor.owner, signal.SIGKILL)
 
 
-DRIVER = '''import importlib.util,json,pathlib,sys
+DRIVER = '''import importlib.util,json,pathlib,sys,time
 spec=importlib.util.spec_from_file_location('runner',sys.argv[1]);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 w=pathlib.Path(sys.argv[2])
+startup_error=None
+if sys.argv[4]=='ready':
+ # Keep fixture startup outside the timeout under test. Returning the real
+ # Popen object still lets Supervisor own and clean the exact process tree.
+ original_popen=m.subprocess.Popen
+ def start_ready(*args,**kwargs):
+  global startup_error
+  proc=original_popen(*args,**kwargs)
+  deadline=time.monotonic()+30
+  while not (w/'ready').exists():
+   code=proc.poll()
+   if code is not None:
+    startup_error=f'fixture exited before ready (exit {code})';break
+   if time.monotonic()>=deadline:
+    startup_error='fixture did not become ready within 30 seconds';break
+   time.sleep(.01)
+  return proc
+ m.subprocess.Popen=start_ready
 with m.Supervisor(grace=.2,kill_wait=3) as s:
  with (w/'log').open('wb') as log:
   result=s.run([sys.executable,str(w/'target.py'),str(w)],log,float(sys.argv[3]),cwd=w)
  result['cancelled_signal']=s.cancel_signal
+ result['fixture_startup_error']=startup_error
  (w/'result.json').write_text(json.dumps(result))
 sys.exit(0 if result['cleanup']['complete'] else 90)
 '''
@@ -110,14 +129,15 @@ MODE
 
 @unittest.skipUnless(sys.platform == 'linux', 'native subreaper/pidfd checks require Linux')
 class NativeTest(unittest.TestCase):
-    def run_tree(self, mode, *, cancel=None, limit=.5):
+    def run_tree(self, mode, *, cancel=None, limit=.5, wait_for_ready=False):
         with tempfile.TemporaryDirectory(prefix='runner-supervisor-') as directory:
             work = Path(directory)
             (work/'target.py').write_text(TARGET.replace('MODE', mode))
-            outsider = subprocess.Popen([sys.executable, '-c', 'import time;time.sleep(30)'], start_new_session=True)
+            outsider = subprocess.Popen([sys.executable, '-c', 'import time;time.sleep(90)'], start_new_session=True)
             driver = None
             try:
-                driver = subprocess.Popen([sys.executable, '-c', DRIVER, str(RUNNER), str(work), str(limit)],
+                driver = subprocess.Popen([sys.executable, '-c', DRIVER, str(RUNNER), str(work), str(limit),
+                                           'ready' if wait_for_ready else 'immediate'],
                                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
                 if cancel is not None:
                     deadline = time.monotonic() + 5
@@ -126,15 +146,21 @@ class NativeTest(unittest.TestCase):
                         self.assertLess(time.monotonic(), deadline, 'fixture readiness timeout')
                         time.sleep(.01)
                     os.kill(driver.pid, cancel)
-                out, err = driver.communicate(timeout=10)
+                out, err = driver.communicate(timeout=45 if wait_for_ready else 10)
                 self.assertEqual(driver.returncode, 0, out + err)
                 result = json.loads((work/'result.json').read_text())
                 self.assertTrue(result['cleanup']['complete'], result)
+                diagnostic = (result, (work/'log').read_text(), out, err)
+                self.assertIsNone(result['fixture_startup_error'], diagnostic)
+                if wait_for_ready:
+                    self.assertTrue((work/'ready').is_file(), diagnostic)
+                    self.assertTrue((work/'orphan-pid.json').is_file(), diagnostic)
                 self.assertIsNone(outsider.poll(), 'unrelated parallel process was killed')
                 for path in work.glob('*pid.json'):
                     expected = json.loads(path.read_text())
                     current = runner.process_record(expected['pid'])
                     self.assertTrue(current is None or current['start'] != expected['start'], (path, current, result))
+                self.assertTrue((work/'leader.json').is_file(), ('fixture did not record its leader', diagnostic))
                 leader = json.loads((work/'leader.json').read_text())
                 current = runner.process_record(leader['pid'])
                 self.assertTrue(current is None or current['start'] != leader['start'], result)
@@ -157,14 +183,17 @@ class NativeTest(unittest.TestCase):
             self.assertFalse(result['timeout'] or result['cancelled'] or result['leaked_descendants'])
 
     def test_timeout_reaps_double_forked_setsid_orphan(self):
-        mode = '''pid=os.fork()
+        # Deliberately take longer than the .5s test timeout to form the tree.
+        # A startup-inclusive deadline would never exercise orphan cleanup.
+        mode = '''time.sleep(1)
+pid=os.fork()
 if pid==0:
  os.setsid()
  if os.fork():os._exit(0)
- signal.signal(signal.SIGTERM,signal.SIG_IGN);track('orphan-pid.json');forever()
+ signal.signal(signal.SIGTERM,signal.SIG_IGN);track('orphan-pid.json');(w/'ready').touch();forever()
 os.waitpid(pid,0)
 forever()'''
-        result = self.run_tree(mode)
+        result = self.run_tree(mode, wait_for_ready=True)
         self.assertTrue(result['timeout'])
         self.assertIn(signal.SIGKILL, [a['signal'] for a in result['cleanup']['signals']])
 
