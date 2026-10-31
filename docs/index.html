@@ -12474,15 +12474,28 @@ _toolbox_reinstall_init() {
 }
 _toolbox_reinstall_lsblk() {
     local output
-    output=$(lsblk --json --bytes --paths --output NAME,KNAME,TYPE,PKNAME,FSTYPE,MOUNTPOINTS,SIZE,MODEL,SERIAL,WWN,MAJ:MIN,RO,RM,PTUUID) || return
+    # MOUNTPOINTS was added after util-linux 2.36 (Debian 11). The older
+    # MOUNTPOINT column remains supported by current versions and is sufficient
+    # to detect any mounted loop device. Root/boot ancestry uses findmnt below.
+    output=$(lsblk --json --bytes --paths --output NAME,KNAME,TYPE,PKNAME,FSTYPE,MOUNTPOINT,SIZE,MODEL,SERIAL,WWN,MAJ:MIN,RO,RM,PTUUID) || return
     python3 - "$output" <<'PY'
 import json,os,stat,sys
-for d in json.loads(sys.argv[1])['blockdevices']:
+data=json.loads(sys.argv[1])
+def normalize(nodes):
+ if not isinstance(nodes,list):sys.exit('lsblk blockdevices/children 格式未知')
+ for node in nodes:
+  if not isinstance(node,dict) or 'mountpoint' not in node:sys.exit('lsblk MOUNTPOINT 字段缺失；挂载状态未知')
+  point=node.pop('mountpoint')
+  if point is not None and (not isinstance(point,str) or not point):sys.exit('lsblk MOUNTPOINT 格式未知')
+  node['mountpoints']=[] if point is None else [point]
+  normalize(node.get('children',[]))
+normalize(data['blockdevices'])
+for d in data['blockdevices']:
  if d['type']!='disk':continue
  p=d['name'];k=d['kname'].removeprefix('/dev/')
  if not stat.S_ISBLK(os.stat(p).st_mode) or not os.path.exists('/sys/class/block/'+k+'/device'):sys.exit('whole physical disk/sysfs 身份未验证')
  if os.listdir('/sys/class/block/'+k+'/holders'):sys.exit('disk 有 RAID/LVM/crypt/multipath holder')
-print(sys.argv[1])
+print(json.dumps(data))
 PY
 }
 _toolbox_reinstall_mounts() { findmnt --json --output TARGET,SOURCE,FSTYPE,OPTIONS; }

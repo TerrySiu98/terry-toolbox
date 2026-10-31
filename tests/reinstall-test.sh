@@ -80,6 +80,44 @@ pass 'reviewed source digest and HTTPS boot images/injected packages'
     [[ ! -e $case_root/root-id-called ]] || fail 'root check executed id before dependency handling'
 ) || fail 'builtin EUID root check'
 pass 'root check uses builtin EUID before dependencies; existing fixture override remains isolated'
+(
+    # Exercise the production collector, before replacing it with the disk
+    # fixture below. Old util-linux rejects the plural column; no real block
+    # devices are needed to verify its command and JSON normalization.
+    lsblk() {
+        printf '%s\n' "$*" > "$case_root/lsblk-args"
+        printf '%s\n' call >> "$case_root/lsblk-calls"
+        [[ $* != *MOUNTPOINTS* ]] || { printf 'lsblk: unknown column: MOUNTPOINTS\n' >&2; return 1; }
+        [[ ${LSBLK_FAIL:-0} == 0 ]] || return 23
+        command cat "$case_root/lsblk-columns.json"
+    }
+    printf '%s\n' '{"blockdevices":[{"name":"/dev/loop0","type":"loop","mountpoint":null,"children":[{"name":"/dev/loop0p1","type":"part","mountpoint":"/mounted partition"}]},{"name":"/dev/loop1","type":"loop","mountpoint":"[SWAP]"}]}' > "$case_root/lsblk-columns.json"
+    _toolbox_reinstall_lsblk > "$case_root/lsblk-normalized.json" || fail 'legacy lsblk collector'
+    [[ $(< "$case_root/lsblk-args") == '--json --bytes --paths --output NAME,KNAME,TYPE,PKNAME,FSTYPE,MOUNTPOINT,SIZE,MODEL,SERIAL,WWN,MAJ:MIN,RO,RM,PTUUID' ]] || fail 'lsblk omitted an identity column or requested MOUNTPOINTS'
+    python3 - "$case_root/lsblk-normalized.json" <<'PY' || fail 'singular mountpoint normalization'
+import json,sys
+d=json.load(open(sys.argv[1]))['blockdevices']
+assert d[0]['mountpoints']==[]
+assert d[0]['children'][0]['mountpoints']==['/mounted partition']
+assert d[1]['mountpoints']==['[SWAP]']
+assert all('mountpoint' not in n for n in (d[0],d[0]['children'][0],d[1]))
+PY
+    for malformed in '{"blockdevices":[{"type":"loop"}]}' \
+        '{"blockdevices":[{"type":"loop","mountpoint":false}]}' \
+        '{"blockdevices":[{"type":"loop","mountpoint":1}]}' \
+        '{"blockdevices":[{"type":"loop","mountpoint":""}]}' \
+        '{"blockdevices":[{"type":"loop","mountpoint":null,"children":null}]}' \
+        '{"blockdevices":{}}'; do
+        printf '%s\n' "$malformed" > "$case_root/lsblk-columns.json"
+        _toolbox_reinstall_lsblk > "$case_root/lsblk-invalid.out" 2>&1 && fail 'unknown mount state accepted'
+        [[ -s $case_root/lsblk-invalid.out ]] || fail 'unknown mount state failed silently'
+    done
+    : > "$case_root/lsblk-calls"
+    rc=0; LSBLK_FAIL=1 _toolbox_reinstall_lsblk > "$case_root/lsblk-failure.out" 2>&1 || rc=$?
+    [[ $rc == 23 && ! -s $case_root/lsblk-failure.out ]] || fail 'failed lsblk was parsed as a successful inventory'
+    [[ $(< "$case_root/lsblk-calls") == call ]] || fail 'failed lsblk was retried'
+) || fail 'production lsblk collector compatibility'
+pass 'production lsblk collector uses legacy column; nested mountpoints normalize; malformed/missing fields and command failure refuse'
 _toolbox_reinstall_root() { return 0; }
 _toolbox_reinstall_has() {
     [[ $1 != "${MISSING:-}" && $1 != "${MISSING2:-}" ]] || [[ -e $fixture/deps-installed/$1 ]]
@@ -365,6 +403,23 @@ import json,sys
 p=sys.argv[1];d=json.load(open(p));d['blockdevices'].append(dict(d['blockdevices'][0],name='/dev/vdb',kname='vdb'));json.dump(d,open(p,'w'))
 PY
 reject toolbox_reinstall preflight; no_calls; pass 'multiple physical disk ambiguity'
+for point in '/snap/example/1' '[SWAP]'; do
+    setup
+    python3 - "$fixture/lsblk.json" "$point" <<'PY'
+import json,sys
+p,point=sys.argv[1:];d=json.load(open(p));d['blockdevices'].append({'name':'/dev/loop0','kname':'loop0','type':'loop','fstype':'squashfs','mountpoints':[point]});json.dump(d,open(p,'w'))
+PY
+    reject toolbox_reinstall preflight; no_calls
+    command grep -q 'loop/snap' "$fixture/output" || fail 'active loop refusal unnamed'
+    pass "active loop $point remains refused after column compatibility"
+done
+setup
+python3 - "$fixture/lsblk.json" <<'PY'
+import json,sys
+p=sys.argv[1];d=json.load(open(p));d['blockdevices'].append({'name':'/dev/loop0','kname':'loop0','type':'loop','fstype':None,'mountpoints':[]});json.dump(d,open(p,'w'))
+PY
+toolbox_reinstall preflight > "$fixture/output" 2>&1 || fail 'unmounted loop preflight'
+no_calls; pass 'unmounted loop preserves supported single-disk preflight'
 setup
 python3 - "$fixture/lsblk.json" <<'PY'
 import json,sys
