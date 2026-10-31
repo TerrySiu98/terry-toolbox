@@ -11,6 +11,24 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# Deny real package execution in every subprocess, including PTYs and env -i.
+import tempfile
+_package_guard_tmp = tempfile.TemporaryDirectory(prefix='toolbox-package-deny-')
+_package_guard = Path(_package_guard_tmp.name)
+_package_log = _package_guard / 'calls'
+for _manager in ('sudo', 'apt', 'apt-get', 'apt-cache', 'aptitude', 'apk', 'dpkg', 'dpkg-query', 'dpkg-deb', 'dnf', 'yum', 'rpm'):
+    _file = _package_guard / _manager
+    _file.write_text('#!/bin/sh\nprintf "%s\\n" "$0 $*" >> ' + shlex.quote(str(_package_log)) + '\nexit 99\n')
+    _file.chmod(0o755)
+os.environ['PATH'] = str(_package_guard) + os.pathsep + os.environ['PATH']
+# UI fixtures do not need elevation, including when run by a non-root user.
+os.environ['TOOLBOX_ELEVATED'] = '1'
+for _env in (dict(os.environ), {'PATH': os.environ['PATH']}):
+    _probe = subprocess.run(['bash', '--noprofile', '--norc', '-c', 'apt-get --fixture-guard-probe'], env=_env, capture_output=True)
+    assert _probe.returncode == 99, _probe
+assert len(_package_log.read_text().splitlines()) == 2
+_package_log.unlink()
+
 def probe(manager):
     installed = 'iproute2-ss' if manager == 'apk' else 'iproute2'
     harness = f'''
@@ -67,3 +85,5 @@ _tb_bootstrap || exit $?
 for manager in ('apk', 'apt-get'):
     probe(manager)
     print('PASS real PTY startup ss detection and package mapping:', manager)
+
+assert not _package_log.exists(), _package_log.read_text()

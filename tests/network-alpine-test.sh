@@ -47,6 +47,7 @@ done
 export SD
 export TOOLBOX_NET_UID=0
 export TOOLBOX_NET_OS_RELEASE=$work/os-release
+export TOOLBOX_OS_RELEASE=$work/os-release NETWORK_ALPINE_FORBIDDEN=$work/forbidden.log
 export TOOLBOX_NET_OPENRC_RUN=$work/openrc-run
 export TOOLBOX_NET_INITD=$work/initd
 export TOOLBOX_NET_BIN_DIR=$work/bin
@@ -62,7 +63,7 @@ export TOOLBOX_DNS_RESOLV_CONF=$work/resolv.conf
 export PATH=$work/bin:$PATH
 unset TOOLBOX_A1_SHA256_ARM64 TOOLBOX_A2_SHA256_ARM64
 for cmd in apk apt apt-get dnf yum sysctl modprobe rmmod dkms depmod; do
-    printf '#!/usr/bin/env bash\nprintf "%%s\\n" forbidden >> "$SD/forbidden.log"\nexit 99\n' > "$work/bin/$cmd"
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n" "forbidden:$0 $*" >> "$NETWORK_ALPINE_FORBIDDEN"\nexit 99\n' > "$work/bin/$cmd"
     chmod +x "$work/bin/$cmd"
 done
 
@@ -248,6 +249,13 @@ export TOOLBOX_A1_SHA256 TOOLBOX_A2_SHA256
 TOOLBOX_A1_SHA256=$(sha256sum -- "$TOOLBOX_A1_BIN_SRC" | cut -d' ' -f1)
 TOOLBOX_A2_SHA256=$(sha256sum -- "$TOOLBOX_A2_ZIP_SRC" | cut -d' ' -f1)
 
+source "$ROOT/modules/dependencies.sh"
+_toolbox_deps_exec() { printf 'dependency-package:%s\n' "$*" >> "$NETWORK_ALPINE_FORBIDDEN"; return 99; }
+# CA metadata is fixture-owned; package guards remain on PATH for child shells
+# or lazy core reloads. The guard marker is outside the logs cleared by reset.
+_toolbox_deps_ca_package() { return 0; }
+_toolbox_deps_root() { return 0; }
+export -f _toolbox_deps_exec _toolbox_deps_ca_package _toolbox_deps_root
 source "$ROOT/modules/network.sh"
 # OpenRC/ss unit fixtures never launch a real daemon. Their unreachable PID proves
 # only call wiring; real /proc/exe safety is exercised by network-alpine-feedback-test.
@@ -792,9 +800,10 @@ if toolbox_network B23 install nope >/dev/null 2>&1; then fail 'B23 install 接�
 # 条件上下文中缺命令必须显式停止，不能指望 set -e。
 (
     command() { [[ ${1:-} == -v && ${2:-} == timeout ]] && return 1; builtin command "$@"; }
-    toolbox_network A1 install "$work/good.crt" "$work/good.key" "$H" 18443 <<< YES >"$work/tools-fail.out" 2>&1 \
+    toolbox_network A1 install "$work/good.crt" "$work/good.key" "$H" 18443 <<< n >"$work/tools-fail.out" 2>&1 \
         && fail 'A1 缺命令却继续安装'
-    :
+    builtin command grep -q '网络服务 缺少命令：.*timeout' "$work/tools-fail.out" || fail 'A1 缺命令未说明 timeout'
+    builtin command grep -q '已取消补装；未执行安装' "$work/tools-fail.out" || fail 'A1 未拒绝依赖补装'
 )
 assert_clean 'A1 缺命令'
 [[ ! -s $SD/hysteria.log ]] || fail 'A1 缺命令仍调用服务二进制'
@@ -810,5 +819,5 @@ assert_clean 'A1 配置写入失败'
 [[ ! -s $SD/hysteria.log ]] || fail 'A1 写入失败仍启动二进制'
 reset
 
-[[ ! -e $SD/forbidden.log ]] || fail '命中了真实命令兜底拒绝桩'
+[[ ! -e $NETWORK_ALPINE_FORBIDDEN ]] || fail '命中了依赖执行或真实命令兜底拒绝桩'
 printf 'network alpine/dns tests passed\n'

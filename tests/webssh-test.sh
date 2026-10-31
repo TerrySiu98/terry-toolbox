@@ -8,7 +8,38 @@ source "$script_dir/scratch-root.sh"
 toolbox_test_scratch
 TEST_SCRATCH=$TMPDIR
 TEST_DIR=$(mktemp -d "$TMPDIR/toolbox-webssh.XXXXXXXX")
-trap 'rm -rf -- "$TEST_DIR"' EXIT
+cleanup_packages() {
+    local rc=$?
+    if [[ -s $TEST_DIR/package-boundary.log ]]; then
+        printf 'FAIL: unmocked package command\n' >&2
+        command cat "$TEST_DIR/package-boundary.log" >&2
+        rc=1
+    fi
+    rm -rf -- "$TEST_DIR"
+    exit "$rc"
+}
+trap cleanup_packages EXIT
+# Physical package guards also cover child Bash and an empty environment.
+mkdir -p "$TEST_DIR/package-deny"
+: > "$TEST_DIR/package-boundary.log"
+for manager in sudo apt apt-get apt-cache aptitude apk dpkg dpkg-query dpkg-deb dnf yum rpm; do
+    {
+        printf '#!/bin/sh\n'
+        printf 'printf "%%s\\n" "$0 $*" >> %q\n' "$TEST_DIR/package-boundary.log"
+        printf 'exit 99\n'
+    } > "$TEST_DIR/package-deny/$manager"
+    chmod 0755 "$TEST_DIR/package-deny/$manager"
+done
+export PATH="$TEST_DIR/package-deny:$PATH"
+for guard_env in inherited empty; do
+    if [[ $guard_env == empty ]]; then
+        env -i PATH="$PATH" bash --noprofile --norc -c 'apt-get --fixture-guard-probe' && exit 1 || [[ $? == 99 ]]
+    else
+        bash --noprofile --norc -c 'apt-get --fixture-guard-probe' && exit 1 || [[ $? == 99 ]]
+    fi
+done
+[[ $(wc -l < "$TEST_DIR/package-boundary.log") -eq 2 ]]
+: > "$TEST_DIR/package-boundary.log"
 export HOME="$TEST_DIR/home" TMPDIR="$TEST_DIR/tmp"
 mkdir -p "$HOME" "$TMPDIR"
 
@@ -473,8 +504,12 @@ regression_missing_tool() {
         if [[ ${1-} == -v && ${2-} == curl ]]; then return 1; fi
         builtin command "$@"
     }
+    source "$script_dir/../modules/dependencies.sh"
+    _toolbox_deps_os() { printf 'debian\n'; }
+    _toolbox_deps_ca_package() { return 0; }
+    _toolbox_deps_confirm() { printf 'fixture: dependency installation declined\n' >&2; return 1; }
     if out=$(install_ok 2>&1); then fail 'missing curl accepted'; fi
-    [[ $out == *'缺少必需命令'* && ! -e $TOOLBOX_WEBSSH_ETC && ! -e $TOOLBOX_WEBSSH_LOCK ]] || fail 'missing curl wrote state'
+    [[ $out == *'缺少命令：'* && ! -e $TOOLBOX_WEBSSH_ETC && ! -e $TOOLBOX_WEBSSH_LOCK ]] || fail 'missing curl wrote state'
     assert_no_log 'apt-get'
 }
 regression_python_old() {

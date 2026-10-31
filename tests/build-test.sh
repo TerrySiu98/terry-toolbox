@@ -2,7 +2,38 @@
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/toolbox-build-test.XXXXXXXX")
-trap 'rm -rf -- "$tmp"' EXIT
+cleanup_packages() {
+    local rc=$?
+    if [[ -s $tmp/package-boundary.log ]]; then
+        printf 'FAIL: unmocked package command\n' >&2
+        command cat "$tmp/package-boundary.log" >&2
+        rc=1
+    fi
+    rm -rf -- "$tmp"
+    exit "$rc"
+}
+trap cleanup_packages EXIT
+# Physical package guards also cover child Bash and an empty environment.
+mkdir -p "$tmp/package-deny"
+: > "$tmp/package-boundary.log"
+for manager in sudo apt apt-get apt-cache aptitude apk dpkg dpkg-query dpkg-deb dnf yum rpm; do
+    {
+        printf '#!/bin/sh\n'
+        printf 'printf "%%s\\n" "$0 $*" >> %q\n' "$tmp/package-boundary.log"
+        printf 'exit 99\n'
+    } > "$tmp/package-deny/$manager"
+    chmod 0755 "$tmp/package-deny/$manager"
+done
+export PATH="$tmp/package-deny:$PATH" TOOLBOX_ELEVATED=1
+for guard_env in inherited empty; do
+    if [[ $guard_env == empty ]]; then
+        env -i PATH="$PATH" bash --noprofile --norc -c 'apt-get --fixture-guard-probe' && exit 1 || [[ $? == 99 ]]
+    else
+        bash --noprofile --norc -c 'apt-get --fixture-guard-probe' && exit 1 || [[ $? == 99 ]]
+    fi
+done
+[[ $(wc -l < "$tmp/package-boundary.log") -eq 2 ]]
+: > "$tmp/package-boundary.log"
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 artifact="$tmp/standalone/index.html"
 mkdir -p -- "$(dirname -- "$artifact")"
@@ -30,7 +61,7 @@ out=$(printf 'A5\n0\n' | HOME="$tmp" bash "$artifact" 2>&1)
 bash -c 'source "$1" --help >/dev/null; declare -F toolbox_vmess >/dev/null' _ "$artifact" || fail 'VMess module not bundled'
 bash -c 'source "$1" --help >/dev/null; declare -F toolbox_alpine_swap >/dev/null' _ "$artifact" || fail 'Alpine swap module not bundled'
 # Every newly supported management action must survive standalone bundling.
-for function in toolbox_docker_ipv6 toolbox_webssh_container toolbox_tls_acme toolbox_reinstall; do
+for function in toolbox_require_commands toolbox_require_docker toolbox_require_kernel_headers toolbox_docker_ipv6 toolbox_webssh_container toolbox_tls_acme toolbox_reinstall; do
   bash -c 'source "$1" --help >/dev/null; declare -F "$2" >/dev/null' _ "$artifact" "$function" || fail "$function module not bundled"
 done
 out=$(printf 'B19\n0\n0\n' | HOME="$tmp" bash "$artifact" 2>&1)

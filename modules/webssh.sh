@@ -12,6 +12,17 @@
 # 已知边界：Basic 认证走明文 HTTP，远程访问需自行加 TLS（反代/隧道），本模块不改防火墙。
 # 固定的是 webssh 版本与 sdist 哈希；paramiko/tornado 等依赖仍按上游声明由 pip 解析（未做全量锁）。
 
+# Remember only the source directory; dependency work remains lazy. Bundles
+# already contain the core and must never look beside the downloaded script.
+_TOOLBOX_WEBSSH_MODULE_DIR=''
+if [[ ${TOOLBOX_BUNDLED:-0} != 1 ]]; then
+    case ${BASH_SOURCE[0]} in
+        */*) _TOOLBOX_WEBSSH_MODULE_DIR=${BASH_SOURCE[0]%/*};;
+        *) _TOOLBOX_WEBSSH_MODULE_DIR=.;;
+    esac
+    _TOOLBOX_WEBSSH_MODULE_DIR=$(CDPATH= builtin cd -- "$_TOOLBOX_WEBSSH_MODULE_DIR" && builtin pwd -P) || _TOOLBOX_WEBSSH_MODULE_DIR=''
+fi
+
 readonly WEBSSH_VERSION='1.6.3'
 # PyPI sdist 白名单（https://pypi.org/project/webssh/1.6.3/）。版本漂移必须先人工复核。
 readonly WEBSSH_SDIST_SHA256='2bce5bbaf206ad345910c7e4dc8024b3c418e681c9f5ff098f1802beff76e100'
@@ -52,26 +63,32 @@ webssh_require_root() {
 }
 
 webssh_require_debian() {
-    local file=${TOOLBOX_WEBSSH_OS_RELEASE:-/etc/os-release} id=''
-    [[ -r $file ]] || webssh_die "无法读取 $file，不能确认发行版。"
-    id=$(sed -n 's/^ID=//p' "$file" | head -n1)
+    local file=${TOOLBOX_WEBSSH_OS_RELEASE:-/etc/os-release} id='' line
+    [[ -r $file ]] || { webssh_die "无法读取 $file，不能确认发行版。"; return 1; }
+    while IFS= read -r line || [[ -n $line ]]; do
+        case $line in ID=*) id=${line#ID=}; break;; esac
+    done < "$file"
     id=${id%\"}; id=${id#\"}; id=${id%\'}; id=${id#\'}
     [[ ${id,,} == debian ]] || webssh_die "仅支持 Debian（当前 ID=${id:-未知}）；Alpine/Ubuntu 未验证。"
 }
 
 webssh_require_systemd() {
     local run_dir=${TOOLBOX_WEBSSH_SYSTEMD_RUN:-/run/systemd/system}
-    command -v systemctl >/dev/null 2>&1 || webssh_die '未找到 systemctl，本机不是 systemd 系统。'
+    command -v systemctl >/dev/null 2>&1 || { webssh_die '未找到 systemctl，本机不是 systemd 系统。'; return 1; }
     [[ -d $run_dir ]] || webssh_die 'systemd 未作为 init 运行（缺少 /run/systemd/system）。'
 }
 
 webssh_require_python() {
+    if ! command -v python3 >/dev/null 2>&1; then
+        declare -F toolbox_require_commands >/dev/null || { [[ -n ${_TOOLBOX_WEBSSH_MODULE_DIR:-} ]] && source "$_TOOLBOX_WEBSSH_MODULE_DIR/dependencies.sh"; } || return 1
+        toolbox_require_commands 'WebSSH' python3 || return 1
+    fi
     python3 -c '# webssh-python-capabilities
 import ctypes, inspect, shutil, sys
 assert sys.version_info >= (3, 11)
 assert "dir_fd" in inspect.signature(shutil.rmtree).parameters and shutil.rmtree.avoids_symlink_attacks
 assert hasattr(ctypes.CDLL(None), "renameat2")
-' >/dev/null 2>&1 || { webssh_die '需要 Python 3.11+ 及安全 dir_fd/renameat2 支持；请预先配置，未修改安装。'; return 1; }
+' >/dev/null 2>&1 || { webssh_die "已找到 $(python3 --version 2>&1)，但需要 Python 3.11+ 及安全 dir_fd/renameat2 支持；这是版本/运行时能力不符，普通缺包补装不会替换现有 Python。"; return 1; }
 }
 
 webssh_require_tools() {
@@ -79,7 +96,10 @@ webssh_require_tools() {
     for c in openssl sha256sum curl flock ss awk sed mktemp install python3 getent; do
         command -v "$c" >/dev/null 2>&1 || missing+=("$c")
     done
-    (( ${#missing[@]} == 0 )) || { webssh_die "缺少必需命令：${missing[*]}"; return 1; }
+    if (( ${#missing[@]} )); then
+        declare -F toolbox_require_commands >/dev/null || { [[ -n ${_TOOLBOX_WEBSSH_MODULE_DIR:-} ]] && source "$_TOOLBOX_WEBSSH_MODULE_DIR/dependencies.sh"; } || return 1
+        toolbox_require_commands 'WebSSH' "${missing[@]}" || return 1
+    fi
     webssh_require_python || return 1
     # venv 模块可能缺（python3-venv 未装），交给 ensure_packages 补装后再复查。
     getent passwd "$WEBSSH_WEB_USER" >/dev/null 2>&1 \
@@ -93,8 +113,8 @@ webssh_ensure_packages() {
     python3 -c 'import venv, ensurepip' >/dev/null 2>&1 || pkgs+=(python3-venv)
     (( ${#pkgs[@]} )) || return 0
     webssh_err "安装系统包：${pkgs[*]}（apt-get）"
-    DEBIAN_FRONTEND=noninteractive apt-get update -qq || { webssh_die 'apt-get update 失败。'; return 1; }
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${pkgs[@]}" \
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq </dev/null || { webssh_die 'apt-get update 失败。'; return 1; }
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-upgrade --no-install-recommends "${pkgs[@]}" </dev/null \
         || { webssh_die "apt-get install 失败：${pkgs[*]}"; return 1; }
     python3 -c 'import venv, ensurepip' >/dev/null 2>&1 \
         || { webssh_die 'python3-venv 安装后仍不可用。'; return 1; }

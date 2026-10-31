@@ -12,6 +12,7 @@ python3 - <<'PY'
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -177,10 +178,89 @@ if fixture:
 '''
 
 host_paths = ['/proc/swaps','/etc/fstab','/etc/sysctl.conf']
-host_before = {p:Path(p).read_bytes() if Path(p).exists() else None for p in host_paths}
 host_targets = ['/var/lib/terry-toolbox-alpine-swap','/etc/init.d/terry-toolbox-alpine-swap',
                 '/etc/runlevels/default/terry-toolbox-alpine-swap','/run/terry-toolbox-alpine-swap.lock']
-host_target_before = {p:os.lstat(p) if os.path.lexists(p) else None for p in host_targets}
+
+def host_swap_entries(raw):
+    # Only Used is volatile. Preserve row order and every other field exactly;
+    # reject unknown formats rather than dropping a row or guessing its identity.
+    if not isinstance(raw, bytes) or not raw.endswith(b'\n'):
+        raise ValueError('host /proc/swaps missing or unterminated')
+    text=raw.decode('ascii')
+    if any(c not in '\t\n' and not 32 <= ord(c) <= 126 for c in text):
+        raise ValueError('host /proc/swaps contains unknown control characters')
+    lines=text.split('\n')[:-1]
+    if not lines or lines[0].split() != ['Filename','Type','Size','Used','Priority']:
+        raise ValueError('host /proc/swaps has unknown header')
+    entries=[]; paths=set()
+    for line in lines[1:]:
+        fields=line.split()
+        if len(fields) != 5:
+            raise ValueError('host /proc/swaps has an unknown row')
+        path,kind,size,used,priority=fields
+        if not re.fullmatch(r'/(?:[^\x00-\x20\x7f\\]|\\(?:040|011|012|134))+',path):
+            raise ValueError('host /proc/swaps has an invalid/unknown escaped path')
+        decoded=re.sub(r'\\([0-7]{3})',lambda m:chr(int(m[1],8)),path)
+        if decoded in paths or kind not in ('file','partition'):
+            raise ValueError('host /proc/swaps has duplicate paths or unknown Type')
+        if not re.fullmatch(r'[1-9][0-9]*',size) or not re.fullmatch(r'0|[1-9][0-9]*',used) \
+                or not re.fullmatch(r'0|-?[1-9][0-9]*',priority) or int(used)>int(size):
+            raise ValueError('host /proc/swaps has invalid Size/Used/Priority')
+        paths.add(decoded)
+        entries.append((path,kind,size,priority))
+    return tuple(entries)
+
+def host_swap_parser_check():
+    header=b'Filename\tType\tSize\tUsed\tPriority\n'
+    base=header+b'/swapfile file 4096 0 -2\n/dev/zram0 partition 8192 12 100\n'
+    expected=host_swap_entries(base)
+    assert expected==host_swap_entries(base.replace(b'4096 0 -2',b'4096 4096 -2'))
+    assert expected==host_swap_entries(base.replace(b'8192 12 100',b'8192 0 100'))
+    for changed in (base.replace(b'/swapfile',b'/other'),base.replace(b'file 4096',b'partition 4096'),
+                    base.replace(b'4096 0',b'8192 0'),base.replace(b'0 -2',b'0 -3'),
+                    header,base+ b'/new file 4096 0 -4\n',
+                    header+b'/dev/zram0 partition 8192 12 100\n/swapfile file 4096 0 -2\n'):
+        assert expected!=host_swap_entries(changed), 'changed host swap identity accepted'
+    assert host_swap_entries(header)==()
+    assert host_swap_entries(header+br'/swap\040space file 4096 0 -2'+b'\n')[0][0]==r'/swap\040space'
+    for malformed in (None,b'',base[:-1],base.replace(b'Filename',b'File'),base+b'\n',
+                      base.replace(b' 0 -2',b' 0 -2 extra'),base.replace(b'/swapfile',b'relative'),
+                      base.replace(b'/swapfile',br'/bad\999'),base.replace(b'file 4096',b'unknown 4096'),
+                      base.replace(b'4096 0',b'0 0'),base.replace(b'4096 0',b'4096 -1'),
+                      base.replace(b'4096 0',b'4096 4097'),base.replace(b'0 -2',b'0 unknown'),
+                      base.replace(b'4096 0',b'4096\x0b0'),base+b'/swapfile file 4096 0 -3\n'):
+        try: host_swap_entries(malformed)
+        except (ValueError,UnicodeError): pass
+        else: raise AssertionError('malformed host swap evidence accepted: '+repr(malformed))
+
+host_swap_parser_check()
+print('HOST_SWAP_PARSER_CHECK=PASS (Used-only changes accepted; identities/formats strict)',flush=True)
+
+def host_snapshot(label):
+    directory=work/('host-state-'+label)
+    directory.mkdir(mode=0o700)
+    raw={p:Path(p).read_bytes() if Path(p).exists() else None for p in host_paths}
+    targets={p:os.lstat(p) if os.path.lexists(p) else None for p in host_targets}
+    manifest={'files':{},'targets':{}}
+    for path,data in raw.items():
+        name=path.strip('/').replace('/','-')+'.raw'
+        if data is not None:
+            leaf=directory/name; leaf.write_bytes(data); leaf.chmod(0o600)
+        manifest['files'][path]={'present':data is not None,'raw_file':name if data is not None else None,
+                                'sha256':hashlib.sha256(data).hexdigest() if data is not None else None}
+    for path,info in targets.items():
+        manifest['targets'][path]=None if info is None else {
+            key:getattr(info,key) for key in ('st_dev','st_ino','st_mode','st_nlink','st_uid','st_gid',
+                                             'st_size','st_atime_ns','st_mtime_ns','st_ctime_ns')}
+    leaf=directory/'manifest.json'
+    leaf.write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n'); leaf.chmod(0o600)
+    # Raw bytes are already retained if strict parsing rejects the evidence.
+    entries=host_swap_entries(raw['/proc/swaps'])
+    leaf=directory/'proc-swaps.entries.json'
+    leaf.write_text(json.dumps(entries,indent=2)+'\n'); leaf.chmod(0o600)
+    return raw,targets,entries
+
+host_before,host_target_before,host_swaps_before=host_snapshot('before')
 
 def fixture(name):
     f=work/name
@@ -197,6 +277,8 @@ def fixture(name):
     (f/'bin/shim').chmod(0o700)
     for name in ('dd','mkswap','swapon','swapoff','rc-service','rc-update','apk','systemctl','mount','umount','unshare','losetup','truncate','fallocate','mkfs','mke2fs','sysctl','openrc-run','sudo'):
         (f/'bin'/name).symlink_to('shim')
+    for name in ('apt','apt-get','apt-cache','aptitude','dpkg','dpkg-query','dpkg-deb','dnf','yum','rpm'):
+        (f/'bin'/name).symlink_to('shim')
     for name,path in (('python3',python),('bash',bash),('flock',real_flock),('cat',real_cat)):
         (f/'bin'/name).symlink_to(path)
     (f/'inject/sitecustomize.py').write_text(sitecustomize)
@@ -206,6 +288,13 @@ def fixture(name):
              'RUNLEVELS':'runlevels','LOCK':'run/terry-toolbox-alpine-swap.lock',
              'OS_RELEASE':'os-release','OPENRC_RUN':'openrc','SWAPS':'swaps','MOUNTINFO':'mountinfo'}
     for key,value in mapping.items(): env['TOOLBOX_ALPINE_SWAP_'+key]=str(f/value)
+    if f.name == cases[0][0]:
+        for probe_env in (env, {'PATH':env['PATH'],'FIXTURE':str(f)}):
+            probe=subprocess.run([bash,'--noprofile','--norc','-c','apt-get --fixture-guard-probe'],env=probe_env,capture_output=True)
+            assert probe.returncode==99,probe
+        assert len((f/'DENIED').read_text().splitlines())==2
+        (f/'DENIED').unlink()
+        (f/'calls').unlink()
     return f,env
 
 def invoke(f,env,args=('install','128'),input='YES\nYES\n',mode='',expected=0,caller='if',tag='action'):
@@ -214,6 +303,8 @@ def invoke(f,env,args=('install','128'),input='YES\nYES\n',mode='',expected=0,ca
         script='source "$1"; shift; if toolbox_alpine_swap "$@"; then exit 0; else exit 23; fi'
     else:
         script='source "$1"; shift; toolbox_alpine_swap "$@" || exit 23'
+    if e.get('FIXTURE_DECLINE_DEPENDENCIES') == '1':
+        script='source "${1%/*}/dependencies.sh"; _toolbox_deps_os() { printf "alpine\\n"; }; _toolbox_deps_confirm() { return 1; }; '+script
     p=subprocess.run([bash,'-c',script,'test',str(module),*args],input=input,text=True,
                      stdout=subprocess.PIPE,stderr=subprocess.STDOUT,env=e,timeout=15)
     (work/(f.name+'-'+tag+'.log')).write_text(p.stdout+'\nexit='+str(p.returncode)+'\n')
@@ -502,6 +593,7 @@ for token in ('0128','127','8193','1;touch /oops','-1','128.0',''):
 for dependency in ('python3','cat','flock','dd','mkswap','swapon','swapoff','rc-service','openrc-run'):
     def missing(f,e,d=dependency):
         (f/'bin'/d).unlink()
+        e['FIXTURE_DECLINE_DEPENDENCIES']='1'
         output=invoke(f,e,expected=1)
         assert d in output
         absent(f)
@@ -568,8 +660,11 @@ for name,test in cases:
     # This is the only recursive deletion, explicitly task-owned fixture only.
     assert f.parent==work and f.name==name
     shutil.rmtree(f)
-assert {p:Path(p).read_bytes() if Path(p).exists() else None for p in host_paths}==host_before, 'HOST STATE CHANGED'
-assert {p:os.lstat(p) if os.path.lexists(p) else None for p in host_targets}==host_target_before, 'HOST TARGETS CHANGED'
+host_after,host_target_after,host_swaps_after=host_snapshot('after')
+assert {p:host_after[p] for p in host_paths if p!='/proc/swaps'}=={p:host_before[p] for p in host_paths if p!='/proc/swaps'}, 'HOST CONFIG BYTES CHANGED; inspect host-state-before/after'
+assert host_swaps_after==host_swaps_before, 'HOST SWAP IDENTITIES CHANGED; inspect host-state-before/after'
+assert host_target_after==host_target_before, 'HOST TARGETS CHANGED; inspect host-state-before/after'
+print('HOST_STATE=PASS (config bytes/targets/swap identities unchanged; Used may vary)',flush=True)
 print('TOTAL=%d FAIL=%d SECONDS=%.3f RESULTS=%s'%(len(cases),len(failures),time.monotonic()-start,results),flush=True)
 sys.exit(bool(failures))
 PY

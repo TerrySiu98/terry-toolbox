@@ -17,6 +17,21 @@ VERSION = '5:29.1.1-1~debian.13~trixie'
 with tempfile.TemporaryDirectory(prefix='toolbox-apt-origin-test.', dir=SCRATCH) as tmp:
     r = Path(tmp)
     env = {'HOME': str(r / 'home'), 'TMPDIR': str(r), 'PATH': '/usr/bin:/bin', 'LC_ALL': 'C'}
+    # Explicit /usr/bin APT calls below only simulate/print fixture URIs;
+    # production execution must stay behind the shell mocks or these deny files.
+    deny = r / 'package-deny'
+    deny.mkdir()
+    package_log = r / 'package-boundary.log'
+    for name in ('sudo', 'apt', 'apt-get', 'aptitude', 'apk', 'dpkg', 'dpkg-query', 'dpkg-deb', 'dnf', 'yum', 'rpm'):
+        target = deny / name
+        target.write_text('#!/bin/sh\nprintf "%s\\n" "$0 $*" >> ' + shlex.quote(str(package_log)) + '\nexit 99\n')
+        target.chmod(0o755)
+    env['PATH'] = str(deny) + ':/usr/bin:/bin'
+    for probe_env in (env, {'PATH': env['PATH']}):
+        probe = subprocess.run(['/usr/bin/bash', '--noprofile', '--norc', '-c', 'apt-get --fixture-guard-probe'], env=probe_env, capture_output=True)
+        assert probe.returncode == 99, probe
+    assert len(package_log.read_text().splitlines()) == 2
+    package_log.unlink()
     for sub in ('home', 'etc/apt/sources.list.d', 'etc/apt/preferences.d', 'var/lib/dpkg',
                 'var/lib/apt/lists/partial', 'var/cache/apt/archives/partial', 'fixtures', 'captured'):
         (r / sub).mkdir(parents=True, exist_ok=True)
@@ -43,6 +58,11 @@ _toolbox_system_missing_packages() { missing_packages=(); }
 _toolbox_system_confirm() { :; }
 _toolbox_system_docker_verify() { :; }
 dpkg() { printf 'amd64\\n'; }
+# Real metadata checks are read-only and restricted to the captured fixture debs.
+dpkg-deb() {
+ [[ $# == 3 && $1 == --show && $2 == '--showformat=${Package} ${Version} ${Architecture}' && $3 == "$TMPDIR/"*.deb ]] || return 99
+ /usr/bin/dpkg-deb "$@"
+}
 apt-cache() { printf '%s:\\n  Candidate: (none)\\n' "${*: -1}"; }
 curl() {
  local out=''
@@ -135,3 +155,4 @@ _toolbox_system_docker
         raise RuntimeError(f'pinned-out indexed vendor refusal not verified: {gate.stdout} {gate.stderr}')
     print('PASS real offline APT: pinned-out (Candidate none) foreign indexes still refused')
     print('Synthetic indexes/empty debs only; no download, installation or host APT changes.')
+    assert not package_log.exists(), package_log.read_text()

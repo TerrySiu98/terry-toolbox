@@ -14,6 +14,17 @@
 
 # Print alpine/debian/ubuntu for supported os-release data; never source it as
 # shell. An optional path permits isolated tests and offline inspection.
+# Remember only the source directory; dependency work remains lazy. Bundles
+# already contain the core and must never look beside the downloaded script.
+_TOOLBOX_NETWORK_MODULE_DIR=''
+if [[ ${TOOLBOX_BUNDLED:-0} != 1 ]]; then
+    case ${BASH_SOURCE[0]} in
+        */*) _TOOLBOX_NETWORK_MODULE_DIR=${BASH_SOURCE[0]%/*};;
+        *) _TOOLBOX_NETWORK_MODULE_DIR=.;;
+    esac
+    _TOOLBOX_NETWORK_MODULE_DIR=$(CDPATH= builtin cd -- "$_TOOLBOX_NETWORK_MODULE_DIR" && builtin pwd -P) || _TOOLBOX_NETWORK_MODULE_DIR=''
+fi
+
 toolbox_network_detect_os() {
     if (( $# > 1 )); then
         printf '用法: toolbox_network_detect_os [os-release 文件]\n' >&2
@@ -93,11 +104,13 @@ net_require_root() {
 
 # 只接受 ID=debian：衍生版的内核头文件与 DKMS 行为不同，A4 的约定保持一致。
 net_require_debian() {
-    local file=${TOOLBOX_NET_OS_RELEASE:-/etc/os-release} id=''
-    [[ -r $file ]] || net_die "无法读取 $file，不能确认发行版。"
+    local file=${TOOLBOX_NET_OS_RELEASE:-/etc/os-release} id='' line
+    [[ -r $file ]] || { net_die "无法读取 $file，不能确认发行版。"; return 1; }
     toolbox_network_detect_os "$file" >/dev/null 2>&1 \
-        || net_die "不支持的发行版（$file 无法识别为 debian/ubuntu/alpine）。"
-    id=$(sed -n 's/^ID=//p' "$file" 2>/dev/null | head -n1)
+        || { net_die "不支持的发行版（$file 无法识别为 debian/ubuntu/alpine）。"; return 1; }
+    while IFS= read -r line || [[ -n $line ]]; do
+        case $line in ID=*) id=${line#ID=}; break;; esac
+    done < "$file"
     id=${id//\"/}; id=${id//\'/}
     [[ ${id,,} == debian ]] \
         || net_die "仅支持 Debian（当前 ID=${id:-未知}）；不支持 Alpine/Ubuntu/衍生版。"
@@ -105,7 +118,7 @@ net_require_debian() {
 
 net_require_systemd() {
     local run_dir=${TOOLBOX_NET_SYSTEMD_RUN:-/run/systemd/system}
-    command -v systemctl >/dev/null 2>&1 || net_die '未找到 systemctl，本机不是 systemd 系统。'
+    command -v systemctl >/dev/null 2>&1 || { net_die '未找到 systemctl，本机不是 systemd 系统。'; return 1; }
     [[ -d $run_dir ]] || net_die 'systemd 未作为 init 运行（缺少 /run/systemd/system）。'
 }
 
@@ -133,7 +146,10 @@ net_require_cmds() {
     for c in "$@"; do
         command -v "$c" >/dev/null 2>&1 || missing+=("$c")
     done
-    (( ${#missing[@]} == 0 )) || net_die "缺少必需命令：${missing[*]}"
+    if (( ${#missing[@]} )); then
+        declare -F toolbox_require_commands >/dev/null || { [[ -n ${_TOOLBOX_NETWORK_MODULE_DIR:-} ]] && source "$_TOOLBOX_NETWORK_MODULE_DIR/dependencies.sh"; } || return 1
+        toolbox_require_commands '网络服务' "${missing[@]}" || return 1
+    fi
 }
 
 net_valid_port() {
@@ -369,7 +385,13 @@ net_brutal_require_kernel() {
         return 1
     fi
     local build="${TOOLBOX_NET_MODDIR:-/lib/modules/$rel/build}"
-    [[ -d $build ]] || net_die "缺少内核头文件（$build 不存在），无法编译模块。"
+    if [[ ! -d $build || ! -r $build/Makefile ]]; then
+        if [[ $build != /lib/modules/"$rel"/build ]]; then
+            net_die "指定的内核头文件缺少可读 Makefile：$build/Makefile；不会用安装包覆盖自定义目录。"; return 1
+        fi
+        declare -F toolbox_require_kernel_headers >/dev/null || { [[ -n ${_TOOLBOX_NETWORK_MODULE_DIR:-} ]] && source "$_TOOLBOX_NETWORK_MODULE_DIR/dependencies.sh"; } || return 1
+        toolbox_require_kernel_headers 'TCP Brutal' "$rel" || return 1
+    fi
 }
 
 net_brutal_require_toolchain() {
@@ -1051,6 +1073,7 @@ _net_relay_install() {
     net_require_debian || return 1
     net_require_systemd || return 1
     net_require_cmds flock ss sed mktemp || return 1
+    [[ -n ${TOOLBOX_NET_SOCAT:-} ]] || net_require_cmds socat || return 1
 
     # 菜单只传动作：缺的参数问，协议给默认 tcp；EOF 在写盘前退出。
     if [[ -z $proto ]]; then
@@ -1345,7 +1368,7 @@ net_alpine_port_owned_by() { # proto port bin pidfile
 net_alpine_require_tools() {
     net_require_cmds curl sha256sum install mktemp flock ss awk openssl stat timeout \
         readlink sed cut grep tr chmod cp mkdir rm rmdir cat uname sleep date ln "$@" || {
-        net_err '可返回主菜单 3 检查/安装基础依赖后重试；本操作不会自动运行 apk。'
+        net_err '依赖未补齐，当前操作已停止；可检查上方包管理器错误后重试。'
         return 1
     }
 }

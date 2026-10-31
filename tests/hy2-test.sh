@@ -12,6 +12,12 @@ toolbox_test_scratch
 ROOT=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 work=$(mktemp -d "${TMPDIR:-/root/.cache/terry-toolbox-tests}/toolbox-hy2-test.XXXXXXXX")
 cleanup() {
+    local rc=$?
+    if [[ -s $work/package-boundary.log ]]; then
+        printf 'FAIL: unmocked package/service command\n' >&2
+        command cat "$work/package-boundary.log" >&2
+        rc=1
+    fi
     python3 -c '
 import os, signal, time
 marker = ("TOOLBOX_TEST_WORK=" + os.environ["TOOLBOX_TEST_WORK"]).encode()
@@ -32,6 +38,7 @@ for pid in pids:
         except ProcessLookupError: pass
 '
     rm -rf -- "${work:?}"
+    exit "$rc"
 }
 trap cleanup EXIT
 export HOME=$work/home TOOLBOX_TEST_WORK=$work
@@ -54,10 +61,23 @@ export TOOLBOX_HY2_OS_RELEASE=$work/os-release
 export TOOLBOX_HY2_BIN_SRC=$work/pkg/hysteria-linux-amd64
 export PATH=$work/fakebin:$PATH
 unset TOOLBOX_HY2_URL TOOLBOX_HY2_SHA256_ARM64
-for cmd in apk apt apt-get dnf yum sysctl systemctl rc-service rc-update modprobe rmmod dkms depmod; do
-    printf '#!/usr/bin/env bash\nprintf "%%s\\n" forbidden >> "$SD/forbidden.log"\nexit 99\n' > "$work/fakebin/$cmd"
+for cmd in sudo apk apt apt-get apt-cache aptitude dpkg dpkg-query dpkg-deb dnf yum rpm sysctl systemctl rc-service rc-update modprobe rmmod dkms depmod; do
+    {
+        printf '#!/bin/sh\n'
+        printf 'printf "%%s\\n" "$0 $*" >> %q\n' "$work/package-boundary.log"
+        printf 'exit 99\n'
+    } > "$work/fakebin/$cmd"
     chmod +x "$work/fakebin/$cmd"
 done
+for guard_env in inherited empty; do
+    if [[ $guard_env == empty ]]; then
+        env -i PATH="$PATH" bash --noprofile --norc -c 'apt-get --fixture-guard-probe' && exit 1 || [[ $? == 99 ]]
+    else
+        bash --noprofile --norc -c 'apt-get --fixture-guard-probe' && exit 1 || [[ $? == 99 ]]
+    fi
+done
+[[ $(wc -l < "$work/package-boundary.log") -eq 2 ]]
+: > "$work/package-boundary.log"
 
 printf 'ID=debian\nVERSION_ID="13"\n' > "$TOOLBOX_HY2_OS_RELEASE"
 printf 'ID=ubuntu\n' > "$work/os-ubuntu"
@@ -716,5 +736,5 @@ reset
 [[ -f $(hy2_client_dir)/good.yaml && $(<"$(hy2_client_dir)/good.yaml") == foreign-probe ]] || fail 'HY2 回滚删除未登记探针文件'
 reset
 
-[[ ! -e $SD/forbidden.log ]] || fail '命中了真实命令兜底拒绝桩'
+[[ ! -s $work/package-boundary.log ]] || fail '命中了真实命令兜底拒绝桩'
 printf 'All hy2 tests passed.\n'

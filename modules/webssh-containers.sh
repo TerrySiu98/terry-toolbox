@@ -18,6 +18,17 @@
 # Loopback and bridge are not a firewall against host users/privileged routing.
 # Pins are byte reproducibility, not signature verification or a security audit.
 
+# Remember only the source directory; dependency work remains lazy. Bundles
+# already contain the core and must never look beside the downloaded script.
+_TOOLBOX_WEBSSH_CONTAINERS_MODULE_DIR=''
+if [[ ${TOOLBOX_BUNDLED:-0} != 1 ]]; then
+    case ${BASH_SOURCE[0]} in
+        */*) _TOOLBOX_WEBSSH_CONTAINERS_MODULE_DIR=${BASH_SOURCE[0]%/*};;
+        *) _TOOLBOX_WEBSSH_CONTAINERS_MODULE_DIR=.;;
+    esac
+    _TOOLBOX_WEBSSH_CONTAINERS_MODULE_DIR=$(CDPATH= builtin cd -- "$_TOOLBOX_WEBSSH_CONTAINERS_MODULE_DIR" && builtin pwd -P) || _TOOLBOX_WEBSSH_CONTAINERS_MODULE_DIR=''
+fi
+
 wsc_error() { printf 'B10: %s\n' "$*" >&2; return 1; }
 wsc_docker() {
     # flock protects an inode, not its pathname. Re-prove the held descriptor
@@ -359,6 +370,20 @@ wsc_create_start() {
     fi
 }
 
+wsc_dependencies() {
+    local dependency
+    for dependency in docker python3 ss flock mktemp; do
+        if ! command -v "$dependency" >/dev/null 2>&1; then
+            declare -F toolbox_require_commands >/dev/null || { [[ -n ${_TOOLBOX_WEBSSH_CONTAINERS_MODULE_DIR:-} ]] && source "$_TOOLBOX_WEBSSH_CONTAINERS_MODULE_DIR/dependencies.sh"; } || return 1
+            if ! command -v docker >/dev/null 2>&1; then
+                declare -F toolbox_require_docker >/dev/null || { [[ -n ${_TOOLBOX_WEBSSH_CONTAINERS_MODULE_DIR:-} ]] && source "$_TOOLBOX_WEBSSH_CONTAINERS_MODULE_DIR/dependencies.sh"; } || return 1
+                toolbox_require_docker 'B10 WebSSH 容器' || return 1
+            fi
+            toolbox_require_commands 'B10 WebSSH 容器' python3 ss flock mktemp || return 1
+            return 0
+        fi
+    done
+}
 toolbox_webssh_container() (
     # No caller secret tracing. Do not export any credentials or pass them in argv.
     set +x
@@ -370,7 +395,7 @@ toolbox_webssh_container() (
     [[ $action == install || $# == 2 ]] || { wsc_error 'status/uninstall不接受端口参数。'; return 2; }
     [[ -n ${HOME-} ]] || { wsc_error 'HOME未设置。'; return 1; }
     (( EUID == 0 )) || { wsc_error '要求root以匹配上游root应用和私有0700数据；不自动提权。'; return 1; }
-    for id in docker python3 ss flock mktemp; do command -v "$id" >/dev/null 2>&1 || { wsc_error "缺少依赖$id；不会自动安装。"; return 1; }; done
+    wsc_dependencies || return 1
     # Read-only probes are ephemeral, not application state; cleans on exit.
     probe=$(mktemp "${TMPDIR:-/tmp}/b10-probe.XXXXXXXX") || { wsc_error '无法创建私有临时probe（请设置TMPDIR）。'; return 1; }
     trap 'rm -f -- "$probe"' EXIT

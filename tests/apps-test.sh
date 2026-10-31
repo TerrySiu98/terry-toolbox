@@ -4,7 +4,38 @@ set -euo pipefail
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 source "$script_dir/../modules/apps.sh"
 TEST_DIR=$(mktemp -d "${TMPDIR:-/tmp}/toolbox-apps.XXXXXXXX")
-trap 'rm -rf -- "$TEST_DIR"' EXIT
+cleanup_packages() {
+    local rc=$?
+    if [[ -s $TEST_DIR/package-boundary.log ]]; then
+        printf 'FAIL: unmocked package command\n' >&2
+        command cat "$TEST_DIR/package-boundary.log" >&2
+        rc=1
+    fi
+    rm -rf -- "$TEST_DIR"
+    exit "$rc"
+}
+trap cleanup_packages EXIT
+# Physical package guards also cover child Bash and an empty environment.
+mkdir -p "$TEST_DIR/package-deny"
+: > "$TEST_DIR/package-boundary.log"
+for manager in sudo apt apt-get apt-cache aptitude apk dpkg dpkg-query dpkg-deb dnf yum rpm; do
+    {
+        printf '#!/bin/sh\n'
+        printf 'printf "%%s\\n" "$0 $*" >> %q\n' "$TEST_DIR/package-boundary.log"
+        printf 'exit 99\n'
+    } > "$TEST_DIR/package-deny/$manager"
+    chmod 0755 "$TEST_DIR/package-deny/$manager"
+done
+export PATH="$TEST_DIR/package-deny:$PATH"
+for guard_env in inherited empty; do
+    if [[ $guard_env == empty ]]; then
+        env -i PATH="$PATH" bash --noprofile --norc -c 'apt-get --fixture-guard-probe' && exit 1 || [[ $? == 99 ]]
+    else
+        bash --noprofile --norc -c 'apt-get --fixture-guard-probe' && exit 1 || [[ $? == 99 ]]
+    fi
+done
+[[ $(wc -l < "$TEST_DIR/package-boundary.log") -eq 2 ]]
+: > "$TEST_DIR/package-boundary.log"
 export HOME="$TEST_DIR/home" LOG="$TEST_DIR/docker.log"
 mkdir -p "$HOME"
 : > "$LOG"

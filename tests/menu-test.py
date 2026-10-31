@@ -5,6 +5,25 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+# Deny real package execution in every subprocess, including PTYs and env -i.
+import shlex
+import tempfile
+_package_guard_tmp = tempfile.TemporaryDirectory(prefix='toolbox-package-deny-')
+_package_guard = Path(_package_guard_tmp.name)
+_package_log = _package_guard / 'calls'
+for _manager in ('sudo', 'apt', 'apt-get', 'apt-cache', 'aptitude', 'apk', 'dpkg', 'dpkg-query', 'dpkg-deb', 'dnf', 'yum', 'rpm'):
+    _file = _package_guard / _manager
+    _file.write_text('#!/bin/sh\nprintf "%s\\n" "$0 $*" >> ' + shlex.quote(str(_package_log)) + '\nexit 99\n')
+    _file.chmod(0o755)
+os.environ['PATH'] = str(_package_guard) + os.pathsep + os.environ['PATH']
+# UI fixtures do not need elevation, including when run by a non-root user.
+os.environ['TOOLBOX_ELEVATED'] = '1'
+for _env in (dict(os.environ), {'PATH': os.environ['PATH']}):
+    _probe = subprocess.run(['bash', '--noprofile', '--norc', '-c', 'apt-get --fixture-guard-probe'], env=_env, capture_output=True)
+    assert _probe.returncode == 99, _probe
+assert len(_package_log.read_text().splitlines()) == 2
+_package_log.unlink()
 SCRIPT = ROOT / 'toolbox.sh'
 
 
@@ -19,7 +38,7 @@ out, err = run('0\n')
 assert 'TERRY' in out or 'Terry' in out, 'missing branded reference-style banner'
 assert '1. 网络服务' in out, 'missing numeric main menu'
 assert '99. 重新启动' in out, 'missing reference restart key'
-assert '4. 重装系统（开发中）' in out, 'unreleased reinstall must be visibly marked before selection'
+assert '4. 重装系统' in out and '重装系统（开发中）' not in out, 'reinstall menu has a stale development label'
 assert 'B31' not in out, 'flat all-options dump still present on home'
 assert '\x1b' not in out, 'ANSI in non-tty output'
 assert 'readonly variable' not in err
@@ -91,7 +110,6 @@ import errno
 import fcntl
 import pty
 import select
-import shlex
 import struct
 import termios
 import time
@@ -190,3 +208,5 @@ assert '\x1b[3J' not in tty_out, 'must not erase terminal scrollback'
 assert 'command not found' not in tty_out, tty_out
 assert '\x1b' not in run_tty('0\n', no_clear=True), 'TOOLBOX_NO_CLEAR ignored'
 print('menu regression tests passed: hierarchy, service management, PTY redraw/pause, direct keys, repeat action, 40-column layout')
+
+assert not _package_log.exists(), _package_log.read_text()

@@ -5,7 +5,7 @@ set -euo pipefail
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 export IPV6_MODULE=$repo/modules/docker-ipv6.sh
 python3 - "$@" <<'PY'
-import json, os, pathlib, signal, stat, subprocess, sys, tempfile, time
+import json, os, pathlib, shlex, signal, stat, subprocess, sys, tempfile, time
 if sys.platform != 'linux' or os.geteuid() != 0:
  print('B1 fixture suite requires Linux root (/proc and root-owned private paths); no service/network changes performed.',file=sys.stderr)
  sys.exit(77)
@@ -19,6 +19,10 @@ for part in reversed((BASE,*BASE.parents)):
   raise RuntimeError('unsafe fixture parent: '+str(part))
 E=pathlib.Path(tempfile.mkdtemp(prefix='docker-ipv6-evidence-',dir=BASE)); os.chmod(E,0o700)
 selected=set(sys.argv[1:]); results=[]; processes=[]
+package_log=E/'package-boundary.log'
+package_deny='#!/bin/sh\nprintf "%s\\n" "$0 $*" >> '+shlex.quote(str(package_log))+'\nexit 99\n'
+def packages_untouched():
+ assert not package_log.exists() or not package_log.read_text(), package_log.read_text()
 MOCK=r'''#!/usr/bin/python3
 import json,os,pathlib,signal,subprocess,sys
 r=pathlib.Path(os.environ['TOOLBOX_DOCKER_IPV6_TEST_ROOT']); a=sys.argv[1:]; name=pathlib.Path(sys.argv[0]).name
@@ -160,12 +164,24 @@ def fixture(alpine=False):
   (r/'bin'/cmd).write_text(MOCK);os.chmod(r/'bin'/cmd,0o755)
  (r/'bin/python3').symlink_to(sys.executable);(r/'bin/bash').symlink_to(__import__('shutil').which('bash'))
  (r/'bin/cat').write_bytes(pathlib.Path(__import__('shutil').which('cat')).read_bytes());os.chmod(r/'bin/cat',0o755)
+ for name in ('sudo','apt','apt-get','apt-cache','aptitude','apk','dpkg','dpkg-query','dpkg-deb','dnf','yum','rpm'):
+  (r/'bin'/name).write_text(package_deny);(r/'bin'/name).chmod(0o755)
  env={k:v for k,v in os.environ.items() if not k.startswith('DOCKER_')};env.update(TOOLBOX_DOCKER_IPV6_TEST_ROOT=str(r),PATH=str(r/'bin')+':/usr/bin:/bin')
+ if not processes:
+  for probe_env in (env, {'PATH':env['PATH']}):
+   probe=subprocess.run(['bash','--noprofile','--norc','-c','apt-get --fixture-guard-probe'],env=probe_env,capture_output=True)
+   assert probe.returncode==99,probe
+  assert len(package_log.read_text().splitlines())==2
+  package_log.unlink()
  daemon=subprocess.Popen([str(r/'bin/dockerd'),'--host=unix:///var/run/docker.sock'],env=env);processes.append(daemon);(r/'pid').write_text(str(daemon.pid))
  return r,env
 
 def invoke(r,env,action='apply',data='YES\nYES\n',extra=()):
- p=subprocess.Popen(['bash','-c','source "$IPV6_MODULE"; toolbox_docker_ipv6 "$@"','b1',action,*extra],env=env,
+ script='source "$IPV6_MODULE"; '
+ if env.get('FIXTURE_DECLINE_DEPENDENCIES')=='1':
+  script+='source "${IPV6_MODULE%/*}/dependencies.sh"; _toolbox_deps_os() { printf "debian\\n"; }; _toolbox_deps_confirm() { return 1; }; '
+ script+='toolbox_docker_ipv6 "$@"'
+ p=subprocess.Popen(['bash','-c',script,'b1',action,*extra],env=env,
                     stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,start_new_session=True)
  try:out,err=p.communicate(data,timeout=60)
  except subprocess.TimeoutExpired:
@@ -174,6 +190,7 @@ def invoke(r,env,action='apply',data='YES\nYES\n',extra=()):
   raise
  p.stdout=out;p.stderr=err
  n=len(list(r.glob('result-*.json')));(r/f'result-{n}.json').write_text(json.dumps({'action':action,'rc':p.returncode,'stdout':p.stdout,'stderr':p.stderr},ensure_ascii=False,indent=2))
+ packages_untouched()
  return p
 
 def assert_ok(p):assert p.returncode==0,(p.returncode,p.stdout,p.stderr)
@@ -182,7 +199,7 @@ def mutations(r):return [c for c in calls(r) if c[0] in ('systemctl','rc-service
 def case(name,fn):
  if selected and name not in selected:return
  started=time.monotonic();mark=len(processes);print('RUN '+name,flush=True)
- try:fn();results.append({'case':name,'passed':True,'seconds':round(time.monotonic()-started,3)});print('PASS '+name+' seconds='+str(results[-1]['seconds']),flush=True)
+ try:fn();packages_untouched();results.append({'case':name,'passed':True,'seconds':round(time.monotonic()-started,3)});print('PASS '+name+' seconds='+str(results[-1]['seconds']),flush=True)
  except Exception as e:results.append({'case':name,'passed':False,'error':str(e)});raise
  finally:
   (E/'results.json').write_text(json.dumps(results,ensure_ascii=False,indent=2))
@@ -510,7 +527,7 @@ def runtime_recheck():
  assert p.returncode!=0 and 'Engine' in p.stderr,(p.stdout,p.stderr)
 
 def generator_dependencies():
- r,env=fixture();env['PATH']=str(r/'bin');(r/'bin/cat').unlink()
+ r,env=fixture();env['PATH']=str(r/'bin');env['FIXTURE_DECLINE_DEPENDENCIES']='1';(r/'bin/cat').unlink()
  original=(r/'etc/docker/daemon.json').read_bytes()
  p=invoke(r,env)
  assert p.returncode!=0 and 'cat' in p.stderr,(p.stdout,p.stderr)
@@ -522,8 +539,8 @@ def generator_dependencies():
 
 def firewall_dependencies():
  for cmd in ('iptables','ip6tables'):
-  r,env=fixture();env['PATH']=str(r/'bin');(r/'bin'/cmd).unlink()
-  p=invoke(r,env);assert p.returncode!=0 and ('缺少命令 '+cmd) in p.stderr,(cmd,p.stdout,p.stderr)
+  r,env=fixture();env['PATH']=str(r/'bin');env['FIXTURE_DECLINE_DEPENDENCIES']='1';(r/'bin'/cmd).unlink()
+  p=invoke(r,env);assert p.returncode!=0 and ('缺少命令：' in p.stderr and cmd in p.stderr),(cmd,p.stdout,p.stderr)
   assert not mutations(r) and not (r/'state').exists()
 
 def safety_switch_parity():
@@ -584,4 +601,5 @@ finally:
   try:p.wait(timeout=3)
   except subprocess.TimeoutExpired:p.kill();p.wait()
  (E/'results.json').write_text(json.dumps(results,ensure_ascii=False,indent=2));print('EVIDENCE='+str(E),flush=True)
+ packages_untouched()
 PY

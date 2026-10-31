@@ -63,9 +63,17 @@ out=$(bash -ec 'source "$1"; printf sourced' _ "$ROOT/modules/network.sh") || fa
 out=$(bash -euc 'source "$1"; source "$1"; declare -F toolbox_network >/dev/null; printf sourced-twice' _ "$ROOT/modules/network.sh" 2>"$work/source-twice.err") \
     || fail '重复 source network.sh 失败'
 [[ $out == sourced-twice && ! -s $work/source-twice.err ]] || fail '重复 source network.sh 有输出或 readonly 报错'
+source "$ROOT/modules/dependencies.sh"
+_toolbox_deps_exec() { printf 'dependency-package:%s\n' "$*" >> "$NETWORK_TEST_MARKER"; return 99; }
+# Keep fixture CA metadata off the host. PATH guards also protect child shells
+# and any lazy core reload after an unset; reset never removes the marker.
+_toolbox_deps_ca_package() { return 0; }
+_toolbox_deps_root() { return 0; }
+export -f _toolbox_deps_exec _toolbox_deps_ca_package _toolbox_deps_root
 source "$ROOT/modules/network.sh"
 printf 'ID=alpine\n' > "$work/alpine"
 printf 'ID=debian\n' > "$work/debian"
+export TOOLBOX_OS_RELEASE=$work/debian
 printf 'ID=ubuntu\n' > "$work/ubuntu"
 printf 'ID=other\nID_LIKE="debian ubuntu"\n' > "$work/derived"
 printf 'ID=unknown\n' > "$work/unknown"
@@ -153,6 +161,7 @@ unset TOOLBOX_NET_BRUTAL_URL TOOLBOX_NET_BRUTAL_SHA256 TOOLBOX_NET_TUIC_URL
 unset TOOLBOX_NET_TUIC_SHA256 TOOLBOX_NET_TUIC_SHA256_ARM64 TOOLBOX_NET_UUID
 
 export TOOLBOX_NET_OS_RELEASE=$work/os-release
+export TOOLBOX_OS_RELEASE=$work/os-release
 export TOOLBOX_NET_SYSTEMD_RUN=$work/systemd-run
 export TOOLBOX_NET_ETC=$work/etc
 export TOOLBOX_NET_BIN_DIR=$work/instbin
@@ -167,6 +176,7 @@ export TOOLBOX_NET_KERNEL_RELEASE=6.1.0-test
 export TOOLBOX_NET_SOCAT=$work/pathbin/socat
 mkdir -p "$TOOLBOX_NET_SYSTEMD_RUN" "$TOOLBOX_NET_UNIT_DIR" "$TOOLBOX_NET_LOCK_DIR" \
     "$TOOLBOX_NET_BIN_DIR" "$work/modbuild" "$work/pkg"
+printf '# Fixture headers: native compilation is replaced by the make/dkms shims.\n' > "$work/modbuild/Makefile"
 printf 'ID=debian\nVERSION_ID="13"\n' > "$TOOLBOX_NET_OS_RELEASE"
 
 # B12 源码包夹具：结构与官方 tarball 一致，哈希由测试算出后注入。
@@ -376,6 +386,11 @@ assert_clean 'B12 老内核'
 TOOLBOX_NET_MODDIR=$work/nomod toolbox_network B12 install </dev/null >"$work/o" 2>&1 && fail 'B12 缺头文件被接受'
 grep -q '内核头文件' "$work/o" || fail 'B12 缺头文件未说明'
 assert_clean 'B12 缺头文件'
+mv "$work/modbuild/Makefile" "$work/modbuild/Makefile.saved"
+toolbox_network B12 install </dev/null >"$work/o" 2>&1 && fail 'B12 空 headers 目录被接受'
+grep -q 'Makefile' "$work/o" || fail 'B12 空 headers 目录未说明'
+assert_clean 'B12 空 headers 目录'
+mv "$work/modbuild/Makefile.saved" "$work/modbuild/Makefile"
 
 # 冲突：别人的 drop-in 不得覆盖
 mkdir -p "$TOOLBOX_NET_MODLOAD_DIR"

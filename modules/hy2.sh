@@ -9,6 +9,17 @@
 # 固定上游：HyNetworks/hysteria app/v2.13.0 官方发布二进制 + SHA-256 白名单。
 # 不使用官方一键脚本，也不从「latest」解析版本号。
 
+# Remember only the source directory; dependency work remains lazy. Bundles
+# already contain the core and must never look beside the downloaded script.
+_TOOLBOX_HY2_MODULE_DIR=''
+if [[ ${TOOLBOX_BUNDLED:-0} != 1 ]]; then
+    case ${BASH_SOURCE[0]} in
+        */*) _TOOLBOX_HY2_MODULE_DIR=${BASH_SOURCE[0]%/*};;
+        *) _TOOLBOX_HY2_MODULE_DIR=.;;
+    esac
+    _TOOLBOX_HY2_MODULE_DIR=$(CDPATH= builtin cd -- "$_TOOLBOX_HY2_MODULE_DIR" && builtin pwd -P) || _TOOLBOX_HY2_MODULE_DIR=''
+fi
+
 hy2_const() { # name value
     [[ -n ${!1+set} ]] && return 0
     printf -v "$1" '%s' "$2"
@@ -43,9 +54,11 @@ hy2_require_root() {
 
 # 只接受 ID=debian。衍生版（如 kali、raspbian）的包和 systemd 行为有差异，不冒险。
 hy2_require_debian() {
-    local file=${TOOLBOX_HY2_OS_RELEASE:-/etc/os-release} id=''
+    local file=${TOOLBOX_HY2_OS_RELEASE:-/etc/os-release} id='' line
     [[ -r $file ]] || { hy2_die "无法读取 $file，不能确认发行版。"; return 1; }
-    id=$(sed -n 's/^ID=//p' "$file" | head -n1)
+    while IFS= read -r line || [[ -n $line ]]; do
+        case $line in ID=*) id=${line#ID=}; break;; esac
+    done < "$file"
     id=${id%\"}; id=${id#\"}; id=${id%\'}; id=${id#\'}
     [[ ${id,,} == debian ]] || hy2_die "仅支持 Debian（当前 ID=${id:-未知}）；不支持 Alpine/Ubuntu/衍生版。"
 }
@@ -61,7 +74,10 @@ hy2_require_tools() {
     for c in openssl sha256sum curl flock ss awk sed mktemp stat install ln timeout; do
         command -v "$c" >/dev/null 2>&1 || missing+=("$c")
     done
-    (( ${#missing[@]} == 0 )) || hy2_die "缺少必需命令：${missing[*]}"
+    if (( ${#missing[@]} )); then
+        declare -F toolbox_require_commands >/dev/null || { [[ -n ${_TOOLBOX_HY2_MODULE_DIR:-} ]] && source "$_TOOLBOX_HY2_MODULE_DIR/dependencies.sh"; } || return 1
+        toolbox_require_commands 'Hysteria 2' "${missing[@]}" || return 1
+    fi
 }
 
 hy2_arch() {

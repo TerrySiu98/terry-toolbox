@@ -13,7 +13,7 @@ mkdir -p -- "$output_dir"
 output_dir=$(cd -- "$output_dir" && pwd)
 output=$output_dir/$output_name
 [[ ! -e $output && ! -L $output ]] || { printf 'Output already exists: %s\n' "$output" >&2; exit 1; }
-modules=(entry apps network system diagnostics hy2 webssh vmess alpine-swap docker-ipv6 webssh-containers tls-acme reinstall-provenance reinstall)
+modules=(entry dependencies apps network system diagnostics hy2 webssh vmess alpine-swap docker-ipv6 webssh-containers tls-acme reinstall-provenance reinstall)
 for file in "$root/toolbox.sh" "${modules[@]/#/$root/modules/}"; do
   # Module names get their extension below; the entrypoint already has one.
   [[ $file == "$root/toolbox.sh" ]] || file+=.sh
@@ -25,7 +25,7 @@ expected=$(printf '%s\n' \
   'load_modules() {' \
   '  [[ ${TOOLBOX_MODULES_LOADED:-0} == 1 ]] && return 0' \
   '  local f' \
-  '  for f in apps network system diagnostics hy2 webssh vmess alpine-swap docker-ipv6 webssh-containers tls-acme reinstall-provenance reinstall; do' \
+  '  for f in dependencies apps network system diagnostics hy2 webssh vmess alpine-swap docker-ipv6 webssh-containers tls-acme reinstall-provenance reinstall; do' \
   '    if [[ ! -r "$TOOLBOX_DIR/modules/$f.sh" ]]; then' \
   '      printf '\''错误：缺少模块 %s/modules/%s.sh。请下载完整项目。\n'\'' "$TOOLBOX_DIR" "$f" >&2' \
   '      return 1' \
@@ -52,7 +52,7 @@ found=0
         printf 'Unexpected load_modules definition; review build script.\n' >&2; exit 1
       fi
       printf '%s\n' '# Bundled modules; load_modules is intentionally a no-op.' 'TOOLBOX_BUNDLED=1' 'load_modules() { :; }'
-      for module in apps network system diagnostics hy2 webssh vmess alpine-swap docker-ipv6 webssh-containers tls-acme reinstall-provenance reinstall; do
+      for module in dependencies apps network system diagnostics hy2 webssh vmess alpine-swap docker-ipv6 webssh-containers tls-acme reinstall-provenance reinstall; do
         printf '\n# BEGIN bundled module: %s\n' "$module"
         cat -- "$root/modules/$module.sh"
         printf '\n# END bundled module: %s\n' "$module"

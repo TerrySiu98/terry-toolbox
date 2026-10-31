@@ -122,7 +122,7 @@ _tb_banner() {
 _tb_main_screen() {
   _tb_banner
   _tb_head '请选择要执行的操作'
-  _tb_pair '🌐 1. 网络服务' '💽 4. 重装系统（开发中）'
+  _tb_pair '🌐 1. 网络服务' '💽 4. 重装系统'
   _tb_pair '⚡ 2. 安装 BBR' '🛠️  5. 常用工具'
   _tb_pair '📦 3. 安装基础依赖' '🔄 99. 重新启动'
   _tb_pair '🩺  DIAG 只读体检' '🚪 0. 退出脚本'
@@ -193,7 +193,7 @@ _tb_bye() {
   printf '\n'
 }
 _tb_bootstrap_has() { command -v "$1" >/dev/null 2>&1; }
-_tb_bootstrap_exec() { "$@"; }
+_tb_bootstrap_exec() { "$@" </dev/null; }
 _tb_bootstrap() {
   # Interactive startup only. --help, --list and piped runs never install anything.
   [[ -t 0 && -t 1 ]] || return 0

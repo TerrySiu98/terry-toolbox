@@ -24,6 +24,17 @@
 # Ownership is inode/dev/mode/nlink/size + swap UUID and immutable first page;
 # NOT a whole-swap hash. Root-only paths prevent unprivileged path races; concurrent
 # hostile root can defeat any userspace precheck and is outside this guarantee.
+# Remember only the source directory; dependency work remains lazy. Bundles
+# already contain the core and must never look beside the downloaded script.
+_TOOLBOX_ALPINE_SWAP_MODULE_DIR=''
+if [[ ${TOOLBOX_BUNDLED:-0} != 1 ]]; then
+    case ${BASH_SOURCE[0]} in
+        */*) _TOOLBOX_ALPINE_SWAP_MODULE_DIR=${BASH_SOURCE[0]%/*};;
+        *) _TOOLBOX_ALPINE_SWAP_MODULE_DIR=.;;
+    esac
+    _TOOLBOX_ALPINE_SWAP_MODULE_DIR=$(CDPATH= builtin cd -- "$_TOOLBOX_ALPINE_SWAP_MODULE_DIR" && builtin pwd -P) || _TOOLBOX_ALPINE_SWAP_MODULE_DIR=''
+fi
+
 _toolbox_alpine_swap_engine() {
     cat <<'PY'
 import contextlib
@@ -217,7 +228,7 @@ def prerequisites():
     for command in REQUIRED:
         resolved = COMMANDS.get(command) if RUNTIME else shutil.which(command)
         require(resolved and os.path.isfile(resolved) and os.access(resolved, os.X_OK),
-                '缺少必要命令: '+command+'（不会自动安装）')
+                '运行时仍缺少必要命令: '+command+'；请检查依赖安装结果和命令路径')
         require(re.fullmatch(r'/[A-Za-z0-9_./-]+', resolved), '命令路径不安全: '+command)
         safe_path(os.path.realpath(resolved))
         COMMANDS[command] = resolved
@@ -634,11 +645,12 @@ PY
 
 toolbox_alpine_swap() {
     local code dependency
-    for dependency in python3 cat; do
-        command -v "$dependency" >/dev/null 2>&1 || {
-            printf 'B19 缺少必要命令: %s（不会自动安装）\n' "$dependency" >&2
-            return 1
-        }
+    for dependency in python3 cat flock dd mkswap swapon swapoff rc-service openrc-run; do
+        if ! command -v "$dependency" >/dev/null 2>&1; then
+            declare -F toolbox_require_commands >/dev/null || { [[ -n ${_TOOLBOX_ALPINE_SWAP_MODULE_DIR:-} ]] && source "$_TOOLBOX_ALPINE_SWAP_MODULE_DIR/dependencies.sh"; } || return 1
+            toolbox_require_commands 'B19 Alpine swap' python3 cat flock dd mkswap swapon swapoff rc-service openrc-run || return 1
+            break
+        fi
     done
     code=$(_toolbox_alpine_swap_engine) || return 1
     TOOLBOX_ALPINE_SWAP_ENGINE=$code python3 -c "$code" "$@" || return 1

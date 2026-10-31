@@ -3,7 +3,38 @@
 set -euo pipefail
 base=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 work=$(mktemp -d "${TMPDIR:?}/wsc-test.XXXXXXXX")
-trap 'rm -rf -- "$work"' EXIT
+cleanup_packages() {
+    local rc=$?
+    if [[ -s $work/package-boundary.log ]]; then
+        printf 'FAIL: unmocked package command\n' >&2
+        command cat "$work/package-boundary.log" >&2
+        rc=1
+    fi
+    rm -rf -- "$work"
+    exit "$rc"
+}
+trap cleanup_packages EXIT
+# Physical package guards also cover child Bash and an empty environment.
+mkdir -p "$work/package-deny"
+: > "$work/package-boundary.log"
+for manager in sudo apt apt-get apt-cache aptitude apk dpkg dpkg-query dpkg-deb dnf yum rpm; do
+    {
+        printf '#!/bin/sh\n'
+        printf 'printf "%%s\\n" "$0 $*" >> %q\n' "$work/package-boundary.log"
+        printf 'exit 99\n'
+    } > "$work/package-deny/$manager"
+    chmod 0755 "$work/package-deny/$manager"
+done
+export PATH="$work/package-deny:$PATH"
+for guard_env in inherited empty; do
+    if [[ $guard_env == empty ]]; then
+        env -i PATH="$PATH" bash --noprofile --norc -c 'apt-get --fixture-guard-probe' && exit 1 || [[ $? == 99 ]]
+    else
+        bash --noprofile --norc -c 'apt-get --fixture-guard-probe' && exit 1 || [[ $? == 99 ]]
+    fi
+done
+[[ $(wc -l < "$work/package-boundary.log") -eq 2 ]]
+: > "$work/package-boundary.log"
 mkdir "$work/bin" "$work/mock" "$work/home"
 real_python=$(command -v python3)
 # The Docker daemon is synthetic; host RAM contention is also an unrelated

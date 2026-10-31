@@ -32,9 +32,20 @@
 # B10 WebSSH 仍留在 modules/webssh.sh：上游只有 Dockerfile 与 compose 自建，没有官方镜像。
 
 # A subshell prevents secrets, umask and local environment changes leaking to the caller.
+# Remember only the source directory; dependency work remains lazy. Bundles
+# already contain the core and must never look beside the downloaded script.
+_TOOLBOX_APPS_MODULE_DIR=''
+if [[ ${TOOLBOX_BUNDLED:-0} != 1 ]]; then
+    case ${BASH_SOURCE[0]} in
+        */*) _TOOLBOX_APPS_MODULE_DIR=${BASH_SOURCE[0]%/*};;
+        *) _TOOLBOX_APPS_MODULE_DIR=.;;
+    esac
+    _TOOLBOX_APPS_MODULE_DIR=$(CDPATH= builtin cd -- "$_TOOLBOX_APPS_MODULE_DIR" && builtin pwd -P) || _TOOLBOX_APPS_MODULE_DIR=''
+fi
+
 toolbox_app() (
     local id=${1-} name image default_port target_port data_target='' note='' port answer
-    local root data names secret extra_ports='' environment='' context endpoint version major network_id reuse=0 canonical subdir
+    local dependency root data names secret extra_ports='' environment='' context endpoint version major network_id reuse=0 canonical subdir
     local -a args=()
     if [[ $# != 1 ]]; then printf '用法: toolbox_app <数字>\n' >&2; return 2; fi
     case "$id" in
@@ -58,8 +69,16 @@ toolbox_app() (
         *) printf '未知应用编号: %s\n' "$id" >&2; return 2 ;;
     esac
     if ! command -v docker >/dev/null 2>&1; then
-        printf '未找到 Docker；请先自行安装并启动 Docker。\n' >&2; return 1
+        declare -F toolbox_require_docker >/dev/null || { [[ -n ${_TOOLBOX_APPS_MODULE_DIR:-} ]] && source "$_TOOLBOX_APPS_MODULE_DIR/dependencies.sh"; } || return 1
+        toolbox_require_docker "B$id $name" || return 1
     fi
+    for dependency in realpath mkdir date; do
+        if ! command -v "$dependency" >/dev/null 2>&1; then
+            declare -F toolbox_require_commands >/dev/null || { [[ -n ${_TOOLBOX_APPS_MODULE_DIR:-} ]] && source "$_TOOLBOX_APPS_MODULE_DIR/dependencies.sh"; } || return 1
+            toolbox_require_commands "B$id $name" realpath mkdir date || return 1
+            break
+        fi
+    done
     # Do not infer locality from daemon info: bind paths are resolved by the daemon.
     if [[ -v DOCKER_HOST || -v DOCKER_CONTEXT || -v DOCKER_TLS_VERIFY || -v DOCKER_CERT_PATH || -v DOCKER_API_VERSION ]]; then
         printf 'Docker 连接环境变量会造成目标歧义；请清除 DOCKER_HOST/DOCKER_CONTEXT/TLS/API 覆盖后重试。\n' >&2; return 1

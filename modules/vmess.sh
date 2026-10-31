@@ -14,6 +14,17 @@
 # Trust anchors: shared TOOLBOX_NET_CAFILE / TOOLBOX_NET_CAPATH, never insecure.
 # SHA test overrides are inherited from net_a5_sha256; no VMess-specific bypass.
 
+# Remember only the source directory; dependency work remains lazy. Bundles
+# already contain the core and must never look beside the downloaded script.
+_TOOLBOX_VMESS_MODULE_DIR=''
+if [[ ${TOOLBOX_BUNDLED:-0} != 1 ]]; then
+    case ${BASH_SOURCE[0]} in
+        */*) _TOOLBOX_VMESS_MODULE_DIR=${BASH_SOURCE[0]%/*};;
+        *) _TOOLBOX_VMESS_MODULE_DIR=.;;
+    esac
+    _TOOLBOX_VMESS_MODULE_DIR=$(CDPATH= builtin cd -- "$_TOOLBOX_VMESS_MODULE_DIR" && builtin pwd -P) || _TOOLBOX_VMESS_MODULE_DIR=''
+fi
+
 vmess_err() { printf '%s\n' "$*" >&2; }
 vmess_etc() { printf '%s\n' "${TOOLBOX_VM_WS_ETC:-/etc/terry-toolbox-vmess}"; }
 vmess_bin() { printf '%s/terry-toolbox-vmess\n' "${TOOLBOX_VM_WS_BIN_DIR:-/usr/local/bin}"; }
@@ -31,12 +42,20 @@ vmess_confirm() {
         IFS= read -r answer && [[ ${answer^^} == YES ]] || { vmess_err '已取消。'; return 1; }
     done
 }
+vmess_dependencies() {
+    local dependency
+    for dependency in "$@"; do
+        if ! command -v "$dependency" >/dev/null 2>&1; then
+            declare -F toolbox_require_commands >/dev/null || { [[ -n ${_TOOLBOX_VMESS_MODULE_DIR:-} ]] && source "$_TOOLBOX_VMESS_MODULE_DIR/dependencies.sh"; } || return 1
+            toolbox_require_commands 'A5 VMess' "$@" || return 1
+            return 0
+        fi
+    done
+}
 vmess_require() {
     local c id='' line
     [[ ${EUID:-1} == 0 ]] || { vmess_err '需要 root。'; return 1; }
-    for c in python3 systemctl ss openssl curl mktemp uname stat date cut grep sleep; do
-        command -v "$c" >/dev/null 2>&1 || { vmess_err "缺少必需命令：$c（未自动安装）"; return 1; }
-    done
+    vmess_dependencies python3 systemctl ss openssl curl mktemp uname stat date cut grep sleep || return 1
     for c in net_check_cert net_tls_trusted net_a5_zip_url net_a5_sha256; do
         declare -F "$c" >/dev/null || { vmess_err "缺少共享函数：$c"; return 1; }
     done

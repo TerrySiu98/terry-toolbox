@@ -3,7 +3,8 @@
 # Independent implementation of the reference's default-bridge IPv6 intent.
 # Sources: https://docs.docker.com/engine/daemon/ipv6/
 #          https://docs.docker.com/reference/cli/dockerd/
-# No installs, image pulls, or container/network creation/deletion; this module
+# Missing dependencies use the shared consent flow before the engine runs.
+# No image pulls or container/network creation/deletion; the IPv6 engine
 # writes no sysctl itself (dockerd may set IPv6 forwarding/FORWARD once started).
 # Debian/Ubuntu systemd and booted Alpine OpenRC are implementation targets, NOT
 # real-distro/data-plane acceptance claims. Rootless/custom/Swarm daemons refused.
@@ -12,10 +13,36 @@
 # Dirfd anchoring, protected parents, exact inode/content records and flock defend
 # against unprivileged races. Concurrent hostile root is outside the guarantee.
 # Failed attempts retain private evidence; never silently adopt/reuse that state.
+# Remember only the source directory; dependency work remains lazy. Bundles
+# already contain the core and must never look beside the downloaded script.
+_TOOLBOX_DOCKER_IPV6_MODULE_DIR=''
+if [[ ${TOOLBOX_BUNDLED:-0} != 1 ]]; then
+    case ${BASH_SOURCE[0]} in
+        */*) _TOOLBOX_DOCKER_IPV6_MODULE_DIR=${BASH_SOURCE[0]%/*};;
+        *) _TOOLBOX_DOCKER_IPV6_MODULE_DIR=.;;
+    esac
+    _TOOLBOX_DOCKER_IPV6_MODULE_DIR=$(CDPATH= builtin cd -- "$_TOOLBOX_DOCKER_IPV6_MODULE_DIR" && builtin pwd -P) || _TOOLBOX_DOCKER_IPV6_MODULE_DIR=''
+fi
+
 toolbox_docker_ipv6() (
-    command -v python3 >/dev/null 2>&1 || { printf 'B1 需要 python3；未安装任何依赖。\n' >&2; return 1; }
-    command -v cat >/dev/null 2>&1 || { printf 'B1 需要 cat 生成内嵌引擎；未安装任何依赖。\n' >&2; return 1; }
-    local engine
+    local engine dependency
+    local -a dependencies=(python3 cat)
+    # Status never needs Docker or networking tools. The engine still validates
+    # all arguments, platform, command provenance and existing daemon ownership.
+    if [[ ${1-} == apply && $# -ge 1 && $# -le 2 || ${1-} == restore && $# == 1 ]]; then
+        if ! command -v docker >/dev/null 2>&1; then
+            declare -F toolbox_require_docker >/dev/null || { [[ -n ${_TOOLBOX_DOCKER_IPV6_MODULE_DIR:-} ]] && source "$_TOOLBOX_DOCKER_IPV6_MODULE_DIR/dependencies.sh"; } || return 1
+            toolbox_require_docker 'B1 Docker IPv6' || return 1
+        fi
+        dependencies+=(docker dockerd ip ss iptables ip6tables)
+    fi
+    for dependency in "${dependencies[@]}"; do
+        if ! command -v "$dependency" >/dev/null 2>&1; then
+            declare -F toolbox_require_commands >/dev/null || { [[ -n ${_TOOLBOX_DOCKER_IPV6_MODULE_DIR:-} ]] && source "$_TOOLBOX_DOCKER_IPV6_MODULE_DIR/dependencies.sh"; } || return 1
+            toolbox_require_commands 'B1 Docker IPv6' "${dependencies[@]}" || return 1
+            break
+        fi
+    done
     # An empty generator must not become a silently successful `python3 -c ''`.
     engine=$( _toolbox_docker_ipv6_engine ) || { printf 'B1 内嵌引擎生成失败（cat/heredoc）；未执行任何操作。\n' >&2; return 1; }
     case $engine in 'import base64'*) ;; *) printf 'B1 内嵌引擎生成不完整；未执行任何操作。\n' >&2; return 1;; esac
@@ -231,7 +258,7 @@ def commands(init):
     for cmd in ('docker', 'dockerd', 'ip', 'ss', 'iptables', 'ip6tables',
                 'systemctl' if init == 'systemd' else 'rc-service'):
         p = shutil.which(cmd)
-        need(p, '缺少命令 '+cmd+'；本模块不会安装')
+        need(p, '依赖预检后仍缺少命令 '+cmd+'；请检查安装结果；不会切换 init 或接管既有 Docker')
         p = os.path.realpath(p)
         pathchain(os.path.dirname(p))
         s = os.stat(p)

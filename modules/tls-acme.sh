@@ -1,12 +1,24 @@
 #!/usr/bin/env bash
-# Source-only Certbot adapter. No ACME implementation, installer, firewall or DNS edits.
+# Source-only Certbot adapter. Missing distro dependencies use the shared consent flow.
+# No ACME implementation, firewall or DNS edits.
 # One exclusive native Certbot lineage per owned root. Defaults use the source package,
 # never a downloaded one-liner. Runtime/version hashes describe local bytes, not a
 # claim that the host's package repository was independently authenticated.
 # Overrides are isolated paths for fixtures; TEST_FIXTURE is a sealed, root-owned
 # fixture.json under /root/.../tls-acme-fixture-* and permits only loopback HTTPS CA.
 
-# Sourcing defines functions only; no path probes or commands, including stdin bundles.
+# Sourcing records the module directory and defines functions; it never installs.
+# Remember only the source directory; dependency work remains lazy. Bundles
+# already contain the core and must never look beside the downloaded script.
+_TOOLBOX_TLS_ACME_MODULE_DIR=''
+if [[ ${TOOLBOX_BUNDLED:-0} != 1 ]]; then
+    case ${BASH_SOURCE[0]} in
+        */*) _TOOLBOX_TLS_ACME_MODULE_DIR=${BASH_SOURCE[0]%/*};;
+        *) _TOOLBOX_TLS_ACME_MODULE_DIR=.;;
+    esac
+    _TOOLBOX_TLS_ACME_MODULE_DIR=$(CDPATH= builtin cd -- "$_TOOLBOX_TLS_ACME_MODULE_DIR" && builtin pwd -P) || _TOOLBOX_TLS_ACME_MODULE_DIR=''
+fi
+
 tls_acme_err() { printf '%s\n' "$*" >&2; }
 tls_acme_root() { printf '%s\n' "${TOOLBOX_TLS_ACME_ROOT:-/var/lib/terry-toolbox-acme}"; }
 tls_acme_units() { printf '%s\n' "${TOOLBOX_TLS_ACME_UNIT_DIR:-/etc/systemd/system}"; }
@@ -21,12 +33,20 @@ tls_acme_confirm() {
         IFS= read -r answer && [[ ${answer^^} == YES ]] || { tls_acme_err '已取消。'; return 1; }
     done
 }
-tls_acme_require() {
-    local c id='' line
-    [[ ${EUID:-1} == 0 ]] || { tls_acme_err '需要 root。'; return 1; }
-    for c in python3 openssl certbot systemctl ss timeout; do
-        command -v "$c" >/dev/null 2>&1 || { tls_acme_err "缺少必需命令：$c（请预先安装发行版 Certbot/依赖，模块不自动安装）"; return 1; }
+tls_acme_dependencies() {
+    local dependency
+    for dependency in "$@"; do
+        if ! command -v "$dependency" >/dev/null 2>&1; then
+            declare -F toolbox_require_commands >/dev/null || { [[ -n ${_TOOLBOX_TLS_ACME_MODULE_DIR:-} ]] && source "$_TOOLBOX_TLS_ACME_MODULE_DIR/dependencies.sh"; } || return 1
+            toolbox_require_commands 'TLS 证书管理' "$@" || return 1
+            return 0
+        fi
     done
+}
+tls_acme_require() {
+    local id='' line
+    [[ ${EUID:-1} == 0 ]] || { tls_acme_err '需要 root。'; return 1; }
+    tls_acme_dependencies python3 openssl certbot systemctl ss timeout || return 1
     while IFS= read -r line || [[ -n $line ]]; do
         case $line in ID=*) [[ -z $id ]] || return 1; id=${line#ID=}; id=${id#\"}; id=${id%\"}; id=${id#\'}; id=${id%\'};; esac
     done < "${TOOLBOX_TLS_ACME_OS_RELEASE:-/etc/os-release}" || return 1
@@ -597,7 +617,7 @@ tls_acme_issue() (
     tls_acme_fs preflight || return 1
     tls_acme_fs dns "$tls_acme_host" || return 1
     tls_acme_port || return 1
-    tls_acme_err "预览：现有 $tls_acme_version（不自动安装）；生产 CA https://acme-v02.api.letsencrypt.org/directory；同意 CA ToS https://letsencrypt.org/repository/。"
+    tls_acme_err "预览：使用已通过检查的 $tls_acme_version；生产 CA https://acme-v02.api.letsencrypt.org/directory；同意 CA ToS https://letsencrypt.org/repository/。"
     tls_acme_err "仅 standalone HTTP-01 TCP 80；A/AAAA 必须指向可公网访问本机，包含 IPv6；本检查不证明 DNS 控制/公网可达。不会改 DNS/firewall/反代或停止其他服务。"
     tls_acme_err "创建独占私有 $(tls_acme_root)/{config,work,logs}；private key 位于 config/live/$tls_acme_host/privkey.pem；不采用 /etc/letsencrypt；不自动开启 timer/部署服务。"
     tls_acme_fs fixture || return 1
@@ -802,7 +822,7 @@ toolbox_tls_acme() {
     local action=${1:-status}; if (( $# )); then shift; fi
     case $action in
         issue) tls_acme_issue "$@";;
-        status) [[ $# -le 1 ]] || return 2; command -v python3 >/dev/null || { tls_acme_err '缺少必需命令：python3'; return 1; }; tls_acme_fs status "${1:-}";;
+        status) [[ $# -le 1 ]] || return 2; tls_acme_dependencies python3 || return 1; tls_acme_fs status "${1:-}";;
         renew) [[ $# -le 1 ]] || return 2; tls_acme_renew no "${1:-}";;
         _renew) [[ $# == 1 ]] || return 2; tls_acme_renew yes "$1";;
         enable-renewal|disable-renewal) [[ $# -le 1 ]] || return 2; tls_acme_timer "$action" "${1:-}";;
