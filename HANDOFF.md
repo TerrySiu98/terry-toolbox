@@ -4,23 +4,23 @@
 
 ## 分支、基线与交付状态
 
-- 仓库：<https://github.com/TerrySiu98/terry-toolbox>；当前开发分支：`codex/complete-toolbox`；审查入口：[PR #1](https://github.com/TerrySiu98/terry-toolbox/pull/1)。
+- 仓库：<https://github.com/TerrySiu98/terry-toolbox>；当前发布分支：`main`；[PR #1](https://github.com/TerrySiu98/terry-toolbox/pull/1) 已合并。Codex 接续开发历史位于 `codex/complete-toolbox`。
 - 接续基线：`handoff/hermes`，commit `d884aae024485ff0632011e52a8d37c4a79effb2`。基线不是本轮最终交付 commit。
-- 本轮源码与构建 commit：`f880a583adc75a0241fbbea9cc54e6b7d358b4ec`。该提交已推送，PR 尚未合并。本维护手册及验收索引在随后独立文档提交中收口；完整回归结果及证据目录见下方。
-- 新单文件产物 SHA-256：`eb7fdfa9c6ad729efe3206e67d0b73142f5fb39f280b86e06e910ae1b1c83e9a`（663084 字节）。新 Worker 发布/回读结果：**尚未发布；当前环境未配置 Cloudflare 部署凭据**。
-- 当前已记录的线上脚本 SHA-256 仍为 `cdac369c7d03e118a5317071b3db90cf7bae3bb81a343115ef08d5a19355a542`。提交源码、生成 `docs/index.html`、上传 Worker 是三个独立动作；构建或推送分支不等于上线。
+- 本轮源码与构建 commit：`f880a583adc75a0241fbbea9cc54e6b7d358b4ec`。该提交是 Codex 的验收源码基线。其后文档提交及 Hermes 修复 `dbe845331dd9ab7f54372c85f4e9c4727d2c927e` 一起经 PR #1 合并为 `5a41fee49a852c0e1964114b8f9b60c078185ed1`；当前发布及原验收范围分别见下方。
+- Codex 原候选 SHA-256：`eb7fdfa9c6ad729efe3206e67d0b73142f5fb39f280b86e06e910ae1b1c83e9a`。Hermes 重启门禁修复后当前发布 SHA-256：`e6b0641d725550245fe18c154321cd3e59e0ef199d63732ee60f5d3c157f6155`（664523 字节）；2026-10-31 已完成 Worker、配置及公网精确回读，见[发布记录](docs/release-20261031.md)。
+- 上一版线上 SHA-256 `cdac369c7d03e118a5317071b3db90cf7bae3bb81a343115ef08d5a19355a542` 已保留在私有回滚快照。提交源码、构建产物和上传 Worker 仍是三个独立动作；线上以 `/sha256` 回读为准。
 
 接手先运行 `git status --short --branch`、`git rev-parse HEAD` 和 `git diff --stat`，保留已有修改。不要用覆盖式复制、`reset --hard`、`clean -fd` 或强推处理不明工作。
 
 Hermes 在新目录取用本轮交付分支：
 
 ```bash
-git clone --branch codex/complete-toolbox --single-branch https://github.com/TerrySiu98/terry-toolbox.git
+git clone --branch main --single-branch https://github.com/TerrySiu98/terry-toolbox.git
 cd terry-toolbox
 git rev-parse HEAD
 ```
 
-核对 PR 的最新提交和本文件记录的源码 commit。已有工作副本先检查状态再 fetch；本分支未合并前，默认 `main` 的内容仍较旧。
+核对 `main` 最新提交、发布记录与线上哈希。已有工作副本先检查状态再 fetch；保留旧 handoff 分支，不用 reset/clean 覆盖不明工作。
 
 ## 当前验收边界
 
@@ -32,7 +32,7 @@ git rev-parse HEAD
 | M3 重装 | Debian 13、Ubuntu 24.04、Alpine 3.24 / x86_64 / KVM / BIOS 已通过准备、状态、取消后精确恢复、再次准备、实际擦盘重装及新系统公钥 SSH；确认持久 ext4、旧系统标记消失、原磁盘身份一致、密码登录关闭 | 每个目标各一次全新 overlay 安装；UEFI/arm64 尚未原生验收；不能把 prepare 成功写成重装完成 |
 | B19 Alpine swap | 未修改模块有历史 Alpine 3.24.2/x86_64/KVM 实际换页、服务重启、整机自启和卸载证据 | 历史范围限 ext4/指定内核；arm64、其他文件系统和长期压力未验；旧整仓通过数不是当前结果 |
 | 原 Python WebSSH | Debian 13/Python 3.13 上固定 WebSSH 1.6.3 安装、Basic/WS/Origin 拒绝、真实 SSH nonce、重启后重复验证、卸载及临时 sshd cgroup 消失全通过；系统 nginx/SSH 配置保持 | 无浏览器 UI、MFA、SFTP、公网 TLS 或整机重启声明；依赖版本记录在私有 pip freeze，并非全量依赖锁定 |
-| Worker 发布程序 | 已增加原子 release、完整模块 manifest、生产备份与精确回读；Linux 离线发布测试 28 项通过，含真实源码 release/build、DNS 异常恢复及附加字段保留 | 本轮未执行真实 Cloudflare 写操作 |
+| Worker 发布程序 | 已增加原子 release、完整模块 manifest、生产备份与精确回读；Linux 离线发布测试 28 项通过，含真实源码 release/build、DNS 异常恢复及附加字段保留 | Hermes 后续已真实发布并精确回读；原发布程序遇到 annotations 保留差异，恢复细节见发布记录 |
 
 B1 模块内仍保留“尚未真实验收”的旧静态提示，以保持已验源码哈希不变；上表及证据索引限定本轮已经证明的范围。其 restore 恢复 daemon 配置，不承诺恢复 dockerd 自行调整的内核 forwarding 或整机网络状态。B18 保留；其他应用入口存在不表示全部业务功能已验收。
 
@@ -86,7 +86,7 @@ python3 scripts/deploy-cloudflare.py
 
 可选 `--backup-dir /absolute/path/to/new-private-backup`；父目录须已存在且受保护，叶目录必须全新、在仓库外，不接受 symlink 或 `..`。不指定时在当前用户 home 下新建私有目录。备份目录 0700、文件 0600，含原 Worker multipart、settings、workers.dev 状态、域名绑定、四个公网入口响应和本次候选字节及 manifest。
 
-程序先核验本地四模块哈希及与发布源文件的一致性，再持久化完整备份并复检远端未改变。普通更新使用 Worker `/content` API 保留配置，不改变 DNS 或 workers.dev；上传后逐模块核对名称和完整字节，并验证 settings、域名与四个公网入口。普通 URL 和随机参数 URL 都须匹配，避免缓存遮蔽旧内容。仅 `deployment-verified.json` 完成记录可作为这次发布通过的依据，随后更新 README 的线上哈希与发布记录。
+程序先核验本地四模块哈希及与发布源文件的一致性，再持久化完整备份并复检远端未改变。普通更新使用 Worker `/content` API 保留配置，不改变 DNS 或 workers.dev；上传后逐模块核对名称和完整字节，并验证 settings、域名与四个公网入口。普通 URL 和随机参数 URL 都须匹配，避免缓存遮蔽旧内容。仅完整外部回读完成记录可作为这次发布通过的依据，随后更新 README 的线上哈希与发布记录。注意：`/content` 会丢弃版本描述 `annotations[workers/message]`，且该端点忽略传入 annotations；现有程序会在上传后因 settings 不一致而失败，不会自动恢复。已带描述的 Worker 不要盲目重复普通命令，按发布记录中的完整上传恢复流程核对配置。
 
 `--bind` 只用于明确的首次域名迁移：它会检查原 Pages CNAME、验证 workers.dev 上的生产内容，再更改 DNS/绑定；已有正确绑定时不做迁移。不要把它当普通发布必选项。
 
@@ -121,4 +121,4 @@ python3 scripts/deploy-cloudflare.py
 | HY2 / 菜单修复复验 | `hy2-openssl-compat-swr2z893/remote/summary-02.json`、`final-regression-v4-affected/`、`final-regression-v5-menu/` | 独立 HY2 58.799 秒通过，最终候选 HY2 再验 57.92 秒；菜单原始失败与错位 transcript 保留，补目标输入后真实 PTY 22.29 秒通过；没有增加 HY2 原生部署声明 |
 | 全仓回归 | `final-regression-consolidated.json`；完整 v3 与最终 v8 原始日志分别保留 | 30 项全部取得有效 PASS：16 项复用 v3 未变传递依赖，14 项在最终 v8 补跑；0 跳过，源码前后不变、进程清理完成。不是同一源码单次 30 项通过；汇总 SHA-256 `77a66da81257993bc2e9baa8ae912403144c22c442b47831ae08b99c4ebd2e58` |
 
-本轮源码修复、限定范围的原生验收、30 项回归与候选构建已完成，结果已关联到源码 commit 和文件哈希。v1 环境拒绝、v2/v3/v6 超时，以及旧 HY2、菜单、VMess 信任夹具和监督器启动时序失败均保留。后续由 Hermes 按本手册维护；生产发布、合并及托管调整等 Terry 确定后执行。
+Codex 本轮源码修复、限定范围的原生验收、30 项回归与候选构建已完成，结果已关联到源码 commit 和文件哈希。Hermes 后续发布复核、M3 重启门禁补丁与 31 项默认检查的跨冻结运行结果另见发布记录。v1 环境拒绝、v2/v3/v6 超时，以及旧 HY2、菜单、VMess 信任夹具和监督器启动时序失败均保留。后续由 Hermes 按本手册维护；本次已按 Terry 指示合并并发布，未调整 DNS/托管平台。
