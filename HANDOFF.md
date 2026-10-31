@@ -4,7 +4,7 @@
 
 ## 本次 M3 旧版 lsblk 修复待发布
 
-候选分支 `codex/m3-lsblk-compat` 修复 util-linux 2.36.1 不支持 `MOUNTPOINTS` 导致 M3 准备失败的问题，改用 `MOUNTPOINT` 并递归归一，保留挂载与磁盘身份门禁。新候选 SHA-256 为 `042bffafc28c9e47c5fddf485a4c60ac7e0d14cae39ae18f677cbea293f40da4`（702279 字节）。相关 7 项检查和真实旧版只读采集/inventory 已通过；最终调用次数断言补跑的 79 项模拟检查也已通过，完整来源与边界见[本次修复记录](docs/m3-lsblk-fix-20261101.md)。**本次未合并、未部署；线上仍是下方 PR #2 的依赖修复版本。** Hermes 后续发布需按既有 Worker 流程备份并精确回读，不能把此候选哈希写为当前线上哈希。
+[PR #3](https://github.com/TerrySiu98/terry-toolbox/pull/3) 候选分支 `codex/m3-lsblk-compat` 修复 util-linux 2.36.1 不支持 `MOUNTPOINTS` 导致 M3 准备失败的问题，改用 `MOUNTPOINT` 并递归归一，保留挂载与磁盘身份门禁。新候选 SHA-256 为 `042bffafc28c9e47c5fddf485a4c60ac7e0d14cae39ae18f677cbea293f40da4`（702279 字节）。相关 7 项检查和真实旧版只读采集/inventory 已通过；最终调用次数断言补跑的 79 项模拟检查也已通过，完整来源与边界见[本次修复记录](docs/m3-lsblk-fix-20261101.md)。**本次未合并、未部署；线上仍是下方 PR #2 的依赖修复版本。** Hermes 后续发布需按既有 Worker 流程备份并精确回读，不能把此候选哈希写为当前线上哈希。
 
 ## 本次依赖补装修复已发布
 
@@ -148,4 +148,4 @@ python3 scripts/deploy-cloudflare.py
 | HY2 / 菜单修复复验 | `hy2-openssl-compat-swr2z893/remote/summary-02.json`、`final-regression-v4-affected/`、`final-regression-v5-menu/` | 独立 HY2 58.799 秒通过，最终候选 HY2 再验 57.92 秒；菜单原始失败与错位 transcript 保留，补目标输入后真实 PTY 22.29 秒通过；没有增加 HY2 原生部署声明 |
 | 全仓回归 | `final-regression-consolidated.json`；完整 v3 与最终 v8 原始日志分别保留 | 30 项全部取得有效 PASS：16 项复用 v3 未变传递依赖，14 项在最终 v8 补跑；0 跳过，源码前后不变、进程清理完成。不是同一源码单次 30 项通过；汇总 SHA-256 `77a66da81257993bc2e9baa8ae912403144c22c442b47831ae08b99c4ebd2e58` |
 
-Codex 首次交付的源码修复、限定范围的原生验收、30 项回归与候选构建已完成，结果已关联到源码 commit 和文件哈希。Hermes 后续发布复核、M3 重启门禁补丁与 31 项默认检查的跨冻结运行结果另见发布记录。v1 环境拒绝、v2/v3/v6 超时，以及旧 HY2、菜单、VMess 信任夹具和监督器启动时序失败均保留。首次交付已按 Terry 指示合并并发布，未调整 DNS/托管平台。当前 PR #2 依赖修复候选的提交、测试和部署状态以本文顶部及依赖补装修复记录为准，后续由 Hermes 按本手册维护。
+Codex 首次交付的源码修复、限定范围的原生验收、30 项回归与候选构建已完成，结果已关联到源码 commit 和文件哈希。Hermes 后续发布复核、M3 重启门禁补丁与 31 项默认检查的跨冻结运行结果另见发布记录。v1 环境拒绝、v2/v3/v6 超时，以及旧 HY2、菜单、VMess 信任夹具和监督器启动时序失败均保留。首次交付已按 Terry 指示合并并发布，未调整 DNS/托管平台。PR #2 依赖修复已经发布；当前 PR #3 的旧版 lsblk 修复候选、测试和待发布状态以本文顶部及本次修复记录为准，后续由 Hermes 按本手册维护。

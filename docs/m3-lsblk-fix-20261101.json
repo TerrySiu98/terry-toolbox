@@ -109,7 +109,8 @@
           "bytes": 11055
         }
       }
-    }
+    },
+    "downloaded_committed_current_bytes_identical": true
   },
   "regression": {
     "unique_checks_passed": 7,
@@ -512,5 +513,6 @@
       "name": "m3-lsblk-evidence02.tar.gz",
       "sha256": "f06b9df22c8dfc5c281ae65faa9368f0f2e025025e96b83bef9e55bcaa2588af"
     }
-  ]
+  ],
+  "pull_request": "https://github.com/TerrySiu98/terry-toolbox/pull/3"
 }
