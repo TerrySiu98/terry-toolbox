@@ -1,0 +1,558 @@
+{
+  "schema": 1,
+  "date": "2026-11-01",
+  "base_commit": "972c7d0f7a0108f34ef4c415ad9dafde292ec578",
+  "source_commit": "d5368c9be802531a0b493165af3c7c4d8aeb0c4c",
+  "branch": "codex/m3-secureboot-compat",
+  "deployment_status": "candidate_not_deployed",
+  "production_script_sha256_observed": "042bffafc28c9e47c5fddf485a4c60ac7e0d14cae39ae18f677cbea293f40da4",
+  "candidate": {
+    "source_commit": "d5368c9be802531a0b493165af3c7c4d8aeb0c4c",
+    "sha256": "02582cdfc6dd42bb14a5710217e8623ea31fc1f93b14db1edf6888b9103d47e6",
+    "bytes": 705208,
+    "embedded_modules_verified": [
+      {
+        "path": "modules/alpine-swap.sh",
+        "sha256": "61fce9867109345d5ee956a64f2365a2f2f3f649a0ee46ef060da8078a16d538",
+        "bytes": 30230
+      },
+      {
+        "path": "modules/apps.sh",
+        "sha256": "d7eadd26d7f81a1deef0b6ae6044aaba0e8dcd58993b50f96e6ff98738590bdc",
+        "bytes": 21163
+      },
+      {
+        "path": "modules/dependencies.sh",
+        "sha256": "62953cc610fa68b46a349cf322b2aad66858da0f667cf1a958d69dabd1d88d8d",
+        "bytes": 17713
+      },
+      {
+        "path": "modules/diagnostics.sh",
+        "sha256": "5f7b3360cc344733c09c424c356332db4148caac1279668a8171e97e88ab5cc2",
+        "bytes": 2301
+      },
+      {
+        "path": "modules/docker-ipv6.sh",
+        "sha256": "c09ce1828c99a0ff72a41c4780bf6f3f3a1a1d91f267867c8f2e51cdcb6b131f",
+        "bytes": 47455
+      },
+      {
+        "path": "modules/entry.sh",
+        "sha256": "269b4de4a74d2d0bfdb8d71499a1cdb5e5e06c5b66aaeafc4f8b4b155e37ba69",
+        "bytes": 10562
+      },
+      {
+        "path": "modules/hy2.sh",
+        "sha256": "543257755a3696ca9514545d72526d101017b12eb5469d75af686c6d5c995edb",
+        "bytes": 35226
+      },
+      {
+        "path": "modules/network.sh",
+        "sha256": "f67fabb5587ed28a56d503a441f5302871215b8fadc28172e43e6365fbdef457",
+        "bytes": 148139
+      },
+      {
+        "path": "modules/reinstall-provenance.sh",
+        "sha256": "aaab2fda7bfb5f0094e26c0491eae74754a7beceb1a42cd9a3805431a4382121",
+        "bytes": 5835
+      },
+      {
+        "path": "modules/reinstall.sh",
+        "sha256": "8d6e9a9b212a6e611be5da84e0e8de19e7015972ca325634d571bd85163850ec",
+        "bytes": 52374
+      },
+      {
+        "path": "modules/system.sh",
+        "sha256": "5837ab61b19742da16917606980092bab64e7ca7f7323a7b17299514313f4893",
+        "bytes": 116384
+      },
+      {
+        "path": "modules/tls-acme.sh",
+        "sha256": "a7fa3a73d25d8f424436f87f1733c21d80aabba360e0452ed1de42df102d581c",
+        "bytes": 53595
+      },
+      {
+        "path": "modules/vmess.sh",
+        "sha256": "c6ab8dda391d9be7894054578c8a2e5a41e8764084e8da2c1ae75451cdb04ac6",
+        "bytes": 69728
+      },
+      {
+        "path": "modules/webssh-containers.sh",
+        "sha256": "2455acdd11b4e9e55329cdf1b99ceec9c7a1a61f86283f3575df4d288ea62ae0",
+        "bytes": 33102
+      },
+      {
+        "path": "modules/webssh.sh",
+        "sha256": "b5a186d668f3113463f692016d365fe3e64070560c1f8443e4d544873f8f97bf",
+        "bytes": 48003
+      }
+    ],
+    "worker_manifest": {
+      "schema": 1,
+      "sha256": "02582cdfc6dd42bb14a5710217e8623ea31fc1f93b14db1edf6888b9103d47e6",
+      "content_security_policy": "default-src 'none'; script-src 'sha256-IpeQKtjLrsnxyhHiU+1xu2cbYrS/DjY1fO9IUTvR3Wo='; style-src 'sha256-hrNx3CN/pRQaWDpL/4HQuG5hvCH4+pe4YMkk0egp/WM='; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+      "files": {
+        "worker.mjs": {
+          "sha256": "b336e924a70c04427696b14a1bc681cd57ad66834bcac1a2a4b4482100bec083",
+          "bytes": 530
+        },
+        "router.mjs": {
+          "sha256": "5e85f8a064d135407308c5ec6df774ebc0002996b9b37959424d5da0a5aed2b9",
+          "bytes": 2552
+        },
+        "toolbox.txt": {
+          "sha256": "02582cdfc6dd42bb14a5710217e8623ea31fc1f93b14db1edf6888b9103d47e6",
+          "bytes": 705208
+        },
+        "welcome.txt": {
+          "sha256": "b48dadad5a1fbac8d007efeaf615a3a08468a3b0b47383a898a8c1c99b93b8f4",
+          "bytes": 11055
+        }
+      }
+    },
+    "downloaded_committed_current_bytes_identical": true
+  },
+  "regression": {
+    "final_run": "m3-secure-02",
+    "related_checks_passed": 7,
+    "skipped": 0,
+    "reinstall_mock_boundary_cases": 85,
+    "full_repo_rerun": false,
+    "runs": [
+      {
+        "name": "m3-secure-01",
+        "used_for_final_results": false,
+        "summary_sha256": "1fd45ba9e16bfea94f973b2e3536d909765f0cfa62b5842bb586a78c7f700019",
+        "source_sha256": {
+          "docs/index.html": "710f012fefb029bfeb0af6fc59b62e54981bd49884b688fb2c16db9a4ec9b022",
+          "modules/alpine-swap.sh": "61fce9867109345d5ee956a64f2365a2f2f3f649a0ee46ef060da8078a16d538",
+          "modules/apps.sh": "d7eadd26d7f81a1deef0b6ae6044aaba0e8dcd58993b50f96e6ff98738590bdc",
+          "modules/dependencies.sh": "62953cc610fa68b46a349cf322b2aad66858da0f667cf1a958d69dabd1d88d8d",
+          "modules/diagnostics.sh": "5f7b3360cc344733c09c424c356332db4148caac1279668a8171e97e88ab5cc2",
+          "modules/docker-ipv6.sh": "c09ce1828c99a0ff72a41c4780bf6f3f3a1a1d91f267867c8f2e51cdcb6b131f",
+          "modules/entry.sh": "269b4de4a74d2d0bfdb8d71499a1cdb5e5e06c5b66aaeafc4f8b4b155e37ba69",
+          "modules/hy2.sh": "543257755a3696ca9514545d72526d101017b12eb5469d75af686c6d5c995edb",
+          "modules/network.sh": "f67fabb5587ed28a56d503a441f5302871215b8fadc28172e43e6365fbdef457",
+          "modules/reinstall-provenance.sh": "aaab2fda7bfb5f0094e26c0491eae74754a7beceb1a42cd9a3805431a4382121",
+          "modules/reinstall.sh": "4d7819f8011a7103e1cfdbd7f60a59dec54a3ffbdc6ef2af983245e477dc0399",
+          "modules/system.sh": "5837ab61b19742da16917606980092bab64e7ca7f7323a7b17299514313f4893",
+          "modules/tls-acme.sh": "a7fa3a73d25d8f424436f87f1733c21d80aabba360e0452ed1de42df102d581c",
+          "modules/vmess.sh": "c6ab8dda391d9be7894054578c8a2e5a41e8764084e8da2c1ae75451cdb04ac6",
+          "modules/webssh-containers.sh": "2455acdd11b4e9e55329cdf1b99ceec9c7a1a61f86283f3575df4d288ea62ae0",
+          "modules/webssh.sh": "b5a186d668f3113463f692016d365fe3e64070560c1f8443e4d544873f8f97bf",
+          "scripts/build-worker.py": "3109dcb181ad101c208ea18c3be36fa07e1fafb51bb555690a38db3e10d0cc6e",
+          "scripts/build.sh": "3cb2ae62657e0bcfc413d226d8c738d103bdc33be07b847095c3e6fbd5b213b9",
+          "scripts/deploy-cloudflare.py": "dd5036cd87a690bde8348e115a1992e211950e764d0bf2bc07e7381fe2c28fd4",
+          "scripts/release.sh": "0a939d3a369cd4d9f921b09dea68855c39a509c0670b3410ab2241488db0dde8",
+          "scripts/test.sh": "f86e3a7e74ae80551f0cc542f75c2a2bf4f6a7966a50a71e6cfb4ffd5a429b22",
+          "tests/alpine-swap-dispatch-test.sh": "ca589adffd7eadb9c86fff81280c15c9a0d8f1b55680d2373aba7c3fb77da316",
+          "tests/alpine-swap-test.sh": "2b9b3eea1474608cc8a4310044e48172f2d5711de3526cbca25a13bf6a32e3c6",
+          "tests/apps-test.sh": "5f1512cbae6b399016e7a1ca4907a06d016bf81858cdfcea922ee4657e4108df",
+          "tests/b2-real.sh": "887a3a9f90378969559117dd09f2d35b3cc6325612255c91900e96210e8bad99",
+          "tests/build-test.sh": "06a6aa1cc08cda65f7f714e4da134d9bead2034e2cded7cca33e404901a25e6b",
+          "tests/certificate-fixture.py": "28e13dada1ecad750e2868ca835896ebb9c0b2a602e85f85b0007847f78ab85f",
+          "tests/certificate-recovery-test.py": "89bac8a183ee112ebdf876df2747e4b5c437e75edeb76b45e8a11a020b92abbc",
+          "tests/dependencies-test.sh": "772f60f18157961700c118bd449180ea0f78761a0b7956f7bce69f73c139b87d",
+          "tests/dependency-entrypoints-test.sh": "38fda807ac49758ca9aab183b86ffa686326bebe91dbec20c4f84ea50e127b96",
+          "tests/deploy-cloudflare-test.py": "504a0fda22f28305d6ddb583854d9d25fcc66cf07f8409175375bf935eb0b2c7",
+          "tests/diagnostics-test.sh": "16340c03b76f39a0470523c15065520082879f394b2ad4b3c8b2c1f59e8e0874",
+          "tests/docker-ipv6-integration.py": "ebe3eecc3d7949077b29b8931bd5a8ae73ab708c99dbd73cd069f8a4683b77d1",
+          "tests/docker-ipv6-test.sh": "4eec7ede202e7233154ebe80d255ed292cb789b1ba2abc7aa50ca249163c852f",
+          "tests/docker-origin-test.py": "d0580d6e13b5074a035217c2f42799ac77a857862cf968228296aa93e702ac1a",
+          "tests/entry-feedback-test.py": "93fb17002eaa6d3258cad31bb262bacb8a1bf66020482a3c7dcdb85592fd3e6c",
+          "tests/entry-test.sh": "e3303057c72778f5b53ae0ac651cdc23ed36d4f2d8ea29139f860522e86f1c96",
+          "tests/hy2-test.sh": "ed2bce1a914f371452935c8056d502526162932f8e98d0fdaa2078618b40ac29",
+          "tests/menu-test.py": "edc506f3c043f91c79478673f4b50a172b8799aecedc12361cdfc03b70fb86cf",
+          "tests/network-alpine-feedback-test.sh": "a82d689147f279d34cbd8d036becf99c5ea0bce2b4867b3782dfccb3d4da8914",
+          "tests/network-alpine-test.sh": "79e4052552784f4f3a757b072e23ebcb272428ac624ca2c47c5f1c67dd2d71c0",
+          "tests/network-test.sh": "b37b5c52696cca0e7f0d9fc18d090d519e4775e0293d1b2cec8f670d6b296d27",
+          "tests/regression-runner-test.py": "e9cd0cd30caa8517b43ee61d815d1af39881cab0ce0d7bbad1fd9afd03de0ea3",
+          "tests/regression-runner.py": "938b1fe6a7ef33f9df9408ee1be5da68f077078f8676658629b79390b774f163",
+          "tests/reinstall-native-readback.py": "040ab7e66bcf6ab3bb693f7c1e14c7d84c8ef419b5b1b9aa9ee81d0372a21db0",
+          "tests/reinstall-native.sh": "5c13ef0534e5e687eb668eba6de43f964a279e8e862ea146ec1583ae6529c435",
+          "tests/reinstall-test.sh": "06470865fabb6167276c32654f12c2433e1029e079b8e351363f92bc00bb113f",
+          "tests/remaining-dispatch-test.sh": "f8f77c75946f8ec7cb9a5513c43f3621187068211c2e4e0a5fed130632ea6477",
+          "tests/scratch-root.sh": "83a8ed75b9a4af3434321be76964ea920ea622f040dfe15d105bebe511c97ace",
+          "tests/system-alpine-feedback-test.sh": "afe90dd00afac8794dcfb753f6d0186ee6a1e276d809431234749b42420d75e7",
+          "tests/system-reboot-plan-test.sh": "542dc98a5520cb613490dd1916a0603bd527dabb70355626f5f39b1f993f6855",
+          "tests/system-review-test.sh": "3edf4a7fd9011c99d4667023342b13908cad8a55e311476144abb85eda9e3385",
+          "tests/system-test.sh": "3fbb7348b2d400e0805788d638415251bf111234b08f1f5dc710bfd9e300e845",
+          "tests/tls-acme-integration.sh": "a8ecd807a265a2f156b14e03bc9a78701fd2d5d57bb494fb52b1056920a4de95",
+          "tests/tls-acme-native.sh": "927e4a3db1bb6b730c3c39836c6ae20b674b6947c6017179e9b59fa15e203ecf",
+          "tests/tls-acme-test.sh": "bb4679d5f3babb46bcf93a49d84aa0a90620941c936979075ad6d80102a56e1f",
+          "tests/vmess-dispatch-test.sh": "38d50b4010f008989a291a1b23f8d200a1b0735875b0c6d5d970ee8bfc2eb412",
+          "tests/vmess-management-test.sh": "9342afaede2e6b789e054275d26a0d30474c48b2843c53a3be4c4d3f8603b395",
+          "tests/vmess-native-probe.py": "3dd9907c04d41bcfd9aa41d30b08730d4d99a2471dcf1a048a3bae488ffd330e",
+          "tests/vmess-native.sh": "70b63b31c0d5b6e389de83ecf1a7e8ade9af762e06127b7a74e7a7d094831abb",
+          "tests/vmess-protocol-test.py": "f555b0f4dfd39930bcc1b20c030b699380a8a5ae4ed94dc7803394b0bf1eea0c",
+          "tests/vmess-test.sh": "3b0564eac213ae4b00710170166e6fed2c5b87d5ae6eef1c25cf0ed3d855df9b",
+          "tests/webssh-containers-mock.py": "1b474dbad2405b55e933a05c8d385b11845d4a4bb1f92c7ebe828ff83bcb6eb4",
+          "tests/webssh-containers-real.py": "29af592c7635acec25e59a8554fe2add7c8bd07eb1c3b431f67fe023f26a264c",
+          "tests/webssh-containers-test.sh": "063a406ce99909c030b4e1899b4ce3d161179f5df196162dc2648534c81e01c6",
+          "tests/webssh-native.py": "5365541a06dc360d1f266f46197bb8c77b4492560fbf2ac80d1332053e51759b",
+          "tests/webssh-test.sh": "876b209058145b31408e8f62a7022f5b20f78024a52bcf6d6ccca0e7fdb3053f",
+          "tests/worker-test.mjs": "66f5c6bdfae08f86619d823cbda84d95d2a4a27f73c7fc61ca5b8bb84d9a0073",
+          "toolbox.sh": "cc285f63c15d3a8786cb47a9152f12988d17d257a09ae9987507f3d1cbc00ed1",
+          "web/index.html": "b48dadad5a1fbac8d007efeaf615a3a08468a3b0b47383a898a8c1c99b93b8f4",
+          "web/router.mjs": "5e85f8a064d135407308c5ec6df774ebc0002996b9b37959424d5da0a5aed2b9"
+        },
+        "source_unchanged": true,
+        "planned_tests": 7,
+        "results": [
+          {
+            "test": "syntax",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 0.44,
+            "timeout": false,
+            "cancelled": false,
+            "harness_error": null,
+            "cleanup_complete": true,
+            "remaining_descendants": [],
+            "leaked_descendants": [],
+            "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          {
+            "test": "build-test.sh",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 5.34,
+            "timeout": false,
+            "cancelled": false,
+            "harness_error": null,
+            "cleanup_complete": true,
+            "remaining_descendants": [],
+            "leaked_descendants": [],
+            "log_sha256": "f3b683976b7aa3f068ebc697cc3f2c918ab700b34eb99fc594b0c458b773b760"
+          },
+          {
+            "test": "entry-test.sh",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 1.06,
+            "timeout": false,
+            "cancelled": false,
+            "harness_error": null,
+            "cleanup_complete": true,
+            "remaining_descendants": [],
+            "leaked_descendants": [],
+            "log_sha256": "ee7da1e74a1a5d6094646e0654e5e426d1c268df9fa395d1e3f5183af4606248"
+          },
+          {
+            "test": "reinstall-test.sh",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 223.47,
+            "timeout": false,
+            "cancelled": false,
+            "harness_error": null,
+            "cleanup_complete": true,
+            "remaining_descendants": [],
+            "leaked_descendants": [],
+            "log_sha256": "b27c86a68012e9e69ad01893a1e5ad5238aaff9ef0047e8283b51849cea7816d"
+          },
+          {
+            "test": "system-reboot-plan-test.sh",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 0.96,
+            "timeout": false,
+            "cancelled": false,
+            "harness_error": null,
+            "cleanup_complete": true,
+            "remaining_descendants": [],
+            "leaked_descendants": [],
+            "log_sha256": "21b1dd87b2abd967d0429424a02f8efd6bb63215e582e007de8bc07688779f0b"
+          },
+          {
+            "test": "menu-test.py",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 22.92,
+            "timeout": false,
+            "cancelled": false,
+            "harness_error": null,
+            "cleanup_complete": true,
+            "remaining_descendants": [],
+            "leaked_descendants": [],
+            "log_sha256": "b5015f741ecaf12585fd9902b89793c85be6a45cb73b0d523b076495e4748e1a"
+          },
+          {
+            "test": "worker-test.mjs",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 2.0,
+            "timeout": false,
+            "cancelled": false,
+            "harness_error": null,
+            "cleanup_complete": true,
+            "remaining_descendants": [],
+            "leaked_descendants": [],
+            "log_sha256": "96ea3f237f1d4654eb398a050bb80c2c2292ee5e29b86c61dea534deb9c80f69"
+          }
+        ],
+        "package_state_unchanged": true,
+        "package_hashes_before": {
+          "/var/lib/dpkg/status": "141473bc39e8dccfd0e81309e87244b1fc307daeced314c686ab7626f980c3e1",
+          "/var/lib/apt/extended_states": "bdc2b16b504334cf0b2b1dfc0e19f79c03c65ff55c2ee8af8925ea1add5828f2",
+          "/var/log/apt/history.log": "6675064994682a891d1cd20a8787925105c3d430e507775b1718a096e31b6a07",
+          "/var/log/dpkg.log": "fd38c22c104638826bce180e3d81356a07b0cd927d16d9ca2161c53205c17c5d"
+        },
+        "package_hashes_after": {
+          "/var/lib/dpkg/status": "141473bc39e8dccfd0e81309e87244b1fc307daeced314c686ab7626f980c3e1",
+          "/var/lib/apt/extended_states": "bdc2b16b504334cf0b2b1dfc0e19f79c03c65ff55c2ee8af8925ea1add5828f2",
+          "/var/log/apt/history.log": "6675064994682a891d1cd20a8787925105c3d430e507775b1718a096e31b6a07",
+          "/var/log/dpkg.log": "fd38c22c104638826bce180e3d81356a07b0cd927d16d9ca2161c53205c17c5d"
+        }
+      },
+      {
+        "name": "m3-secure-02",
+        "used_for_final_results": true,
+        "summary_sha256": "97c468239c70149ca94ae9205c488c6601f3bf1273c5194611c0567b76a9af0d",
+        "source_sha256": {
+          "docs/index.html": "02582cdfc6dd42bb14a5710217e8623ea31fc1f93b14db1edf6888b9103d47e6",
+          "modules/alpine-swap.sh": "61fce9867109345d5ee956a64f2365a2f2f3f649a0ee46ef060da8078a16d538",
+          "modules/apps.sh": "d7eadd26d7f81a1deef0b6ae6044aaba0e8dcd58993b50f96e6ff98738590bdc",
+          "modules/dependencies.sh": "62953cc610fa68b46a349cf322b2aad66858da0f667cf1a958d69dabd1d88d8d",
+          "modules/diagnostics.sh": "5f7b3360cc344733c09c424c356332db4148caac1279668a8171e97e88ab5cc2",
+          "modules/docker-ipv6.sh": "c09ce1828c99a0ff72a41c4780bf6f3f3a1a1d91f267867c8f2e51cdcb6b131f",
+          "modules/entry.sh": "269b4de4a74d2d0bfdb8d71499a1cdb5e5e06c5b66aaeafc4f8b4b155e37ba69",
+          "modules/hy2.sh": "543257755a3696ca9514545d72526d101017b12eb5469d75af686c6d5c995edb",
+          "modules/network.sh": "f67fabb5587ed28a56d503a441f5302871215b8fadc28172e43e6365fbdef457",
+          "modules/reinstall-provenance.sh": "aaab2fda7bfb5f0094e26c0491eae74754a7beceb1a42cd9a3805431a4382121",
+          "modules/reinstall.sh": "8d6e9a9b212a6e611be5da84e0e8de19e7015972ca325634d571bd85163850ec",
+          "modules/system.sh": "5837ab61b19742da16917606980092bab64e7ca7f7323a7b17299514313f4893",
+          "modules/tls-acme.sh": "a7fa3a73d25d8f424436f87f1733c21d80aabba360e0452ed1de42df102d581c",
+          "modules/vmess.sh": "c6ab8dda391d9be7894054578c8a2e5a41e8764084e8da2c1ae75451cdb04ac6",
+          "modules/webssh-containers.sh": "2455acdd11b4e9e55329cdf1b99ceec9c7a1a61f86283f3575df4d288ea62ae0",
+          "modules/webssh.sh": "b5a186d668f3113463f692016d365fe3e64070560c1f8443e4d544873f8f97bf",
+          "scripts/build-worker.py": "3109dcb181ad101c208ea18c3be36fa07e1fafb51bb555690a38db3e10d0cc6e",
+          "scripts/build.sh": "3cb2ae62657e0bcfc413d226d8c738d103bdc33be07b847095c3e6fbd5b213b9",
+          "scripts/deploy-cloudflare.py": "dd5036cd87a690bde8348e115a1992e211950e764d0bf2bc07e7381fe2c28fd4",
+          "scripts/release.sh": "0a939d3a369cd4d9f921b09dea68855c39a509c0670b3410ab2241488db0dde8",
+          "scripts/test.sh": "f86e3a7e74ae80551f0cc542f75c2a2bf4f6a7966a50a71e6cfb4ffd5a429b22",
+          "tests/alpine-swap-dispatch-test.sh": "ca589adffd7eadb9c86fff81280c15c9a0d8f1b55680d2373aba7c3fb77da316",
+          "tests/alpine-swap-test.sh": "2b9b3eea1474608cc8a4310044e48172f2d5711de3526cbca25a13bf6a32e3c6",
+          "tests/apps-test.sh": "5f1512cbae6b399016e7a1ca4907a06d016bf81858cdfcea922ee4657e4108df",
+          "tests/b2-real.sh": "887a3a9f90378969559117dd09f2d35b3cc6325612255c91900e96210e8bad99",
+          "tests/build-test.sh": "06a6aa1cc08cda65f7f714e4da134d9bead2034e2cded7cca33e404901a25e6b",
+          "tests/certificate-fixture.py": "28e13dada1ecad750e2868ca835896ebb9c0b2a602e85f85b0007847f78ab85f",
+          "tests/certificate-recovery-test.py": "89bac8a183ee112ebdf876df2747e4b5c437e75edeb76b45e8a11a020b92abbc",
+          "tests/dependencies-test.sh": "772f60f18157961700c118bd449180ea0f78761a0b7956f7bce69f73c139b87d",
+          "tests/dependency-entrypoints-test.sh": "38fda807ac49758ca9aab183b86ffa686326bebe91dbec20c4f84ea50e127b96",
+          "tests/deploy-cloudflare-test.py": "504a0fda22f28305d6ddb583854d9d25fcc66cf07f8409175375bf935eb0b2c7",
+          "tests/diagnostics-test.sh": "16340c03b76f39a0470523c15065520082879f394b2ad4b3c8b2c1f59e8e0874",
+          "tests/docker-ipv6-integration.py": "ebe3eecc3d7949077b29b8931bd5a8ae73ab708c99dbd73cd069f8a4683b77d1",
+          "tests/docker-ipv6-test.sh": "4eec7ede202e7233154ebe80d255ed292cb789b1ba2abc7aa50ca249163c852f",
+          "tests/docker-origin-test.py": "d0580d6e13b5074a035217c2f42799ac77a857862cf968228296aa93e702ac1a",
+          "tests/entry-feedback-test.py": "93fb17002eaa6d3258cad31bb262bacb8a1bf66020482a3c7dcdb85592fd3e6c",
+          "tests/entry-test.sh": "e3303057c72778f5b53ae0ac651cdc23ed36d4f2d8ea29139f860522e86f1c96",
+          "tests/hy2-test.sh": "ed2bce1a914f371452935c8056d502526162932f8e98d0fdaa2078618b40ac29",
+          "tests/menu-test.py": "edc506f3c043f91c79478673f4b50a172b8799aecedc12361cdfc03b70fb86cf",
+          "tests/network-alpine-feedback-test.sh": "a82d689147f279d34cbd8d036becf99c5ea0bce2b4867b3782dfccb3d4da8914",
+          "tests/network-alpine-test.sh": "79e4052552784f4f3a757b072e23ebcb272428ac624ca2c47c5f1c67dd2d71c0",
+          "tests/network-test.sh": "b37b5c52696cca0e7f0d9fc18d090d519e4775e0293d1b2cec8f670d6b296d27",
+          "tests/regression-runner-test.py": "e9cd0cd30caa8517b43ee61d815d1af39881cab0ce0d7bbad1fd9afd03de0ea3",
+          "tests/regression-runner.py": "938b1fe6a7ef33f9df9408ee1be5da68f077078f8676658629b79390b774f163",
+          "tests/reinstall-native-readback.py": "040ab7e66bcf6ab3bb693f7c1e14c7d84c8ef419b5b1b9aa9ee81d0372a21db0",
+          "tests/reinstall-native.sh": "5c13ef0534e5e687eb668eba6de43f964a279e8e862ea146ec1583ae6529c435",
+          "tests/reinstall-test.sh": "767fc9f81ed3a258e8c676f9f6f24e2ac927124f1637862780dc96ec0b91baed",
+          "tests/remaining-dispatch-test.sh": "f8f77c75946f8ec7cb9a5513c43f3621187068211c2e4e0a5fed130632ea6477",
+          "tests/scratch-root.sh": "83a8ed75b9a4af3434321be76964ea920ea622f040dfe15d105bebe511c97ace",
+          "tests/system-alpine-feedback-test.sh": "afe90dd00afac8794dcfb753f6d0186ee6a1e276d809431234749b42420d75e7",
+          "tests/system-reboot-plan-test.sh": "542dc98a5520cb613490dd1916a0603bd527dabb70355626f5f39b1f993f6855",
+          "tests/system-review-test.sh": "3edf4a7fd9011c99d4667023342b13908cad8a55e311476144abb85eda9e3385",
+          "tests/system-test.sh": "3fbb7348b2d400e0805788d638415251bf111234b08f1f5dc710bfd9e300e845",
+          "tests/tls-acme-integration.sh": "a8ecd807a265a2f156b14e03bc9a78701fd2d5d57bb494fb52b1056920a4de95",
+          "tests/tls-acme-native.sh": "927e4a3db1bb6b730c3c39836c6ae20b674b6947c6017179e9b59fa15e203ecf",
+          "tests/tls-acme-test.sh": "bb4679d5f3babb46bcf93a49d84aa0a90620941c936979075ad6d80102a56e1f",
+          "tests/vmess-dispatch-test.sh": "38d50b4010f008989a291a1b23f8d200a1b0735875b0c6d5d970ee8bfc2eb412",
+          "tests/vmess-management-test.sh": "9342afaede2e6b789e054275d26a0d30474c48b2843c53a3be4c4d3f8603b395",
+          "tests/vmess-native-probe.py": "3dd9907c04d41bcfd9aa41d30b08730d4d99a2471dcf1a048a3bae488ffd330e",
+          "tests/vmess-native.sh": "70b63b31c0d5b6e389de83ecf1a7e8ade9af762e06127b7a74e7a7d094831abb",
+          "tests/vmess-protocol-test.py": "f555b0f4dfd39930bcc1b20c030b699380a8a5ae4ed94dc7803394b0bf1eea0c",
+          "tests/vmess-test.sh": "3b0564eac213ae4b00710170166e6fed2c5b87d5ae6eef1c25cf0ed3d855df9b",
+          "tests/webssh-containers-mock.py": "1b474dbad2405b55e933a05c8d385b11845d4a4bb1f92c7ebe828ff83bcb6eb4",
+          "tests/webssh-containers-real.py": "29af592c7635acec25e59a8554fe2add7c8bd07eb1c3b431f67fe023f26a264c",
+          "tests/webssh-containers-test.sh": "063a406ce99909c030b4e1899b4ce3d161179f5df196162dc2648534c81e01c6",
+          "tests/webssh-native.py": "5365541a06dc360d1f266f46197bb8c77b4492560fbf2ac80d1332053e51759b",
+          "tests/webssh-test.sh": "876b209058145b31408e8f62a7022f5b20f78024a52bcf6d6ccca0e7fdb3053f",
+          "tests/worker-test.mjs": "66f5c6bdfae08f86619d823cbda84d95d2a4a27f73c7fc61ca5b8bb84d9a0073",
+          "toolbox.sh": "cc285f63c15d3a8786cb47a9152f12988d17d257a09ae9987507f3d1cbc00ed1",
+          "web/index.html": "b48dadad5a1fbac8d007efeaf615a3a08468a3b0b47383a898a8c1c99b93b8f4",
+          "web/router.mjs": "5e85f8a064d135407308c5ec6df774ebc0002996b9b37959424d5da0a5aed2b9"
+        },
+        "source_unchanged": true,
+        "planned_tests": 7,
+        "results": [
+          {
+            "test": "syntax",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 0.88,
+            "timeout": false,
+            "cancelled": false,
+            "harness_error": null,
+            "cleanup_complete": true,
+            "remaining_descendants": [],
+            "leaked_descendants": [],
+            "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          {
+            "test": "build-test.sh",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 12.9,
+            "timeout": false,
+            "cancelled": false,
+            "harness_error": null,
+            "cleanup_complete": true,
+            "remaining_descendants": [],
+            "leaked_descendants": [],
+            "log_sha256": "b08f6e50395bc0f6f2f25162fb16a9d938b6da0b26657c4f09b11272ca57da82"
+          },
+          {
+            "test": "entry-test.sh",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 2.3,
+            "timeout": false,
+            "cancelled": false,
+            "harness_error": null,
+            "cleanup_complete": true,
+            "remaining_descendants": [],
+            "leaked_descendants": [],
+            "log_sha256": "ee7da1e74a1a5d6094646e0654e5e426d1c268df9fa395d1e3f5183af4606248"
+          },
+          {
+            "test": "reinstall-test.sh",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 233.76,
+            "timeout": false,
+            "cancelled": false,
+            "harness_error": null,
+            "cleanup_complete": true,
+            "remaining_descendants": [],
+            "leaked_descendants": [],
+            "log_sha256": "27c4e580adf1cf6303bf89c3b5963f2ca8c63696fd8f8207b3747a085144bed7"
+          },
+          {
+            "test": "system-reboot-plan-test.sh",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 0.34,
+            "timeout": false,
+            "cancelled": false,
+            "harness_error": null,
+            "cleanup_complete": true,
+            "remaining_descendants": [],
+            "leaked_descendants": [],
+            "log_sha256": "21b1dd87b2abd967d0429424a02f8efd6bb63215e582e007de8bc07688779f0b"
+          },
+          {
+            "test": "menu-test.py",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 10.86,
+            "timeout": false,
+            "cancelled": false,
+            "harness_error": null,
+            "cleanup_complete": true,
+            "remaining_descendants": [],
+            "leaked_descendants": [],
+            "log_sha256": "b5015f741ecaf12585fd9902b89793c85be6a45cb73b0d523b076495e4748e1a"
+          },
+          {
+            "test": "worker-test.mjs",
+            "status": "passed",
+            "exit_code": 0,
+            "elapsed_seconds": 0.46,
+            "timeout": false,
+            "cancelled": false,
+            "harness_error": null,
+            "cleanup_complete": true,
+            "remaining_descendants": [],
+            "leaked_descendants": [],
+            "log_sha256": "cf6d0d735bb97f5c44a3c96924e2c2f7d1f228c3ba64bfab435349e4ec8c15f0"
+          }
+        ],
+        "package_state_unchanged": true,
+        "package_hashes_before": {
+          "/var/lib/dpkg/status": "141473bc39e8dccfd0e81309e87244b1fc307daeced314c686ab7626f980c3e1",
+          "/var/lib/apt/extended_states": "bdc2b16b504334cf0b2b1dfc0e19f79c03c65ff55c2ee8af8925ea1add5828f2",
+          "/var/log/apt/history.log": "6675064994682a891d1cd20a8787925105c3d430e507775b1718a096e31b6a07",
+          "/var/log/dpkg.log": "fd38c22c104638826bce180e3d81356a07b0cd927d16d9ca2161c53205c17c5d"
+        },
+        "package_hashes_after": {
+          "/var/lib/dpkg/status": "141473bc39e8dccfd0e81309e87244b1fc307daeced314c686ab7626f980c3e1",
+          "/var/lib/apt/extended_states": "bdc2b16b504334cf0b2b1dfc0e19f79c03c65ff55c2ee8af8925ea1add5828f2",
+          "/var/log/apt/history.log": "6675064994682a891d1cd20a8787925105c3d430e507775b1718a096e31b6a07",
+          "/var/log/dpkg.log": "fd38c22c104638826bce180e3d81356a07b0cd927d16d9ca2161c53205c17c5d"
+        }
+      }
+    ]
+  },
+  "native_readonly": {
+    "run": "m3-secure-native-03",
+    "summary_sha256": "4472f491e563042641f83b0eb482290b51072576d3fe3207bb3c10d8ed09ec77",
+    "result": "PASS",
+    "mokutil_version": "0.6.0",
+    "original_mokutil_exit_code": 255,
+    "secure_boot_helper_exit_code": 0,
+    "secure_boot_classification": "unsupported",
+    "preflight_exit_code": 0,
+    "source_sha256": "8d6e9a9b212a6e611be5da84e0e8de19e7015972ca325634d571bd85163850ec",
+    "package_hashes_before": {
+      "/var/lib/dpkg/status": "141473bc39e8dccfd0e81309e87244b1fc307daeced314c686ab7626f980c3e1",
+      "/var/lib/apt/extended_states": "bdc2b16b504334cf0b2b1dfc0e19f79c03c65ff55c2ee8af8925ea1add5828f2",
+      "/var/log/apt/history.log": "6675064994682a891d1cd20a8787925105c3d430e507775b1718a096e31b6a07",
+      "/var/log/dpkg.log": "fd38c22c104638826bce180e3d81356a07b0cd927d16d9ca2161c53205c17c5d"
+    },
+    "package_hashes_after": {
+      "/var/lib/dpkg/status": "141473bc39e8dccfd0e81309e87244b1fc307daeced314c686ab7626f980c3e1",
+      "/var/lib/apt/extended_states": "bdc2b16b504334cf0b2b1dfc0e19f79c03c65ff55c2ee8af8925ea1add5828f2",
+      "/var/log/apt/history.log": "6675064994682a891d1cd20a8787925105c3d430e507775b1718a096e31b6a07",
+      "/var/log/dpkg.log": "fd38c22c104638826bce180e3d81356a07b0cd927d16d9ca2161c53205c17c5d"
+    },
+    "read_only": true,
+    "prepare_executed": false,
+    "evidence_files": {
+      "preflight.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "preflight.stdout": "5425a2e5a9653ff31f8a657839bb1c727153e0e0df6ff4d1606f35b6696c5fec",
+      "secure-boot.stdout": "f13674351f8231c9e60fc923652b1ce94b62357ee00fedaf23ad3af677aff656",
+      "secure-boot.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mokutil.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mokutil.stderr": "0f2ec1d8442e3e1665ce6dfc722d8074e38e8f2e07ab4b959d7140959e28e5f5"
+    },
+    "scope": [
+      "actual mokutil unsupported exit 255 reproduced",
+      "production secure boot helper with actual efivarfs",
+      "complete production Alpine preflight with closed stdin and package/destructive command guards"
+    ],
+    "not_executed": [
+      "upstream prepare",
+      "boot modification",
+      "disk wipe",
+      "mount",
+      "reboot",
+      "new OS boot"
+    ]
+  },
+  "early_harness_failure": {
+    "run": "m3-secure-native-02",
+    "cause": "check_output(mokutil --version) raised after version stdout because mokutil also returned 255; capture_output version record in rerun, no product change",
+    "retained_privately": true
+  },
+  "private_evidence_archives": [
+    {
+      "name": "m3-secure-regression-evidence.tar.gz",
+      "sha256": "4553438010f046cdb93d02e90cc910672f7689da2d01cb0ed6cfb15b502747fe"
+    },
+    {
+      "name": "m3-secure-native-evidence.tar.gz",
+      "sha256": "dedd1cd862b8280ca89093529eb677ab3150fbff027c46e01a5caf484a249c6f"
+    }
+  ],
+  "pull_request": "https://github.com/TerrySiu98/terry-toolbox/pull/4"
+}
