@@ -154,11 +154,15 @@ uname() { [[ $1 != -m ]] || { printf '%s\n' "${MOCK_ARCH:-x86_64}"; return; }; c
 _toolbox_reinstall_lsblk() { command cat "$fixture/lsblk.json"; }
 _toolbox_reinstall_mounts() { command cat "$fixture/mounts.json"; }
 _toolbox_reinstall_efi() { command cat "$fixture/efi"; }
-mokutil() { printf 'SecureBoot disabled\n'; }
+mokutil() {
+    [[ ! ${EFIVARFS_PATH+x} && ! ${LIBEFIVAR_OPS+x} && ! ${VARS_PATH+x} ]] || return 98
+    printf '%s\n' "${MOKUTIL_TEXT:-SecureBoot disabled}"
+    return "${MOKUTIL_RC:-0}"
+}
 setup() {
     # Consume case knobs from the prefix, then clear them so nothing leaks.
     local want_init=${INIT_MODE:-systemd} want_archive=${ARCHIVE_MODE:-plain}
-    unset MISSING MISSING2 DEPS_INSTALL_MODE CONTAINER_RC MOCK_FAIL RUNTIME_BAD CFG_BAD RESET_FAIL RESET_BAD BOOT_ID MBR ARCHIVE_BAD MOCK_ARCH INIT_MODE ARCHIVE_MODE VIRTWHAT
+    unset MISSING MISSING2 DEPS_INSTALL_MODE CONTAINER_RC MOCK_FAIL RUNTIME_BAD CFG_BAD RESET_FAIL RESET_BAD BOOT_ID MBR ARCHIVE_BAD MOCK_ARCH INIT_MODE ARCHIVE_MODE VIRTWHAT MOKUTIL_TEXT MOKUTIL_RC
     fixture=$(mktemp -d "$case_root/case.XXXXXX")
     export TOOLBOX_REINSTALL_ROOT="$fixture/root" TOOLBOX_REINSTALL_STATE="$fixture/state"
     mkdir -p "$fixture/root/boot/grub" "$fixture/root/proc/sys/kernel/random" "$fixture/root/proc/1" \
@@ -506,6 +510,82 @@ setup; prep || fail prepare; RESET_BAD=1; reject toolbox_reinstall cancel
 [[ $(toolbox_reinstall status) == *restore-failed* ]] || fail 'failed reset readback not reported'; pass 'reset exit0 with pending boot state is NOT success'
 setup; mkdir -m 0700 "$fixture/state"; touch "$fixture/state/lock"; chmod 0600 "$fixture/state/lock"
 exec {held}>"$fixture/state/lock"; flock -n "$held"; reject prep; no_calls; exec {held}>&-; pass 'concurrent prepare lock'
+setup_efi_variables() {
+    setup
+    mkdir -p "$fixture/root/boot/efi/EFI/debian" "$fixture/root/sys/firmware/efi/efivars"
+    printf 'original EFI\n' > "$fixture/root/boot/efi/EFI/debian/grubx64.efi"
+    printf 'BootCurrent: 0000\nBootOrder: 0000\nBoot0000* original HD(...)\\EFI\\debian\\grubx64.efi\n' > "$fixture/efi"
+    python3 - "$fixture" <<'PY'
+import json,pathlib,sys
+p=pathlib.Path(sys.argv[1]);v=p/'root/sys/firmware/efi/efivars';guid='8be4df61-93ca-11d2-aa0d-00e098032b8c'
+for name in ('BootCurrent','BootOrder'):(v/(name+'-'+guid)).write_bytes(b'\x06\0\0\0\0\0')
+json.dump({'filesystems':[{'target':'/','source':'/dev/vda1','fstype':'ext4','options':'rw'},{'target':'/boot/efi','source':'/dev/vda1','fstype':'vfat','options':'rw'},{'target':'/sys/firmware/efi/efivars','source':'efivarfs','fstype':'efivarfs','options':'rw'}]},open(p/'mounts.json','w'))
+PY
+    MOKUTIL_TEXT="This system doesn't support Secure Boot"; MOKUTIL_RC=255
+}
+for text in "This system doesn't support Secure Boot" "This system does't support Secure Boot"; do
+    setup_efi_variables; MOKUTIL_TEXT=$text
+    EFIVARFS_PATH=/untrusted LIBEFIVAR_OPS=vars VARS_PATH=/untrusted toolbox_reinstall preflight alpine > "$fixture/output" 2>&1 || fail 'readable EFI without SecureBoot rejected'
+    no_calls; [[ ! -e $fixture/state && ! -s $fixture/package-calls ]] || fail 'readonly EFI check mutated state'
+    command grep -q '可读固件变量未提供 Secure Boot' "$fixture/output" || fail 'unsupported state mislabeled disabled'
+done
+pass 'both official mokutil unsupported messages accept exact absence on readable efivarfs; backend overrides cleared'
+for text in 'SecureBoot enabled' $'SecureBoot enabled\nSecureBoot validation is disabled in shim' $'SecureBoot enabled\nSecureBoot disabled' 'Cannot determine secure boot state.'; do
+    setup_efi_variables; MOKUTIL_TEXT=$text; MOKUTIL_RC=0
+    reject toolbox_reinstall preflight alpine; no_calls; [[ ! -e $fixture/state ]] || fail 'unknown/enabled EFI wrote state'
+done
+pass 'enabled including shim-disabled, contradictory and unknown successful output refuse'
+for mode in missing-mount wrong-fs missing-boot malformed-boot mismatch-boot bad-attributes existing-secureboot existing-setupmode secureboot-symlink boot-symlink directory-symlink; do
+    setup_efi_variables
+    python3 - "$fixture" "$mode" <<'PY'
+import json,pathlib,sys
+p=pathlib.Path(sys.argv[1]);mode=sys.argv[2];v=p/'root/sys/firmware/efi/efivars';guid='8be4df61-93ca-11d2-aa0d-00e098032b8c'
+boot=v/('BootCurrent-'+guid);secure=v/('SecureBoot-'+guid)
+if mode in ('missing-mount','wrong-fs'):
+ d=json.load(open(p/'mounts.json'))
+ if mode=='missing-mount':d['filesystems'].pop()
+ else:d['filesystems'][-1]['fstype']='tmpfs'
+ json.dump(d,open(p/'mounts.json','w'))
+elif mode=='missing-boot':boot.unlink()
+elif mode=='malformed-boot':boot.write_bytes(b'\x06\0\0\0\0')
+elif mode=='mismatch-boot':boot.write_bytes(b'\x06\0\0\0\x01\0')
+elif mode=='bad-attributes':boot.write_bytes(b'\0'*6)
+elif mode=='existing-secureboot':secure.write_bytes(b'\x06\0\0\0\x01')
+elif mode=='existing-setupmode':(v/('SetupMode-'+guid)).write_bytes(b'\x06\0\0\0\0')
+elif mode=='secureboot-symlink':secure.symlink_to(v/'absent')
+elif mode=='boot-symlink':boot.unlink();boot.symlink_to(v/('BootOrder-'+guid))
+elif mode=='directory-symlink':v.rename(v.with_name('alternate'));v.symlink_to(v.with_name('alternate'))
+PY
+    reject toolbox_reinstall preflight alpine; no_calls; [[ ! -e $fixture/state ]] || fail "EFI $mode wrote state"
+    command grep -q 'Secure Boot 状态未知' "$fixture/output" || fail "EFI $mode refusal unnamed"
+done
+pass 'missing/wrong efivarfs, missing/malformed boot variables, conflicting SecureBoot and symlinks refuse'
+for fault in 13 5; do
+    setup_efi_variables
+    mkdir "$fixture/python-fault"
+    cat > "$fixture/python-fault/sitecustomize.py" <<PY
+import os
+original_open=os.open
+def fault_open(path,*args,**kwargs):
+ if isinstance(path,str) and path.startswith('SecureBoot-'):raise OSError($fault,'mock EFI read error')
+ return original_open(path,*args,**kwargs)
+os.open=fault_open
+PY
+    if PYTHONPATH="$fixture/python-fault" toolbox_reinstall preflight alpine </dev/null > "$fixture/output" 2>&1; then fail 'EFI permission/I/O failure accepted'; fi
+    no_calls; [[ ! -e $fixture/state ]] || fail 'EFI permission/I/O failure wrote state'
+    command grep -q "errno $fault" "$fixture/output" || fail 'EFI read fault not exercised'
+done
+pass 'SecureBoot EACCES and EIO are exercised and refuse rather than becoming absence'
+for mode in error-message wrong-exit; do
+    setup_efi_variables
+    case $mode in error-message) MOKUTIL_TEXT='Failed to read SecureBoot: Permission denied';; wrong-exit) MOKUTIL_RC=1;; esac
+    reject toolbox_reinstall preflight alpine; no_calls
+done
+pass 'generic EFI read errors and unexpected exit codes never become unsupported'
+setup_efi_variables
+printf 'NO\n' | toolbox_reinstall prepare alpine 3.24 > "$fixture/output" 2>&1 && fail 'unsupported firmware bypassed confirmation'
+no_calls; [[ ! -e $fixture/state ]] || fail 'unsupported firmware confirmation refusal wrote state'
+pass 'supported EFI absence reaches prepare confirmation and NO remains readonly'
 setup; mkdir -p "$fixture/root/boot/efi/EFI/debian" "$fixture/root/sys/firmware/efi"
 printf 'original EFI\n' > "$fixture/root/boot/efi/EFI/debian/grubx64.efi"
 printf 'BootCurrent: 0000\nBootOrder: 0000\nBoot0000* original HD(...)\\EFI\\debian\\grubx64.efi\n' > "$fixture/efi"

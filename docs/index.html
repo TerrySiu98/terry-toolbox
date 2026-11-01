@@ -12500,6 +12500,58 @@ PY
 }
 _toolbox_reinstall_mounts() { findmnt --json --output TARGET,SOURCE,FSTYPE,OPTIONS; }
 _toolbox_reinstall_efi() { efibootmgr -v; }
+_toolbox_reinstall_secure_boot() {
+    local r=$1 mounts=$2 secure rc=0
+    # libefivar accepts environment overrides for the EFI backend/path. Inspect
+    # the host firmware, never an inherited alternate variable directory.
+    secure=$(unset EFIVARFS_PATH LIBEFIVAR_OPS VARS_PATH; export LC_ALL=C; mokutil --sb-state 2>&1) || rc=$?
+    case "$rc:$secure" in
+        '0:SecureBoot disabled'|$'0:SecureBoot disabled\nPlatform is in Setup Mode') printf 'disabled\n'; return;;
+        "255:This system doesn't support Secure Boot"|"255:This system does't support Secure Boot") ;;
+        0:*) _toolbox_reinstall_error '要求 Secure Boot 明确 disabled；未知或 enabled 拒绝'; return 1;;
+        *) _toolbox_reinstall_error "Secure Boot 状态未知（mokutil exit $rc）；未执行。"; return 1;;
+    esac
+    # mokutil 0.3/0.6 emits the same unsupported message for EVERY read error.
+    # Accept absence only on a mounted efivarfs with readable boot variables;
+    # permissions, I/O errors, malformed data and an existing SecureBoot refuse.
+    python3 - "$r" "$mounts" <<'PY'
+import errno,json,os,stat,sys
+def fail(s):sys.exit('Secure Boot 状态未知：'+s+'；未执行。')
+r,mounts=sys.argv[1:];target='/sys/firmware/efi/efivars';guid='8be4df61-93ca-11d2-aa0d-00e098032b8c'
+nodes=[]
+def walk(xs):
+ if not isinstance(xs,list):fail('mount 数据格式未知')
+ for x in xs:
+  if not isinstance(x,dict):fail('mount 节点格式未知')
+  nodes.append(x);walk(x.get('children',[]))
+walk(json.loads(mounts)['filesystems'])
+found=[x for x in nodes if x.get('target')==target]
+if len(found)!=1 or found[0].get('fstype')!='efivarfs':fail('efivarfs 未在固定路径挂载')
+p=os.path.join(r,target.lstrip('/'))
+for parent in (r,os.path.join(r,'sys'),os.path.join(r,'sys/firmware'),os.path.join(r,'sys/firmware/efi'),p):
+ if not stat.S_ISDIR(os.lstat(parent).st_mode):fail('EFI 路径不是实际目录')
+fd=os.open(p,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+def read(name):
+ f=os.open(name+'-'+guid,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=fd)
+ try:
+  if not stat.S_ISREG(os.fstat(f).st_mode):fail(name+' 不是普通 EFI 变量')
+  data=os.read(f,65541)
+ finally:os.close(f)
+ if len(data)<5 or len(data)>65540 or int.from_bytes(data[:4],'little')&6!=6:fail(name+' 数据/访问属性未知')
+ return data[4:]
+try:
+ current=read('BootCurrent');order=read('BootOrder')
+ if len(current)!=2 or len(order)%2 or current not in [order[i:i+2] for i in range(0,len(order),2)]:fail('EFI 引导变量格式或一致性未知')
+ for name in ('SecureBoot','SetupMode'):
+  try:read(name)
+  except OSError as e:
+   if e.errno!=errno.ENOENT:raise
+  else:fail(name+' 变量存在，不能将 mokutil 读取失败视为不支持')
+ print('unsupported')
+except OSError as e:fail('EFI 变量读取失败（errno '+str(e.errno)+'）')
+finally:os.close(fd)
+PY
+}
 _toolbox_reinstall_boot_id() { local r; r=$(_toolbox_reinstall_host_root); command cat "$r/proc/sys/kernel/random/boot_id"; }
 # The lock must still be the inode held by this shell, and its directory must
 # stay at the same anchored path. Merely flocking an unlinked file is not a gate.
@@ -12884,8 +12936,7 @@ _toolbox_reinstall_preflight() {
     mounts=$(_toolbox_reinstall_mounts) || { _toolbox_reinstall_error 'mount 回读失败'; return 1; }
     disk=$(_toolbox_reinstall_data inventory "$r" "$(_toolbox_reinstall_state_dir)" "$inventory" "$mounts" "$arch") || return
     if [[ -d $r/sys/firmware/efi ]]; then
-        secure=$(mokutil --sb-state) || { _toolbox_reinstall_error 'Secure Boot 状态未知'; return 1; }
-        [[ $secure == *'SecureBoot disabled'* ]] || { _toolbox_reinstall_error '要求 Secure Boot 明确 disabled'; return 1; }
+        secure=$(_toolbox_reinstall_secure_boot "$r" "$mounts") || return 1
         efi=$(_toolbox_reinstall_efi) || return
         [[ $efi == *BootCurrent:* && $efi == *BootOrder:* ]] || { _toolbox_reinstall_error 'EFI 状态未知'; return 1; }
         # Upstream selects first FAT mount. Require one exact recognized ESP.
@@ -12900,7 +12951,11 @@ if len(a)!=1 or 'rw' not in a[0]['options'].split(','):sys.exit('要求唯一可
 p=os.path.join(sys.argv[2],a[0]['target'].lstrip('/'))
 if not any(f.lower().endswith('.efi') for _,_,fs in os.walk(p) for f in fs):sys.exit('ESP 未找到现有 EFI loader')
 PY
-        printf 'Boot mode: UEFI（Secure Boot disabled）\n'
+        case $secure in
+            disabled) printf 'Boot mode: UEFI（Secure Boot disabled）\n';;
+            unsupported) printf 'Boot mode: UEFI（可读固件变量未提供 Secure Boot）\n';;
+            *) _toolbox_reinstall_error 'Secure Boot 状态未知'; return 1;;
+        esac
     else
         # Upstream BIOS extlinux mutates MENU HIDDEN/TIMEOUT and opaque --once.
         # Refuse it rather than inventing a reversible cancellation path.
