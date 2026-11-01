@@ -1159,6 +1159,24 @@ net_port_lines() {
 
 net_port_busy() { [[ -n $(net_port_lines "$1" "$2") ]]; }
 
+# 严格版：显式捕获 ss 的退出码。ss 非零即返回 1 且不输出；只有 ss 成功才输出匹配行
+# （可为空）。删除门禁必须用它："ss 没输出"不等于"ss 成功且没有监听"。
+net_port_lines_strict() {
+    local proto=$1 port=$2 out rc line field
+    local flags=(-lunH)
+    [[ $proto == tcp ]] && flags=(-ltnH)
+    out=$(ss "${flags[@]}" 2>/dev/null); rc=$?
+    (( rc == 0 )) || return 1
+    while IFS= read -r line; do
+        [[ $line =~ ^(LISTEN|UNCONN|ESTAB) ]] || continue
+        read -r -a _net_f <<< "$line"
+        field=${_net_f[3]:-}
+        [[ ${field##*:} == "$port" ]] || continue
+        printf '%s\n' "$line"
+    done <<< "$out"
+    return 0
+}
+
 # 端口是否由指定单元的进程持有：MainPID 相等，或 /proc/<pid>/exe 就是我们的
 # 可执行文件。两者都不成立就算「不是我们的」。
 net_port_owned_by() {
@@ -1948,13 +1966,36 @@ net_relay_unit_state() { # unit ledger → absent | ours | foreign
     if [[ -n $want && $want == "$have" ]]; then printf 'ours\n'; else printf 'foreign\n'; fi
 }
 # 停止确认。单字段 inactive 不证明停止：一次性读取 LoadState/ActiveState/SubState/
-# MainPID/Job 快照，要求无待处理 job、PID 为 0，且该协议端口没有任何监听。
-# started=1（本次或历史上尝试过启动）：disable --now 必须返回 0，快照须为
+# MainPID/Job，要求无待处理 job、PID 为 0，且该协议端口经 ss 成功读取后没有任何监听。
+# systemd 的 show 输出顺序与 -p 请求顺序无关，因此不用 --value 按行位置猜值，而是
+# 读取 Key=Value 并按 key 解析；缺失、重复、未知字段或非数字 PID 一律视为不确定。
+# started=1（本次或历史上尝试过启动）：disable --now 必须返回 0，快照须为 loaded +
 # inactive|failed + dead|failed + PID 0 + 无 job。started=0（从未尝试启动）：允许
-# not-found，或 inactive + dead + PID 0 + 无 job。读回失败、超时一律视为未确认。
-net_relay_snapshot() { systemctl show -p LoadState,ActiveState,SubState,MainPID,Job --value "$1" 2>/dev/null; }
+# loaded 或 not-found，但同样要求 inactive + dead + PID 0 + 无 job 全部一致。
+# 读回失败、解析失败、超时、ss 失败一律视为未确认。
+net_relay_snapshot() { systemctl show -p LoadState,ActiveState,SubState,MainPID,Job -- "$1" 2>/dev/null; }
+net_relay_parse_snapshot() { # stdin: Key=Value 行 → 输出 load|active|sub|pid|job；不完整/重复/未知则失败
+    local line key val load='' active='' sub='' pid='' job=''
+    local seen_load=0 seen_active=0 seen_sub=0 seen_pid=0 seen_job=0
+    while IFS= read -r line; do
+        [[ -n $line ]] || continue
+        [[ $line == *=* ]] || return 1
+        key=${line%%=*}; val=${line#*=}
+        case $key in
+            LoadState)   (( seen_load ))   && return 1; seen_load=1;   load=$val ;;
+            ActiveState) (( seen_active )) && return 1; seen_active=1; active=$val ;;
+            SubState)    (( seen_sub ))    && return 1; seen_sub=1;    sub=$val ;;
+            MainPID)     (( seen_pid ))    && return 1; seen_pid=1;    pid=$val ;;
+            Job)         (( seen_job ))    && return 1; seen_job=1;    job=$val ;;
+            *) return 1 ;;
+        esac
+    done
+    (( seen_load && seen_active && seen_sub && seen_pid && seen_job )) || return 1
+    [[ $pid =~ ^[0-9]+$ ]] || return 1
+    printf '%s|%s|%s|%s|%s\n' "$load" "$active" "$sub" "$pid" "$job"
+}
 net_relay_stop_confirmed() { # name proto lport started
-    local name=$1 proto=$2 lport=$3 started=$4 snap load active sub pid job i ok=0
+    local name=$1 proto=$2 lport=$3 started=$4 snap fields load active sub pid job i ok=0 listeners
     if (( started )); then
         systemctl disable --now "$name" >/dev/null 2>&1 || return 1
     else
@@ -1962,19 +2003,19 @@ net_relay_stop_confirmed() { # name proto lport started
     fi
     for ((i = 0; i < 20; i++)); do
         snap=$(net_relay_snapshot "$name") || snap=''
-        load=''; active=''; sub=''; pid=''; job=''
-        { read -r load; read -r active; read -r sub; read -r pid; read -r job; } <<< "$snap"
-        if [[ -n $load ]]; then
+        if fields=$(net_relay_parse_snapshot <<< "$snap"); then
+            IFS='|' read -r load active sub pid job <<< "$fields"
             if (( started )); then
-                [[ ($active == inactive || $active == failed) && ($sub == dead || $sub == failed) && $pid == 0 && -z $job ]] && { ok=1; break; }
+                [[ $load == loaded && ($active == inactive || $active == failed) && ($sub == dead || $sub == failed) && $pid == 0 && -z $job ]] && { ok=1; break; }
             else
-                [[ $load == not-found || ($active == inactive && $sub == dead && $pid == 0 && -z $job) ]] && { ok=1; break; }
+                [[ ($load == loaded || $load == not-found) && $active == inactive && $sub == dead && $pid == 0 && -z $job ]] && { ok=1; break; }
             fi
         fi
         sleep 0.3
     done
     (( ok )) || return 1
-    [[ -z $(net_port_lines "$proto" "$lport") ]] || return 1
+    listeners=$(net_port_lines_strict "$proto" "$lport") || return 1
+    [[ -z $listeners ]] || return 1
     return 0
 }
 
