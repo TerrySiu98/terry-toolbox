@@ -14,7 +14,7 @@
 
 > **开发预览，尚非稳定版。** 源码与单文件脚本已公开。下方功能表同时列出已实测、待真机验收及计划项目，不能视为全部完成；首次使用请选测试机。
 
-> **2026-11-01 当前已发布到 `sh.uw.cx`：** PR #5 的 Xray 26.10.31 pin、提权 HTTPS 重下载、B23 恢复、应用目录及 relay 归属/停止门禁修复已上线；保留 PR #4 Secure Boot、PR #3 lsblk 与 PR #2 依赖修复。12 项相关回归、父级 12 项与独立 16 项控制通过；Worker 四模块、完整配置、域名/DNS 与公网下载已精确回读。旧版无台账 relay 保留，不自动升级现有服务。见[当前发布记录](docs/release-pr5-20261101.md)、[维护手册](HANDOFF.md)和[历史验收索引](docs/acceptance-20261031.json)。仍是开发预览。
+> **2026-11-01 当前已发布到 `sh.uw.cx`：** M3 的 Debian 13、Ubuntu 24.04、Alpine 3.24 均可选密码或 SSH 密钥登录。密码在交互终端隐藏双输入，原重装确认、取消和不自动重启行为不变。13 项相关回归及独立安全复核通过，线上脚本、Worker 配置和域名/DNS 已精确回读；三系统原生 SSH 认证 helper 正反验证通过，但本候选未重复实际擦盘/启动验收。保留 PR #5/#4/#3/#2 修复。见[当前发布记录](docs/release-m3-auth-20261101.md)、[维护手册](HANDOFF.md)和[历史验收索引](docs/acceptance-20261031.json)。仍是开发预览。
 
 > **M3 Secure Boot 兼容修复已上线：** 固件未提供相关变量时增加独立只读核对；合并复核发现的已打开变量读取 ENOENT 误放行已修正，变量打开成功即拒绝，清理 backend 覆盖失败也终止。修正候选通过 9 项相关检查（含 85 项重装模拟、49 项新增安全边界、18 项重启门禁）；作者原生预检仅对应修正前候选，非本轮原生复验。见[修复记录](docs/m3-secureboot-fix-20261101.md)和[安全补丁记录](docs/m3-secureboot-safety-followup-20261101.md)。已按精确修正 head 合并并发布；独立补丁复核 15/15 无新增阻塞，原重装确认与重启门禁保留。
 
@@ -30,6 +30,7 @@ Terry Toolbox 是一个面向 Linux 服务器的中文菜单工具箱。登录�
 
 ## 开发进度
 
+- **M3 密码/密钥选择**：三目标的两条准备/状态/取消路径和旧计划兼容已实现；13/13 相关检查（原 85 检查、新 20 组认证）与独立 3 组/5 个 session 及父复跑通过。固定上游认证 helper 在真实三系统用户态通过 21 项 SSH 正反控制；不是整盘安装或 initrd 启动验收。公网 14 项回读及下载 9 项安全 smoke/TLS 通过。见[当前发布记录](docs/release-m3-auth-20261101.md)。
 - **PR #5 当前修复验证**：父级 12/12 相关回归，父级 12 项与独立 16 项正反控制通过；原生 systemd 仅只读快照，服务停启、故障与恢复用模拟。不是本轮全仓或原生安装验收；14 项公网回读、9 项下载安全 smoke 与 TLS 通过。见[当前发布记录](docs/release-pr5-20261101.md)。
 - **当前源码**：VMess 生命周期、自启与换证；Certbot HTTP-01、续期与 VMess 同步；Docker 默认 bridge IPv6；WebSSH 个人版/Easynode；Debian 13、Ubuntu 24.04、Alpine 3.24 重装准备与取消均已接入菜单。B18 保留。
 - **首次交付原生验收**：Debian 13.7 / x86_64 / KVM 已通过 B1 安装 Docker Engine 29.9.2，以及 IPv6 应用配置、双容器 ULA nonce 传输、整机重启后同一容器再传输、恢复到原先不存在 `daemon.json` 的状态。WebSSH 个人版和 Easynode 已完成真实正反登录、SSH/SFTP、容器重启持久化与卸载保留数据。Debian 13、Ubuntu 24.04、Alpine 3.24 已分别完成全新磁盘实际重装、公钥 SSH 与旧系统清除核对。VMess 已通过两次整机重启；真实 ACME 定时续期已恢复过期证书并同步 VMess；原 Python WebSSH 已通过认证、真实 SSH、服务重启和卸载。完整范围见维护手册；这些历史记录不能代替当前依赖补装改动的复验。
@@ -71,7 +72,7 @@ bash toolbox.sh
 curl -fsSL sh.uw.cx | sha256sum
 ```
 
-先与 `https://sh.uw.cx/sha256` 及[当前发布记录](docs/release-pr5-20261101.md)核对。当前线上脚本绑定发布源码 `8264d86038a2f812c096ca9cfeb5b112b493189f` 的 `docs/index.html`；后续文档提交不改变该脚本。**当前发布版本的 SHA-256**：`8ceed7f82f0bf76cc15bbeab76ae5c599186bc1666cf117c6fb66194998b00df`（2026-11-01 PR #5 发布，717942 字节）。
+先与 `https://sh.uw.cx/sha256` 及[当前发布记录](docs/release-m3-auth-20261101.md)核对。当前线上脚本绑定 PR #6 合并源码 `8e73adbfa8012539018e0e8c0a18dce42d7a5c9c` 的 `docs/index.html`；后续文档提交不改变该脚本。**当前发布版本的 SHA-256**：`114640dc498b6861d6679ad89b5a8ca7edd4eff941ebec541197c23f25ac6abf`（2026-11-01 M3 密码/密钥选择，728768 字节）。
 
 服务端下载的是单文件版本，全部模块已经打包进去，不需要准备其他文件。Debian / Ubuntu 为当前主要支持环境，Alpine 仅部分功能。
 
@@ -95,6 +96,15 @@ curl -fsSL sh.uw.cx | sha256sum
 真实终端切页会清除当前画面再重绘，不清除历史滚动记录；重定向到日志时不发送清屏控制符。需要保留每次画面时可设置 `TOOLBOX_NO_CLEAR=1`。
 
 网络服务、WebSSH、TCP Brutal、网络优化、Alpine 工具、DNS 与 Relay 通过功能管理页选择动作，不会选中编号就直接安装。网络服务安装会询问已有证书、私钥路径及证书域名。`TLS` 管理页在 Certbot 缺失时可确认补装，再申请证书，续期任务及 VMess 同步分别授权。输入结束或取消不会视为安装成功。
+
+### M3：选择密码或 SSH 密钥登录
+
+重新下载脚本，输入 `4` 或 `M3`，选择 `2 准备重装` 和目标系统后，会出现 `1 密码 / 2 SSH 密钥（推荐） / 0 取消`。这是新系统的 **root SSH 登录方式**，只配置所选模式。
+
+- **密码**：在真实交互终端隐藏输入两次，要求一致、12–256 字节；空格和特殊字符保留，不支持用管道或环境变量传入明文。中文等多字节字符按字节计数。输入不一致、空输入/未完成输入或取消均不会执行上游。
+- **密钥**：提供本机绝对路径的 `ssh-ed25519` 公钥 `.pub` 文件，并确保自己持有配套私钥；公钥不是密码。旧 `TOOLBOX_REINSTALL_SSH_KEY_FILE` 调用保持兼容；`TOOLBOX_REINSTALL_AUTH_MODE` 仅接受 `password` 或 `key`，密码模式仍必须隐藏交互输入。
+- 两次 `YES` 和逐字确认物理盘路径、准备后状态检查、取消归属核验以及不自动重启规则不变。密码 hash 仅保存在私有 owned plan 和安装 initrd 中，不在摘要、argv 或日志回显；请保护整盘/boot 备份。
+- 仍只在可丢弃测试机使用；准备成功不代表重装或新系统启动成功。现有 loop 子分区挂载限制仍保留。已有 failed/interrupted plan 不要盲目重新准备或重启，先核实并使用取消流程。
 
 ### A5：VMess + WebSocket + TLS（开发预览）
 
@@ -130,7 +140,7 @@ curl -fsSL sh.uw.cx | sha256sum
 | `DIAG` | 服务器体检 | 只读查看系统、运行时间、内存、磁盘、网络和监听端口；缺工具时可确认补装，拒绝后继续显示已有信息 |
 | `M1` | BBR | 开发中：调整当前运行期拥塞控制，重启后可能失效 |
 | `M2` | 基础依赖 | 开发中：按缺失命令补包并回读；Alpine 3.24 真实 APK 隔离验证通过，其他系统待当前版本实测 |
-| `M3` | 重装系统 | 已实现 preflight/prepare/status/cancel；选择 Debian 13、Ubuntu 24.04 或 Alpine 3.24，提供 SSH 公钥并确认整盘目标；prepare 不自动重启；首次交付版本的三目标均通过 x86_64/KVM/BIOS 实际擦盘重装、公钥登录和持久根分区验收；本次在全新 VM 原生复验依赖补装、Alpine 预检，以及 prepare 确认处 NO/EOF 退出，UEFI/arm64 尚未实测 |
+| `M3` | 重装系统 | 已实现 preflight/prepare/status/cancel；Debian 13、Ubuntu 24.04、Alpine 3.24 均可选密码或 SSH 公钥，确认整盘目标后准备且不自动重启。密码隐藏双输入；本次准备/认证门禁模拟、三系统原生认证 helper 已验，未作本候选真实擦盘/initrd 启动；首次交付公钥版有 x86_64/KVM/BIOS 完整重装历史验收，UEFI/arm64 尚未实测 |
 | `M4` | 重启服务器 | 开发中：双确认后重启；M3 失败／中断／未知状态拒绝，prepared 另需目标磁盘确认，取消后的引导状态及确认期间状态变化会再次回读 |
 | `B1` | Docker | 开发中：Debian/Ubuntu 使用固定 GPG 主密钥指纹、私有官方索引下载再安装本地包；拒绝全局已有 Docker 包索引及已有安装/冲突包/数据，普通依赖仍用系统源；Alpine 使用系统签名仓库及 docker-openrc，拒绝接管已有安装，启动后回读稳定版 Engine ≥28；失败保留私有日志与现场，不自动卸载，原生包可能启用 Docker 自启；首次交付版本的 IPv6 apply/status/restore 已在 Debian 13.7/KVM 通过双容器 ULA 通信、整机重启与恢复原先无 daemon.json 的状态 |
 | `B2` | NodeQuality | 开发中：固定 SHA-256 后执行综合质量测试，真实运行已验证 |

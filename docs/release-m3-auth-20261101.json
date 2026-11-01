@@ -1,0 +1,377 @@
+{
+  "schema": 1,
+  "release": "m3-auth-choice-20261101",
+  "status": "published_and_verified",
+  "pr_url": "https://github.com/TerrySiu98/terry-toolbox/pull/6",
+  "review_url": "https://github.com/TerrySiu98/terry-toolbox/pull/6#pullrequestreview-5727301310",
+  "reviewed_head": "34f4bc87ba4d18609c2277873960299bbbb774f6",
+  "source_merge": "8e73adbfa8012539018e0e8c0a18dce42d7a5c9c",
+  "source_tree_matches_reviewed_head": true,
+  "published_utc": "2026-11-01T09:02:08.405826+00:00",
+  "published_beijing": "2026-11-01T17:02:08.405826+08:00",
+  "host": "sh.uw.cx",
+  "worker": "terry-toolbox",
+  "artifact": {
+    "path": "docs/index.html",
+    "sha256": "114640dc498b6861d6679ad89b5a8ca7edd4eff941ebec541197c23f25ac6abf",
+    "bytes": 728768
+  },
+  "previous_sha256": "8ceed7f82f0bf76cc15bbeab76ae5c599186bc1666cf117c6fb66194998b00df",
+  "upstream": {
+    "commit": "54fae2067557b3c0ca49e7c9ce03bca63c793f8c",
+    "raw_sha256": "3ca358bf065ebd3ecb2f727e152a4b4fb9b154398abc1b9a5fe0b599f1027d7a",
+    "derived_sha256": "f51939ced0634c1a12f429e94a58e10c7b939b88ff4ea3ca9240f748b90be663",
+    "installation_boot_runtime_helpers_rewritten": false
+  },
+  "auth": {
+    "targets": [
+      "Debian 13",
+      "Ubuntu 24.04",
+      "Alpine 3.24"
+    ],
+    "modes": [
+      "password",
+      "key"
+    ],
+    "password_interactive_tty_only": true,
+    "password_hidden_double_entry": true,
+    "password_min_bytes": 12,
+    "password_max_bytes": 256,
+    "plaintext_in_argv_env_files_logs": false,
+    "legacy_key_file_supported": true,
+    "plan_schema": 3,
+    "legacy_schemas_supported": [
+      1,
+      2
+    ],
+    "automatic_reboot": false
+  },
+  "focused_regression": {
+    "suites": 13,
+    "all_passed": true,
+    "source_unchanged": true,
+    "descendant_cleanup_complete": true,
+    "reinstall_mock_checks": 85,
+    "auth_test_groups": 20,
+    "results": [
+      {
+        "name": "syntax",
+        "exit_code": 0,
+        "timeout": false,
+        "elapsed_seconds": 0.35
+      },
+      {
+        "name": "build-test.sh",
+        "exit_code": 0,
+        "timeout": false,
+        "elapsed_seconds": 3.55
+      },
+      {
+        "name": "dependencies-test.sh",
+        "exit_code": 0,
+        "timeout": false,
+        "elapsed_seconds": 1.4
+      },
+      {
+        "name": "dependency-entrypoints-test.sh",
+        "exit_code": 0,
+        "timeout": false,
+        "elapsed_seconds": 6.67
+      },
+      {
+        "name": "entry-test.sh",
+        "exit_code": 0,
+        "timeout": false,
+        "elapsed_seconds": 0.6
+      },
+      {
+        "name": "reinstall-test.sh",
+        "exit_code": 0,
+        "timeout": false,
+        "elapsed_seconds": 77.23
+      },
+      {
+        "name": "secureboot-error-boundary-test.sh",
+        "exit_code": 0,
+        "timeout": false,
+        "elapsed_seconds": 4.8
+      },
+      {
+        "name": "system-reboot-plan-test.sh",
+        "exit_code": 0,
+        "timeout": false,
+        "elapsed_seconds": 0.24
+      },
+      {
+        "name": "regression-runner-test.py",
+        "exit_code": 0,
+        "timeout": false,
+        "elapsed_seconds": 4.51
+      },
+      {
+        "name": "menu-test.py",
+        "exit_code": 0,
+        "timeout": false,
+        "elapsed_seconds": 4.55
+      },
+      {
+        "name": "deploy-cloudflare-test.py",
+        "exit_code": 0,
+        "timeout": false,
+        "elapsed_seconds": 4.55
+      },
+      {
+        "name": "reinstall-auth-test.py",
+        "exit_code": 0,
+        "timeout": false,
+        "elapsed_seconds": 128.32
+      },
+      {
+        "name": "worker-test.mjs",
+        "exit_code": 0,
+        "timeout": false,
+        "elapsed_seconds": 0.7
+      }
+    ]
+  },
+  "independent_review": {
+    "outcome": "no_blocker_in_bounded_scope",
+    "groups": 3,
+    "sessions": 5,
+    "parent_exact_rerun": true,
+    "source_sha256": {
+      "modules/reinstall.sh": "78f474f50a3fb4703b6254c5d1dfc530d8d18acff1a5809205350a98e597087e",
+      "modules/reinstall-provenance.sh": "957b383df03c3ec8f48101e1c98fed486ba9abdd26e6fa2d16dbe05ae2179848",
+      "modules/system.sh": "5837ab61b19742da16917606980092bab64e7ca7f7323a7b17299514313f4893",
+      "modules/dependencies.sh": "62953cc610fa68b46a349cf322b2aad66858da0f667cf1a958d69dabd1d88d8d",
+      "tests/reinstall-test.sh": "7be62b5007d94cee120af64d5fa1a0926ba4e2b6876875e03a4a263ea0cdc0eb",
+      "tests/reinstall-auth-test.py": "c249f52d3c983e0ae47509de21e09fcd00d8810096840ca3da943e289a4694df",
+      "tests/regression-runner.py": "ecc2053f10b3da20d649cd7f00ddd89aaae9aacf987fd3d313d3f1d9119481a7"
+    },
+    "report_sha256": "bf772360678e9c3ec59292558fdf309f4387a944a31a38c7cf9d6e7760345f90",
+    "summary_sha256": "6798614a541d9f18eea8cfe472c88b332fb690f7e0b3559c3295f2b63c1747fc"
+  },
+  "native_auth_helpers": {
+    "native_userspace_only": true,
+    "upstream_helper_sha256": "d8f34529c0a706b17d67965b99a107f8299a30d5303744a20f0fb96556365bf7",
+    "control_count": 21,
+    "all_passed": true,
+    "summary_sha256": "ee25d43d6e6664aaf8a3d7e58aa6703f7cbc200c96774f49d53201ac71d87bb6",
+    "reinstall_or_boot_tested": false,
+    "results": [
+      {
+        "distro": "PRETTY_NAME=\"Debian GNU/Linux 13 (trixie)\"",
+        "native_chpasswd": true,
+        "native_sshd": true,
+        "cases": [
+          {
+            "mode": "password",
+            "case": "correct-password",
+            "exit_code": 0,
+            "expected_accept": true,
+            "passed": true
+          },
+          {
+            "mode": "password",
+            "case": "wrong-password",
+            "exit_code": 255,
+            "expected_accept": false,
+            "passed": true
+          },
+          {
+            "mode": "password",
+            "case": "positive-after-negative",
+            "exit_code": 0,
+            "expected_accept": true,
+            "passed": true
+          },
+          {
+            "mode": "key",
+            "case": "correct-key",
+            "exit_code": 0,
+            "expected_accept": true,
+            "passed": true
+          },
+          {
+            "mode": "key",
+            "case": "wrong-key",
+            "exit_code": 255,
+            "expected_accept": false,
+            "passed": true
+          },
+          {
+            "mode": "key",
+            "case": "password-rejected",
+            "exit_code": 255,
+            "expected_accept": false,
+            "passed": true
+          },
+          {
+            "mode": "key",
+            "case": "positive-after-negative",
+            "exit_code": 0,
+            "expected_accept": true,
+            "passed": true
+          }
+        ],
+        "case_count": 7,
+        "services_task_owned_and_stopped": true,
+        "host_service_or_password_untouched": true,
+        "plaintext_not_logged": true,
+        "reinstall_or_boot_tested": false
+      },
+      {
+        "distro": "PRETTY_NAME=\"Ubuntu 24.04.5 LTS\"",
+        "native_chpasswd": true,
+        "native_sshd": true,
+        "cases": [
+          {
+            "mode": "password",
+            "case": "correct-password",
+            "exit_code": 0,
+            "expected_accept": true,
+            "passed": true
+          },
+          {
+            "mode": "password",
+            "case": "wrong-password",
+            "exit_code": 255,
+            "expected_accept": false,
+            "passed": true
+          },
+          {
+            "mode": "password",
+            "case": "positive-after-negative",
+            "exit_code": 0,
+            "expected_accept": true,
+            "passed": true
+          },
+          {
+            "mode": "key",
+            "case": "correct-key",
+            "exit_code": 0,
+            "expected_accept": true,
+            "passed": true
+          },
+          {
+            "mode": "key",
+            "case": "wrong-key",
+            "exit_code": 255,
+            "expected_accept": false,
+            "passed": true
+          },
+          {
+            "mode": "key",
+            "case": "password-rejected",
+            "exit_code": 255,
+            "expected_accept": false,
+            "passed": true
+          },
+          {
+            "mode": "key",
+            "case": "positive-after-negative",
+            "exit_code": 0,
+            "expected_accept": true,
+            "passed": true
+          }
+        ],
+        "case_count": 7,
+        "services_task_owned_and_stopped": true,
+        "host_service_or_password_untouched": true,
+        "plaintext_not_logged": true,
+        "reinstall_or_boot_tested": false
+      },
+      {
+        "distro": "PRETTY_NAME=\"Alpine Linux v3.24\"",
+        "native_chpasswd": true,
+        "native_sshd": true,
+        "cases": [
+          {
+            "mode": "password",
+            "case": "correct-password",
+            "exit_code": 0,
+            "expected_accept": true,
+            "passed": true
+          },
+          {
+            "mode": "password",
+            "case": "wrong-password",
+            "exit_code": 255,
+            "expected_accept": false,
+            "passed": true
+          },
+          {
+            "mode": "password",
+            "case": "positive-after-negative",
+            "exit_code": 0,
+            "expected_accept": true,
+            "passed": true
+          },
+          {
+            "mode": "key",
+            "case": "correct-key",
+            "exit_code": 0,
+            "expected_accept": true,
+            "passed": true
+          },
+          {
+            "mode": "key",
+            "case": "wrong-key",
+            "exit_code": 255,
+            "expected_accept": false,
+            "passed": true
+          },
+          {
+            "mode": "key",
+            "case": "password-rejected",
+            "exit_code": 255,
+            "expected_accept": false,
+            "passed": true
+          },
+          {
+            "mode": "key",
+            "case": "positive-after-negative",
+            "exit_code": 0,
+            "expected_accept": true,
+            "passed": true
+          }
+        ],
+        "case_count": 7,
+        "services_task_owned_and_stopped": true,
+        "host_service_or_password_untouched": true,
+        "plaintext_not_logged": true,
+        "reinstall_or_boot_tested": false
+      }
+    ]
+  },
+  "publication": {
+    "upload_count": 1,
+    "four_modules_exact": true,
+    "settings_annotations_unchanged": true,
+    "workers_dev_unchanged": true,
+    "domain_dns_unchanged": true,
+    "public_checks": 14,
+    "download_smokes": 9,
+    "public_original_and_fresh_urls_exact": true,
+    "tls_system_trust": true,
+    "landing_page_router_unchanged": true,
+    "browser_ui_repeated": false
+  },
+  "github": {
+    "checks": 0,
+    "statuses": 0,
+    "required_gates": false,
+    "ci_pass_claimed": false,
+    "documentation_secret_scan": {"scanner_returncode": 1, "real_secret_findings": 0, "false_positive_rule": "generic-api-key", "reason": "public test file SHA256, independently byte-verified; no scanner allowlist added"},
+    "feature_branch_preserved": true
+  },
+  "boundaries": {
+    "host_package_database_logs_unchanged": true,
+    "real_install_mount_bootwrite_on_controller_or_business_hosts": false,
+    "new_candidate_real_disk_erase_initrd_boot_tested": false,
+    "uefi_arm64_tested": false,
+    "historical_unmarked_scratch_fixture_retained": true,
+    "product_stage": "development_preview"
+  },
+  "private_evidence_root": "/root/.hermes/state/terry-toolbox-cf/m3-auth-20261101"
+}
