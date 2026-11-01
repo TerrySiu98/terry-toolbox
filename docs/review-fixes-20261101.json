@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "base_head": "a9bbfe1bfb7189b1bdbf80d0aef861a51ca3d18a",
+  "base_candidate_sha256": "2f8f180fa295cd08f4300f63184c10264210e3cd31b4280d0477b479389ffea7",
+  "base_candidate_bytes": 705455,
+  "candidates": [
+    {"source_head": "d4c47e9", "candidate_sha256": "c9ce5526355f67772df41b6c63aab600fdfd00e156e1030792663e07540536ad", "candidate_bytes": 707564,
+     "review_outcome": "2 P1 (apps.sh parent-dir check-then-chown race; relay ownership by Description substring + delete despite stop failure)"},
+    {"source_head": "4993524", "candidate_sha256": "9cf86308c9a533ce4689abeabbcc2dbba0887de89078264d3750973fab70cc2c", "candidate_bytes": 713156,
+     "review_outcome": "apps fix accepted; 2 P1 (rollback claimed another install via persistent ledger; ActiveState-only stop check)"},
+    {"source_head": "d728ecf", "candidate_sha256": "a1984856c863c05139b6e2e3de8455c50719b6b43cc7fc3ff6a8422715fa5ffe", "candidate_bytes": 715802,
+     "review_outcome": "claim fix accepted; 2 P1 (positional --value snapshot parse breaks on native systemd ordering; ss failure read as no-listener)"}
+  ],
+  "fix_source_head": "40f711decc6cc7c9c83b9e86d7efc5f8516b125f",
+  "fixed_candidate_sha256": "8ceed7f82f0bf76cc15bbeab76ae5c599186bc1666cf117c6fb66194998b00df",
+  "fixed_candidate_bytes": 717942,
+  "xray_pin": {
+    "previous": "26.10.29",
+    "previous_status": "withdrawn upstream (MPTCP security), release URL 404",
+    "current": "26.10.31",
+    "amd64_sha256": "e4bd9119f50ae7c41658b1abd0679ae06f98bd864a2907ff33f2f2cf7081b214",
+    "amd64_verified_by_download": true,
+    "arm64_sha256": "1811c8f1da0c3b6dc707ebaf1c8390e987ba39859a8f0a7aadd8526157f2ec8d",
+    "arm64_verified_by_download": false
+  },
+  "regression_baseline_main": {
+    "checks": 34, "passed": 33, "failed": 1, "failed_tests": ["hy2-test.sh"],
+    "failure_cause": "test environment lacked PyYAML (undocumented test dependency)", "source_unchanged": true
+  },
+  "regression_runs": [
+    {"source_head": "d4c47e9", "checks": 34, "passed": 34, "total_seconds": 2592.7, "source_unchanged": true},
+    {"source_head": "4993524", "checks": 34, "passed": 34, "total_seconds": 2600.8, "source_unchanged": true},
+    {"source_head": "d728ecf", "checks": 34, "passed": 34, "total_seconds": 2612.3, "source_unchanged": true},
+    {"source_head": "40f711d", "checks": 34, "passed": 34, "failed": 0, "skipped": 0, "timeouts": 0, "total_seconds": 2588.7,
+     "source_unchanged": true, "descendant_cleanup_complete": true, "full_repository_run": true,
+     "affected_suite_direct_run": {"network-test.sh": "passed, no swallowed shell errors in output"},
+     "native_systemd_readonly_check": "systemd 247: show -p LoadState,ActiveState,SubState,MainPID,Job prints MainPID first for loaded-inactive and not-found units; parser is key-based"}
+  ],
+  "new_regressions": {
+    "apps-test.sh": ["user-home-positive", "existing-parents-unchanged", "root-only-.local-refused", "symlink-.local-refused", "symlink-.local/share-refused", "race-dir-kept", "race-symlink-refused"],
+    "network-test.sh": [
+      "ledger-written-and-removed", "uninstall-with-socat-missing", "comment-marker-preserved",
+      "changed-ExecStart-preserved-and-reinstall-refused", "stop-failure-preserves-unit-and-ledger",
+      "concurrent-installers-fifo-flock-A-refused-B-untouched", "ln-failure-no-claim-rollback-touches-nothing",
+      "dirty-enable-failure-disable-nonzero-preserved-no-reset-failed", "uninstall-pending-job-preserved",
+      "uninstall-listener-remains-preserved", "uninstall-readback-failure-preserved",
+      "native-order-snapshot-normal-uninstall", "snapshot-missing-field-preserved", "stop-ok-ss-failure-preserved-then-deleted-when-ss-empty",
+      "never-started-not-found-coherent-rollback-cleans", "never-started-not-found-with-job-preserved"
+    ]
+  },
+  "vmess_protocol_test": {
+    "xray_version": "Xray 26.10.31 a4a3dff go1.27.3 linux/amd64",
+    "binary_sha256": "cc4b84d3069569f297a61f04b914f2bb37e9d202fd7b84cb50def1fc30fd40e1",
+    "cases": 8, "passed": 8, "installer_or_systemd_tested": false,
+    "run_against_source_head": "d4c47e9 (vmess.sh unchanged since)"
+  },
+  "test_host": "Debian 11 bullseye, x86_64, KVM, UEFI, util-linux 2.36.1, system python 3.9.2; suite run with isolated Python 3.12 + Node 20",
+  "native_install_retest": false,
+  "published": false
+}

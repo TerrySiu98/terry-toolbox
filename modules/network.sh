@@ -239,21 +239,45 @@ net_port_lines() {
 
 net_port_busy() { [[ -n $(net_port_lines "$1" "$2") ]]; }
 
+# 严格版：显式捕获 ss 的退出码。ss 非零即返回 1 且不输出；只有 ss 成功才输出匹配行
+# （可为空）。删除门禁必须用它："ss 没输出"不等于"ss 成功且没有监听"。
+net_port_lines_strict() {
+    local proto=$1 port=$2 out rc line field
+    local flags=(-lunH)
+    [[ $proto == tcp ]] && flags=(-ltnH)
+    out=$(ss "${flags[@]}" 2>/dev/null); rc=$?
+    (( rc == 0 )) || return 1
+    while IFS= read -r line; do
+        [[ $line =~ ^(LISTEN|UNCONN|ESTAB) ]] || continue
+        read -r -a _net_f <<< "$line"
+        field=${_net_f[3]:-}
+        [[ ${field##*:} == "$port" ]] || continue
+        printf '%s\n' "$line"
+    done <<< "$out"
+    return 0
+}
+
 # 端口是否由指定单元的进程持有：MainPID 相等，或 /proc/<pid>/exe 就是我们的
 # 可执行文件。两者都不成立就算「不是我们的」。
 net_port_owned_by() {
     local proto=$1 port=$2 bin=$3 unit=${4:-} line pid exe want main=''
+    local flags=(-lunpH)
+    [[ $proto == tcp ]] && flags=(-ltnpH)
     want=$(readlink -f -- "$bin" 2>/dev/null) || want=$bin
     [[ -n $unit ]] && main=$(systemctl show -p MainPID --value "$unit" 2>/dev/null)
     [[ $main =~ ^[0-9]+$ ]] || main=''
     while IFS= read -r line; do
+        # 只看指定协议/端口的 socket（与 hy2_port_owned_by 同一判据），
+        # 否则任何监听端口的同名进程都会被误判为「本服务已持有该端口」。
+        read -r -a _net_f <<< "$line"
+        [[ ${_net_f[3]:-} == *":$port" ]] || continue
         while IFS= read -r pid; do
             [[ -n $pid ]] || continue
             [[ -n $main && $pid == "$main" ]] && return 0
             exe=$(readlink -f "/proc/$pid/exe" 2>/dev/null) || exe=''
             [[ -n $exe && $exe == "$want" ]] && return 0
         done < <(grep -o 'pid=[0-9]*' <<< "$line" | cut -d= -f2)
-    done < <(ss -lunpH 2>/dev/null; ss -ltnpH 2>/dev/null)
+    done < <(ss "${flags[@]}" 2>/dev/null)
     return 1
 }
 
@@ -1001,6 +1025,80 @@ net_relay_unit_dir() { printf '%s\n' "${TOOLBOX_NET_UNIT_DIR:-/etc/systemd/syste
 net_relay_unit_name() { printf '%s-%s-%s.service\n' "$RELAY_PREFIX" "$1" "$2"; }
 net_relay_unit() { printf '%s/%s\n' "$(net_relay_unit_dir)" "$(net_relay_unit_name "$1" "$2")"; }
 
+# 归属台账：安装时记录单元的 dev:inode、大小、权限、属主、链接数与 sha256，存放在
+# 单元目录之外。卸载/回滚只对「台账逐字段一致」的单元动手；无台账、内容被改、
+# inode 被换、被硬链接的一律视为外来并保留。文件内的任何标记都不作为归属依据。
+net_relay_state_dir() { printf '%s\n' "${TOOLBOX_NET_RELAY_STATE:-/var/lib/terry-toolbox/relay}"; }
+net_relay_ledger() { printf '%s/%s-%s.ledger\n' "$(net_relay_state_dir)" "$1" "$2"; }
+net_relay_identity() {
+    local f=$1 st sum
+    [[ -f $f && ! -L $f ]] || return 1
+    st=$(stat -c '%d:%i %s %a %u %h' -- "$f") || return 1
+    sum=$(sha256sum -- "$f") || return 1
+    printf '%s %s\n' "$st" "${sum%% *}"
+}
+net_relay_unit_state() { # unit ledger → absent | ours | foreign
+    local unit=$1 ledger=$2 want have
+    [[ -e $unit || -L $unit ]] || { printf 'absent\n'; return 0; }
+    [[ -f $ledger && ! -L $ledger ]] || { printf 'foreign\n'; return 0; }
+    want=$(<"$ledger") || want=''
+    have=$(net_relay_identity "$unit") || { printf 'foreign\n'; return 0; }
+    if [[ -n $want && $want == "$have" ]]; then printf 'ours\n'; else printf 'foreign\n'; fi
+}
+# 停止确认。单字段 inactive 不证明停止：一次性读取 LoadState/ActiveState/SubState/
+# MainPID/Job，要求无待处理 job、PID 为 0，且该协议端口经 ss 成功读取后没有任何监听。
+# systemd 的 show 输出顺序与 -p 请求顺序无关，因此不用 --value 按行位置猜值，而是
+# 读取 Key=Value 并按 key 解析；缺失、重复、未知字段或非数字 PID 一律视为不确定。
+# started=1（本次或历史上尝试过启动）：disable --now 必须返回 0，快照须为 loaded +
+# inactive|failed + dead|failed + PID 0 + 无 job。started=0（从未尝试启动）：允许
+# loaded 或 not-found，但同样要求 inactive + dead + PID 0 + 无 job 全部一致。
+# 读回失败、解析失败、超时、ss 失败一律视为未确认。
+net_relay_snapshot() { systemctl show -p LoadState,ActiveState,SubState,MainPID,Job -- "$1" 2>/dev/null; }
+net_relay_parse_snapshot() { # stdin: Key=Value 行 → 输出 load|active|sub|pid|job；不完整/重复/未知则失败
+    local line key val load='' active='' sub='' pid='' job=''
+    local seen_load=0 seen_active=0 seen_sub=0 seen_pid=0 seen_job=0
+    while IFS= read -r line; do
+        [[ -n $line ]] || continue
+        [[ $line == *=* ]] || return 1
+        key=${line%%=*}; val=${line#*=}
+        case $key in
+            LoadState)   (( seen_load ))   && return 1; seen_load=1;   load=$val ;;
+            ActiveState) (( seen_active )) && return 1; seen_active=1; active=$val ;;
+            SubState)    (( seen_sub ))    && return 1; seen_sub=1;    sub=$val ;;
+            MainPID)     (( seen_pid ))    && return 1; seen_pid=1;    pid=$val ;;
+            Job)         (( seen_job ))    && return 1; seen_job=1;    job=$val ;;
+            *) return 1 ;;
+        esac
+    done
+    (( seen_load && seen_active && seen_sub && seen_pid && seen_job )) || return 1
+    [[ $pid =~ ^[0-9]+$ ]] || return 1
+    printf '%s|%s|%s|%s|%s\n' "$load" "$active" "$sub" "$pid" "$job"
+}
+net_relay_stop_confirmed() { # name proto lport started
+    local name=$1 proto=$2 lport=$3 started=$4 snap fields load active sub pid job i ok=0 listeners
+    if (( started )); then
+        systemctl disable --now "$name" >/dev/null 2>&1 || return 1
+    else
+        systemctl disable "$name" >/dev/null 2>&1 || true
+    fi
+    for ((i = 0; i < 20; i++)); do
+        snap=$(net_relay_snapshot "$name") || snap=''
+        if fields=$(net_relay_parse_snapshot <<< "$snap"); then
+            IFS='|' read -r load active sub pid job <<< "$fields"
+            if (( started )); then
+                [[ $load == loaded && ($active == inactive || $active == failed) && ($sub == dead || $sub == failed) && $pid == 0 && -z $job ]] && { ok=1; break; }
+            else
+                [[ ($load == loaded || $load == not-found) && $active == inactive && $sub == dead && $pid == 0 && -z $job ]] && { ok=1; break; }
+            fi
+        fi
+        sleep 0.3
+    done
+    (( ok )) || return 1
+    listeners=$(net_port_lines_strict "$proto" "$lport") || return 1
+    [[ -z $listeners ]] || return 1
+    return 0
+}
+
 net_relay_socat() {
     local p=${TOOLBOX_NET_SOCAT:-}
     if [[ -n $p ]]; then printf '%s\n' "$p"; return 0; fi
@@ -1036,10 +1134,13 @@ net_relay_exec_line() {
 }
 
 net_relay_write_unit() {
-    local proto=$1 lport=$2 host=$3 tport=$4 unit exec
-    unit=$(net_relay_unit "$proto" "$lport")
+    local proto=$1 lport=$2 host=$3 tport=$4 unit exec dir tmp ledger state identity
+    unit=$(net_relay_unit "$proto" "$lport"); dir=$(net_relay_unit_dir)
+    ledger=$(net_relay_ledger "$proto" "$lport"); state=$(net_relay_state_dir)
     exec=$(net_relay_exec_line "$proto" "$lport" "$host" "$tport") || return 1
-    cat > "$unit" <<EOF || return 1
+    # 先写到临时名，完整校验后用不覆盖的硬链接原子落位，再写归属台账。
+    tmp=$(mktemp "$dir/.relay-stage.XXXXXXXX") || return 1
+    cat > "$tmp" <<EOF || { rm -f -- "$tmp"; return 1; }
 [Unit]
 Description=Terry Toolbox relay $proto $lport -> $host:$tport
 After=network-online.target
@@ -1063,27 +1164,54 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 [Install]
 WantedBy=multi-user.target
 EOF
-    chmod 0644 "$unit" && [[ -s $unit ]]
+    { chmod 0644 "$tmp" && [[ -s $tmp ]]; } || { rm -f -- "$tmp"; return 1; }
+    ln -T -- "$tmp" "$unit" || { rm -f -- "$tmp"; return 1; }
+    rm -f -- "$tmp"
+    identity=$(net_relay_identity "$unit") || return 1
+    # 本次独占创建成功：记录 per-attempt claim（调用方作用域变量）。回滚只认它，
+    # 绝不从持久台账反推"本次创建"。ln 失败到不了这里，因此无 claim。
+    net_relay_claim=$identity
+    install -d -m 0700 -- "$state" || return 1
+    tmp=$(mktemp "$state/.ledger.XXXXXXXX") || return 1
+    { printf '%s\n' "$identity" > "$tmp" && chmod 0600 "$tmp" && mv -f -- "$tmp" "$ledger"; } || { rm -f -- "$tmp"; return 1; }
 }
 
-net_relay_rollback() {
-    local proto=$1 lport=$2 unit
-    unit=$(net_relay_unit "$proto" "$lport")
+# 回滚只处理本次独占创建的单元：无 claim（ln 失败、写入前失败）则不停止、不
+# reset-failed、不删除任何既有资源；claim 与当前身份不一致、停止未确认均保留。
+net_relay_rollback() { # proto lport；读取调用方作用域的 net_relay_claim / net_relay_started
+    local proto=$1 lport=$2 unit ledger name have
+    unit=$(net_relay_unit "$proto" "$lport"); ledger=$(net_relay_ledger "$proto" "$lport")
+    name=$(net_relay_unit_name "$proto" "$lport")
     net_err '--- 开始回滚 ---'
-    systemctl disable --now "$(net_relay_unit_name "$proto" "$lport")" >/dev/null 2>&1 || true
+    if [[ -z ${net_relay_claim:-} ]]; then
+        net_err '本次未创建任何单元；不停止、不删除任何既有资源。'
+        return 0
+    fi
+    have=$(net_relay_identity "$unit" 2>/dev/null) || have=''
+    if [[ $have != "$net_relay_claim" ]]; then
+        net_err "警告：$unit 已不是本次创建的内容，保留；请人工确认。"
+        return 1
+    fi
+    if ! net_relay_stop_confirmed "$name" "$proto" "$lport" "${net_relay_started:-0}"; then
+        net_err "警告：$name 停止失败或状态无法确认（disable 非零、仍有 job/PID、或端口仍在监听），保留单元与台账；请人工检查。"
+        return 1
+    fi
+    have=$(net_relay_identity "$unit" 2>/dev/null) || have=''
+    [[ $have == "$net_relay_claim" ]] || { net_err "警告：$unit 在停止期间发生改动，保留。"; return 1; }
+    if [[ -f $ledger && ! -L $ledger && $(<"$ledger") == "$net_relay_claim" ]]; then rm -f -- "$ledger"; fi
     rm -f -- "$unit"
     systemctl daemon-reload >/dev/null 2>&1 || true
-    systemctl reset-failed "$(net_relay_unit_name "$proto" "$lport")" >/dev/null 2>&1 || true
-    net_err '已删除本次写入的单元。'
+    systemctl reset-failed "$name" >/dev/null 2>&1 || true
+    net_err '已删除本次创建的单元。'
 }
 
 _net_relay_install() {
     local proto=${1:-} lport=${2:-} host=${3:-} tport=${4:-}
-    local unit name socat state
+    local unit name socat state net_relay_claim='' net_relay_started=0
     net_require_root || return 1
     net_require_debian || return 1
     net_require_systemd || return 1
-    net_require_cmds flock ss sed mktemp grep cut readlink cat chmod rm sleep || return 1
+    net_require_cmds flock ss sed mktemp grep cut readlink cat chmod rm sleep stat sha256sum ln install mv || return 1
     [[ -n ${TOOLBOX_NET_SOCAT:-} ]] || net_require_cmds socat || return 1
 
     # 菜单只传动作：缺的参数问，协议给默认 tcp；EOF 在写盘前退出。
@@ -1104,10 +1232,10 @@ _net_relay_install() {
 
     unit=$(net_relay_unit "$proto" "$lport")
     name=$(net_relay_unit_name "$proto" "$lport")
-    state=$(net_unit_state "$unit" "$socat")
+    state=$(net_relay_unit_state "$unit" "$(net_relay_ledger "$proto" "$lport")")
     case $state in
         foreign)
-            net_die "$unit 已存在但内容不是本模块生成的，未覆盖；请人工确认。"
+            net_die "$unit 已存在但不是本模块生成的（无归属台账或内容已改动），未覆盖；请人工确认。"
             return 1
             ;;
         ours)
@@ -1132,12 +1260,19 @@ _net_relay_install() {
     net_confirm_twice RELAY || return 1
 
     net_lock relay || return 1
+    # 锁内复核：等待确认期间可能有另一安装完成或端口被占用；此时不写、不回滚、不触碰既有资源。
+    state=$(net_relay_unit_state "$unit" "$(net_relay_ledger "$proto" "$lport")")
+    [[ $state == absent ]] || { net_die "$name 在确认期间已被创建（$state）；未覆盖，请重新查看状态。"; return 1; }
+    if net_port_busy "$proto" "$lport"; then
+        net_die "$proto 端口 $lport 在确认期间被占用；未写入。"; return 1
+    fi
     net_relay_write_unit "$proto" "$lport" "$host" "$tport" \
         || { net_relay_rollback "$proto" "$lport"; net_die '单元写入失败。'; return 1; }
 
     if ! systemctl daemon-reload; then
         net_relay_rollback "$proto" "$lport"; return 1
     fi
+    net_relay_started=1
     if ! systemctl enable --now "$name" >/dev/null 2>&1; then
         net_err 'systemctl enable --now 失败。'
         net_relay_rollback "$proto" "$lport"; return 1
@@ -1182,14 +1317,13 @@ net_relay_parse_unit() {
 }
 
 _net_relay_uninstall() {
-    local units=() unit proto lport socat name state
+    local units=() unit proto lport name state ledger failed=0 deleted=0
     net_require_root || return 1
     net_require_systemd || return 1
-    socat=$(net_relay_socat) || socat=''
 
     mapfile -t units < <(net_relay_units)
     (( ${#units[@]} > 0 )) || { net_die '没有找到本模块的转发单元。'; return 1; }
-    net_require_cmds grep flock rm || return 1
+    net_require_cmds grep flock rm stat sha256sum sleep || return 1
 
     if (( $# == 0 )) || [[ ${1:-} == all ]]; then
         :
@@ -1207,23 +1341,39 @@ _net_relay_uninstall() {
 
     printf '将停止并删除：\n'
     for unit in "${units[@]}"; do
-        state=$(net_unit_state "$unit" "${socat:-socat}")
-        printf '  %s%s\n' "$unit" "$( [[ $state == foreign ]] && printf '（他人单元，将保留）')"
+        if read -r proto lport < <(net_relay_parse_unit "$unit"); then
+            state=$(net_relay_unit_state "$unit" "$(net_relay_ledger "$proto" "$lport")")
+        else
+            state=foreign
+        fi
+        printf '  %s%s\n' "$unit" "$( [[ $state == ours ]] || printf '（无归属台账或内容已改动，将保留）')"
     done
     net_confirm_once || return 1
     net_lock relay || return 1
 
     for unit in "${units[@]}"; do
-        if [[ $(net_unit_state "$unit" "${socat:-socat}") == foreign ]]; then
-            continue
+        read -r proto lport < <(net_relay_parse_unit "$unit") || continue
+        ledger=$(net_relay_ledger "$proto" "$lport"); name=${unit##*/}
+        [[ $(net_relay_unit_state "$unit" "$ledger") == ours ]] || continue
+        if ! net_relay_stop_confirmed "$name" "$proto" "$lport" 1; then
+            net_err "$name 停止失败或状态无法确认（disable 非零、仍有 job/PID、或 $proto $lport 仍在监听）；保留单元与台账，请人工检查。"
+            failed=1; continue
         fi
-        name=${unit##*/}
-        systemctl disable --now "$name" >/dev/null 2>&1 || true
-        rm -f -- "$unit"
+        # 停止期间单元可能被改动：删除前再核一次台账。
+        if [[ $(net_relay_unit_state "$unit" "$ledger") != ours ]]; then
+            net_err "$unit 在停止期间发生改动，保留。"; failed=1; continue
+        fi
+        rm -f -- "$unit" "$ledger"
         systemctl reset-failed "$name" >/dev/null 2>&1 || true
         printf '已删除 %s\n' "$name"
+        deleted=$((deleted + 1))
     done
     systemctl daemon-reload >/dev/null 2>&1 || true
+    if (( deleted == 0 )); then
+        net_die '没有删除任何单元：无归属台账或内容已改动的单元均已保留，请人工确认。'
+        return 1
+    fi
+    (( failed == 0 ))
 }
 
 net_relay_status() {
@@ -1253,7 +1403,7 @@ net_relay_status() {
 # 与 /proc/<pid>/exe，pidfile 只能增加约束，不靠进程名猜测。
 
 net_const NET_ALPINE_HY2_VERSION '2.13.0'
-net_const NET_ALPINE_XRAY_VERSION '26.10.29'
+net_const NET_ALPINE_XRAY_VERSION '26.10.31'
 net_const NET_ALPINE_HY2_NAME 'terry-toolbox-hy2'
 net_const NET_ALPINE_XRAY_NAME 'terry-toolbox-xray'
 net_const NET_ALPINE_DEFAULT_PORT 443
@@ -1296,11 +1446,13 @@ net_alpine_hy2_sha256() {
     esac
 }
 
-# XTLS/Xray-core v26.10.29 官方 zip 的 SHA-256 白名单（取自上游 .dgst 并本地复核）。
+# XTLS/Xray-core v26.10.31 官方 zip 的 SHA-256 白名单（取自上游 .dgst；amd64 已在测试机
+# 下载实测一致，arm64 仅核对 .dgst）。v26.10.29 已被上游以 MPTCP 安全问题为由撤版，
+# 其下载地址返回 404，不能再 pin。
 net_alpine_xray_sha256() {
     case $1 in
-        amd64) printf '%s\n' "${TOOLBOX_A2_SHA256:-8a5f3e6a1057e4bd0f8a7c57c9d91204b4be0b74222a6e210d070603101163c2}" ;;
-        arm64) printf '%s\n' "${TOOLBOX_A2_SHA256_ARM64:-afe01f19045b05237420328028ee1ee2e1edd2100eb41a8cbbf50e683b0a6e58}" ;;
+        amd64) printf '%s\n' "${TOOLBOX_A2_SHA256:-e4bd9119f50ae7c41658b1abd0679ae06f98bd864a2907ff33f2f2cf7081b214}" ;;
+        arm64) printf '%s\n' "${TOOLBOX_A2_SHA256_ARM64:-1811c8f1da0c3b6dc707ebaf1c8390e987ba39859a8f0a7aadd8526157f2ec8d}" ;;
         *) return 1 ;;
     esac
 }
@@ -2213,7 +2365,7 @@ net_alpine_status() { # name init bin etc proto
 #
 # 没有证书：REALITY 借用回落目标的证书，本模块不碰证书文件。
 
-net_const NET_A5_VERSION '26.10.29'
+net_const NET_A5_VERSION '26.10.31'
 net_const NET_A5_BIN_NAME 'terry-toolbox-xray'
 net_const NET_A5_UNIT_NAME 'terry-toolbox-xray.service'
 net_const NET_A5_DEFAULT_PORT 443
@@ -2990,7 +3142,10 @@ net_dns_write() { # servers...
     file=$(net_dns_dropin)
     install -d -m 0755 "$(dirname -- "$file")" || { net_die "无法创建 $(dirname -- "$file")"; return 1; }
     # 只保留第一次的原始备份：多次切换后回滚仍回到本工具接管前的状态。
-    if [[ -e $file && ! -e $file.pre-toolbox ]]; then
+    # 本工具自己写的 drop-in 不是「原始配置」：原机没有 drop-in 时，第二次切换
+    # 若把第一次的产物备份下来，恢复就会落在第一次的 DNS 而不是原状。
+    if [[ -e $file && ! -e $file.pre-toolbox ]] \
+        && ! grep -qF '由 Terry Toolbox B23 生成' "$file" 2>/dev/null; then
         cp -p -- "$file" "$file.pre-toolbox" || { net_die '备份现有配置失败。'; return 1; }
     fi
     tmp=$file.new.$$

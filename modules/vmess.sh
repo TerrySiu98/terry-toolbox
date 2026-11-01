@@ -689,7 +689,7 @@ vmess_fetch() { # stage: fixed official URL and whitelist, local archive is not 
     arch=$(vmess_arch) || return 1
     url=$(net_a5_zip_url "$arch") || { vmess_err "无法构造 $arch 的 Xray 下载地址。"; return 1; }
     hash=$(net_a5_sha256 "$arch") || { vmess_err "没有 $arch 的固定校验值。"; return 1; }
-    [[ $hash =~ ^[0-9a-f]{64}$ && $url == https://github.com/XTLS/Xray-core/releases/download/v26.10.29/Xray-linux-*.zip ]] \
+    [[ $hash =~ ^[0-9a-f]{64}$ && $url == https://github.com/XTLS/Xray-core/releases/download/v26.10.31/Xray-linux-*.zip ]] \
         || { vmess_err "固定版本/校验值/下载地址不一致：$url"; return 1; }
     if [[ -n ${TOOLBOX_VM_WS_ZIP_SRC:-} ]]; then
         python3 - "$TOOLBOX_VM_WS_ZIP_SRC" "$1/xray.zip" <<'PY'
@@ -925,7 +925,7 @@ vmess_install() (
     trap 'exit 130' INT
     trap 'exit 143' TERM HUP
     vmess_conflict "$port" || return 1
-    vmess_err "预览：Xray v26.10.29，VMess + WS + TLS，IPv4 $listen:$port，域名 $host，路径 $path。"
+    vmess_err "预览：Xray v26.10.31，VMess + WS + TLS，IPv4 $listen:$port，域名 $host，路径 $path。"
     vmess_err "新建 $(vmess_etc)（证书/私钥/config.json/client.json/vmess.txt/归属清单），$(vmess_bin)，$(vmess_unit)。"
     vmess_err '兼容用途：固定版上游已弃用 VMess（无前向保密）与 WS（特征明显）；新部署不优先推荐此协议组合。'
     vmess_err '将启动独立服务并执行 TLS/WS 握手自检（不代表 VMess 认证或公网数据面验收）；不动 REALITY/已有服务，不配置 ACME/防火墙，不设开机自启。'

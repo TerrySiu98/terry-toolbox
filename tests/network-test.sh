@@ -331,6 +331,7 @@ export TOOLBOX_NET_SRC_DIR=$work/usr/src
 export TOOLBOX_NET_MODDIR=$work/modbuild
 export TOOLBOX_NET_KERNEL_RELEASE=6.1.0-test
 export TOOLBOX_NET_SOCAT=$work/pathbin/socat
+export TOOLBOX_NET_RELAY_STATE=$work/relay-state
 mkdir -p "$TOOLBOX_NET_SYSTEMD_RUN" "$TOOLBOX_NET_UNIT_DIR" "$TOOLBOX_NET_LOCK_DIR" \
     "$TOOLBOX_NET_BIN_DIR" "$work/modbuild" "$work/pkg"
 printf '# Fixture headers: native compilation is replaced by the make/dkms shims.\n' > "$work/modbuild/Makefile"
@@ -431,6 +432,12 @@ systemctl() {
     case ${1:-} in
         is-active) [[ -e $SD/active ]] && return 0 || return 3 ;;
         enable)
+            if [[ -e $SD/enable_fail_dirty ]]; then
+                # 启动失败但留下监听与待处理 job（真实 systemd 可能出现的脏状态）。
+                [[ -n ${MOCK_PORT:-} && -n ${MOCK_PROTO:-} ]] && emit_port "$MOCK_PROTO" "$MOCK_PORT" '/usr/bin/tuic-stub' 4242
+                printf '7 start\n' > "$SD/pending_job"
+                return 1
+            fi
             [[ -e $SD/enable_fail ]] && return 1
             if [[ $* == *--now* && ! -e $SD/noactivate ]]; then
                 : > "$SD/active"
@@ -438,8 +445,40 @@ systemctl() {
             fi
             return 0
             ;;
-        disable) [[ $* == *--now* ]] && rm -f "$SD/active"; return 0 ;;
-        show) [[ -e $SD/mainpid ]] && cat "$SD/mainpid" || printf '0\n'; return 0 ;;
+        disable)
+            if [[ $* == *--now* ]]; then
+                [[ -e $SD/stop_fail ]] && return 1
+                rm -f "$SD/active"
+                # relay 单元停止后释放其端口监听（除非注入 listener_stays）。
+                if [[ ${!#} =~ ^terry-toolbox-relay-(tcp|udp)-([0-9]+)\.service$ && ! -e $SD/listener_stays && -e $SD/ports ]]; then
+                    grep -v ":${BASH_REMATCH[2]} " "$SD/ports" > "$SD/ports.n" || true
+                    mv "$SD/ports.n" "$SD/ports"
+                fi
+            fi
+            return 0 ;;
+        show)
+            [[ -e $SD/show_fail ]] && return 1
+            local show_props='' show_i show_j show_value=0 show_k show_v
+            for ((show_i = 1; show_i <= $#; show_i++)); do
+                [[ ${!show_i} == --value ]] && show_value=1
+                if [[ ${!show_i} == -p ]]; then show_j=$((show_i + 1)); show_props=${!show_j}; fi
+            done
+            # 按 native systemd 的序列化顺序输出（MainPID 在前），与 -p 请求顺序无关；
+            # show_missing_field 注入时省略 Job 行。
+            for show_k in MainPID LoadState ActiveState SubState Job; do
+                [[ ",$show_props," == *",$show_k,"* ]] || continue
+                [[ $show_k == Job && -e $SD/show_missing_field ]] && continue
+                case $show_k in
+                    LoadState) if [[ -e $SD/notfound ]]; then show_v=not-found; else show_v=loaded; fi ;;
+                    ActiveState) if [[ -e $SD/active ]]; then show_v=active; elif [[ -e $SD/failed ]]; then show_v=failed; else show_v=inactive; fi ;;
+                    SubState) if [[ -e $SD/active ]]; then show_v=running; else show_v=dead; fi ;;
+                    MainPID) if [[ -e $SD/active && -e $SD/mainpid ]]; then show_v=$(<"$SD/mainpid"); else show_v=0; fi ;;
+                    Job) if [[ -e $SD/pending_job ]]; then show_v=$(<"$SD/pending_job"); else show_v=''; fi ;;
+                esac
+                if (( show_value )); then printf '%s\n' "$show_v"; else printf '%s=%s\n' "$show_k" "$show_v"; fi
+            done
+            return 0 ;;
+        daemon-reload) [[ -e $SD/reload_fail ]] && return 1; return 0 ;;
         is-active-fg) return 0 ;;
         *) return 0 ;;
     esac
@@ -452,6 +491,7 @@ emit_port() { # <proto> <port> <exe> <pid>
     fi
 }
 ss() {
+    [[ -e $SD/ss_fail ]] && return 73
     [[ -e $SD/ports ]] || return 0
     # 尊重 -ltn / -lun 的协议过滤，否则 UDP 行会污染 TCP 判定。
     case " $* " in
@@ -479,10 +519,11 @@ curl() {
 # 断言工具
 reset() {
     rm -rf "$TOOLBOX_NET_ETC" "$TOOLBOX_NET_LOCK_DIR" "$TOOLBOX_NET_MODLOAD_DIR" \
-        "$TOOLBOX_NET_SYSCTL_DIR" "$TOOLBOX_NET_DKMS_DIR" "$TOOLBOX_NET_SRC_DIR" "$work/client"
+        "$TOOLBOX_NET_SYSCTL_DIR" "$TOOLBOX_NET_DKMS_DIR" "$TOOLBOX_NET_SRC_DIR" "$work/client" "$TOOLBOX_NET_RELAY_STATE"
     find "$TOOLBOX_NET_UNIT_DIR" -mindepth 1 -delete
     find "$TOOLBOX_NET_BIN_DIR" -mindepth 1 -delete
     rm -f "$SD"/*.log "$SD/ports" "$SD/loaded" "$SD/active" "$SD/mainpid" "$SD/mainexe" "$SD"/a5_*
+    rm -f "$SD/pending_job" "$SD/listener_stays" "$SD/notfound" "$SD/failed" "$SD/show_fail" "$SD/enable_fail_dirty" "$SD/show_missing_field"
     rm -f "$SD/cc_current" "$SD/cc_available"
     for f in "$SD"/*_fail "$SD"/noactivate "$SD"/no_register "$SD"/sysctl_fail "$SD"/tuic_badconf; do
         [[ -e $f ]] && rm -f "$f"
@@ -504,7 +545,8 @@ wrote_a5() {
     [[ -d $TOOLBOX_NET_ETC/terry-toolbox-xray || -e $TOOLBOX_NET_BIN_DIR/terry-toolbox-xray ]]
 }
 wrote_unit() { [[ -n $(ls "$TOOLBOX_NET_UNIT_DIR" 2>/dev/null) ]]; }
-clean() { ! wrote_brutal && ! wrote_tuic && ! wrote_a5 && ! wrote_unit; }
+wrote_relay_state() { [[ -n $(ls "$TOOLBOX_NET_RELAY_STATE" 2>/dev/null) ]]; }
+clean() { ! wrote_brutal && ! wrote_tuic && ! wrote_a5 && ! wrote_unit && ! wrote_relay_state; }
 assert_clean() { if ! clean; then ls -R "$TOOLBOX_NET_ETC" "$TOOLBOX_NET_UNIT_DIR" "$TOOLBOX_NET_BIN_DIR" >&2; fail "$1：留下了写入"; fi; }
 called() { grep -qF -- "$1" "$SD/$2" 2>/dev/null || fail "缺少 $2 调用: $1"; }
 
@@ -1277,6 +1319,198 @@ toolbox_network B31 uninstall tcp <<< 'YES' >/dev/null 2>&1 && fail 'B31 卸载�
 toolbox_network B31 uninstall all <<< 'YES' >"$work/o" 2>&1 || fail 'B31 全部卸载失败'
 [[ -z $(ls "$TOOLBOX_NET_UNIT_DIR") ]] || fail 'B31 全部卸载有残留'
 toolbox_network B31 status >/dev/null 2>&1 && fail 'B31 卸载后 status 仍报存在'
+reset
+
+# ---------- B31 归属台账与停止门禁 ----------
+# 正常：安装写台账，卸载后单元与台账都消失
+MOCK_PORT=18110 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
+inst_relay tcp 18110 relay.example.test 443 >"$work/o" 2>&1 || { cat "$work/o" >&2; fail 'B31 台账场景安装失败'; }
+[[ -f $TOOLBOX_NET_RELAY_STATE/tcp-18110.ledger ]] || fail 'B31 安装未写归属台账'
+toolbox_network B31 uninstall tcp 18110 <<< YES >"$work/o" 2>&1 || { cat "$work/o" >&2; fail 'B31 台账场景卸载失败'; }
+[[ ! -e $TOOLBOX_NET_UNIT_DIR/terry-toolbox-relay-tcp-18110.service && ! -e $TOOLBOX_NET_RELAY_STATE/tcp-18110.ledger ]] \
+    || fail 'B31 卸载后残留单元或台账'
+reset
+# 旧 socat 路径：安装后 socat 消失/移动，仍按台账识别并卸载自己的单元
+MOCK_PORT=18111 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
+inst_relay tcp 18111 relay.example.test 443 >"$work/o" 2>&1 || fail 'B31 socat 路径场景安装失败'
+TOOLBOX_NET_SOCAT=$work/none toolbox_network B31 uninstall tcp 18111 <<< YES >"$work/o" 2>&1 \
+    || { cat "$work/o" >&2; fail 'B31 socat 缺失时卸载自己的单元失败'; }
+[[ ! -e $TOOLBOX_NET_UNIT_DIR/terry-toolbox-relay-tcp-18111.service ]] || fail 'B31 socat 缺失时未删除自己的单元'
+reset
+# 仅注释里带标记的外来单元：不停止、不删除、不改动
+relay_unit=$TOOLBOX_NET_UNIT_DIR/terry-toolbox-relay-tcp-18112.service
+printf '# Description=Terry Toolbox relay tcp 18112 -> x:1\n[Service]\nExecStart=/usr/bin/socat TCP-LISTEN:18112\n' > "$relay_unit"
+relay_before=$(stat -c '%i %s %Y' "$relay_unit")
+toolbox_network B31 uninstall tcp 18112 <<< YES >"$work/o" 2>&1 && fail 'B31 注释伪装单元被当成 ours'
+[[ -e $relay_unit && $(stat -c '%i %s %Y' "$relay_unit") == "$relay_before" ]] || fail 'B31 注释伪装单元被改动或删除'
+grep -q '保留' "$work/o" || fail 'B31 保留外来单元未说明'
+! grep -q 'disable --now terry-toolbox-relay-tcp-18112' "$SD/systemctl.log" || fail 'B31 对外来单元执行了停止'
+reset
+# 保留原 Description 但改了 ExecStart 的单元：保留；同名再安装也拒绝
+MOCK_PORT=18113 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
+inst_relay tcp 18113 relay.example.test 443 >"$work/o" 2>&1 || fail 'B31 改动场景安装失败'
+relay_unit=$TOOLBOX_NET_UNIT_DIR/terry-toolbox-relay-tcp-18113.service
+sed -i 's#^ExecStart=.*#ExecStart=/usr/bin/socat -d -d TCP-LISTEN:18113,fork,reuseaddr TCP:evil.example:443#' "$relay_unit"
+grep -q '^Description=Terry Toolbox relay ' "$relay_unit" || fail 'B31 改动场景 fixture 缺 Description'
+toolbox_network B31 uninstall tcp 18113 <<< YES >"$work/o" 2>&1 && fail 'B31 改动 ExecStart 的单元被当成 ours'
+[[ -e $relay_unit ]] && grep -q 'evil.example' "$relay_unit" || fail 'B31 改动的单元被删除或替换'
+! grep -q 'disable --now terry-toolbox-relay-tcp-18113' "$SD/systemctl.log" || fail 'B31 对改动单元执行了停止'
+inst_relay tcp 18113 relay.example.test 443 >"$work/o" 2>&1 && fail 'B31 改动单元被覆盖安装'
+grep -q '不是本模块生成' "$work/o" || fail 'B31 改动单元冲突未说明'
+reset
+# 停止失败或状态无法确认：保留单元与台账并报错；恢复后可正常卸载
+MOCK_PORT=18114 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
+inst_relay tcp 18114 relay.example.test 443 >"$work/o" 2>&1 || fail 'B31 停止失败场景安装失败'
+relay_unit=$TOOLBOX_NET_UNIT_DIR/terry-toolbox-relay-tcp-18114.service
+: > "$SD/stop_fail"
+toolbox_network B31 uninstall tcp 18114 <<< YES >"$work/o" 2>&1 && fail 'B31 停止失败仍报成功'
+[[ -e $relay_unit && -f $TOOLBOX_NET_RELAY_STATE/tcp-18114.ledger ]] || fail 'B31 停止失败后删除了单元或台账'
+grep -q '停止失败' "$work/o" || fail 'B31 停止失败未说明'
+rm -f "$SD/stop_fail"
+toolbox_network B31 uninstall tcp 18114 <<< YES >"$work/o" 2>&1 || { cat "$work/o" >&2; fail 'B31 停止恢复后卸载失败'; }
+[[ ! -e $relay_unit && ! -e $TOOLBOX_NET_RELAY_STATE/tcp-18114.ledger ]] || fail 'B31 恢复后未删除'
+reset
+
+# ---------- B31 停止确认：单字段 inactive 不够 ----------
+# disable 成功但残留待处理 job：保留并返回非零；清除后可卸载
+MOCK_PORT=18123 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
+inst_relay tcp 18123 relay.example.test 443 >"$work/o" 2>&1 || fail 'B31 job 场景安装失败'
+relay_unit=$TOOLBOX_NET_UNIT_DIR/terry-toolbox-relay-tcp-18123.service
+printf '9 stop\n' > "$SD/pending_job"
+toolbox_network B31 uninstall tcp 18123 <<< YES >"$work/o" 2>&1 && fail 'B31 残留 job 仍报成功'
+[[ -e $relay_unit && -f $TOOLBOX_NET_RELAY_STATE/tcp-18123.ledger ]] || fail 'B31 残留 job 时删除了单元/台账'
+rm -f "$SD/pending_job"
+toolbox_network B31 uninstall tcp 18123 <<< YES >"$work/o" 2>&1 || { cat "$work/o" >&2; fail 'B31 job 清除后卸载失败'; }
+[[ ! -e $relay_unit ]] || fail 'B31 job 清除后未删除'
+reset
+# disable 成功、inactive，但端口仍有监听：保留并返回非零
+MOCK_PORT=18124 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
+inst_relay tcp 18124 relay.example.test 443 >"$work/o" 2>&1 || fail 'B31 监听场景安装失败'
+relay_unit=$TOOLBOX_NET_UNIT_DIR/terry-toolbox-relay-tcp-18124.service
+: > "$SD/listener_stays"
+toolbox_network B31 uninstall tcp 18124 <<< YES >"$work/o" 2>&1 && fail 'B31 残留监听仍报成功'
+[[ -e $relay_unit && -f $TOOLBOX_NET_RELAY_STATE/tcp-18124.ledger ]] || fail 'B31 残留监听时删除了单元/台账'
+grep -q ':18124 ' "$SD/ports" || fail 'B31 监听场景 fixture 失效'
+rm -f "$SD/listener_stays"
+grep -v ':18124 ' "$SD/ports" > "$SD/ports.n" || true; mv "$SD/ports.n" "$SD/ports"
+toolbox_network B31 uninstall tcp 18124 <<< YES >"$work/o" 2>&1 || { cat "$work/o" >&2; fail 'B31 监听释放后卸载失败'; }
+[[ ! -e $relay_unit ]] || fail 'B31 监听释放后未删除'
+reset
+# 状态读回失败：保留并返回非零
+MOCK_PORT=18125 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
+inst_relay tcp 18125 relay.example.test 443 >"$work/o" 2>&1 || fail 'B31 读回场景安装失败'
+relay_unit=$TOOLBOX_NET_UNIT_DIR/terry-toolbox-relay-tcp-18125.service
+: > "$SD/show_fail"
+toolbox_network B31 uninstall tcp 18125 <<< YES >"$work/o" 2>&1 && fail 'B31 读回失败仍报成功'
+[[ -e $relay_unit && -f $TOOLBOX_NET_RELAY_STATE/tcp-18125.ledger ]] || fail 'B31 读回失败时删除了单元/台账'
+rm -f "$SD/show_fail"
+toolbox_network B31 uninstall tcp 18125 <<< YES >"$work/o" 2>&1 || fail 'B31 读回恢复后卸载失败'
+reset
+# 回滚：enable 失败但留下监听与 job，且 disable 非零 → 保留单元与台账，不 reset-failed
+MOCK_PORT=18122 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
+: > "$SD/enable_fail_dirty"; : > "$SD/stop_fail"
+inst_relay tcp 18122 relay.example.test 443 >"$work/o" 2>&1 && fail 'B31 脏 enable 失败仍报成功'
+relay_unit=$TOOLBOX_NET_UNIT_DIR/terry-toolbox-relay-tcp-18122.service
+[[ -e $relay_unit && -f $TOOLBOX_NET_RELAY_STATE/tcp-18122.ledger ]] || fail 'B31 停止未确认的回滚仍删除了单元/台账'
+grep -q '保留' "$work/o" || fail 'B31 脏回滚未说明保留'
+! grep -q 'reset-failed terry-toolbox-relay-tcp-18122' "$SD/systemctl.log" || fail 'B31 停止未确认却 reset-failed'
+rm -f "$SD/enable_fail_dirty" "$SD/stop_fail" "$SD/pending_job"
+toolbox_network B31 uninstall tcp 18122 <<< YES >"$work/o" 2>&1 || { cat "$work/o" >&2; fail 'B31 脏回滚恢复后卸载失败'; }
+[[ ! -e $relay_unit && ! -e $TOOLBOX_NET_RELAY_STATE/tcp-18122.ledger ]] || fail 'B31 脏回滚恢复后未删除'
+reset
+
+# ---------- B31 并发：失败/拒绝的安装不得触碰另一合法安装 ----------
+# A 卡在二次确认时，B 完整安装成功（真实 flock/ln）；A 继续后必须拒绝，B 的文件、台账、运行态不变。
+MOCK_PORT=18120 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
+mkfifo "$work/a.in"
+( set +e; toolbox_network B31 install tcp 18120 relay.example.test 443 <"$work/a.in" >"$work/a.out" 2>&1; echo $? >"$work/a.rc" ) &
+a_pid=$!
+exec 7>"$work/a.in"
+printf 'YES\n' >&7
+for i in $(seq 200); do grep -q '再次确认' "$work/a.out" 2>/dev/null && break; command sleep 0.05; done
+grep -q '再次确认' "$work/a.out" || { cat "$work/a.out" >&2; fail 'B31 并发用例：A 未到二次确认'; }
+( inst_relay tcp 18120 relay.example.test 443 >"$work/b.out" 2>&1 ) || { cat "$work/b.out" >&2; fail 'B31 并发用例：B 安装失败'; }
+b_unit=$TOOLBOX_NET_UNIT_DIR/terry-toolbox-relay-tcp-18120.service
+b_before=$(stat -c '%i %s %Y' "$b_unit"); b_ledger_before=$(<"$TOOLBOX_NET_RELAY_STATE/tcp-18120.ledger")
+: > "$SD/systemctl.log"
+printf 'RELAY\n' >&7; exec 7>&-
+wait "$a_pid" || true
+[[ -s $work/a.rc ]] || fail 'B31 并发用例：A 未记录退出码（子 shell 提前退出）'
+[[ $(<"$work/a.rc") != 0 ]] || fail 'B31 并发用例：A 在 B 已安装后仍报成功'
+[[ -e $b_unit && $(stat -c '%i %s %Y' "$b_unit") == "$b_before" && $(<"$TOOLBOX_NET_RELAY_STATE/tcp-18120.ledger") == "$b_ledger_before" ]] \
+    || fail 'B31 并发用例：A 失败后 B 的单元/台账被改动'
+[[ -e $SD/active ]] && grep -q ':18120 ' "$SD/ports" || fail 'B31 并发用例：B 的运行态/监听被 A 拆除'
+! grep -qE 'disable|reset-failed' "$SD/systemctl.log" || fail 'B31 并发用例：A 对 B 执行了 disable/reset-failed'
+grep -qE '已被创建|已存在' "$work/a.out" || { cat "$work/a.out" >&2; fail 'B31 并发用例：A 未说明冲突'; }
+rm -f "$work/a.in" "$work/a.out" "$work/a.rc" "$work/b.out"
+reset
+# ln 失败（锁内复核之后、独占创建之前被他人创建）：无 claim 的回滚不得认领持久台账
+MOCK_PORT=18121 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
+inst_relay tcp 18121 relay.example.test 443 >"$work/o" 2>&1 || fail 'B31 claim 用例：预备安装失败'
+cp -p "$TOOLBOX_NET_UNIT_DIR/terry-toolbox-relay-tcp-18121.service" "$work/B.unit"
+toolbox_network B31 uninstall tcp 18121 <<< YES >/dev/null 2>&1 || fail 'B31 claim 用例：预备卸载失败'
+plant_B() { # 以 B 的身份"完整安装"：单元 + 与之匹配的持久台账 + 运行态/监听
+    cp -p "$work/B.unit" "$1"
+    net_relay_identity "$1" > "$TOOLBOX_NET_RELAY_STATE/tcp-18121.ledger"
+    : > "$SD/active"; emit_port tcp 18121 "$TOOLBOX_NET_SOCAT" 5151
+}
+ln() { if [[ ${!#} == */terry-toolbox-relay-tcp-18121.service && ! -e ${!#} ]]; then plant_B "${!#}"; fi; command ln "$@"; }
+: > "$SD/systemctl.log"
+inst_relay tcp 18121 relay.example.test 443 >"$work/o" 2>&1 && fail 'B31 claim 用例：ln 失败仍报成功'
+unset -f ln plant_B
+b_unit=$TOOLBOX_NET_UNIT_DIR/terry-toolbox-relay-tcp-18121.service
+[[ -e $b_unit ]] && cmp -s "$b_unit" "$work/B.unit" || fail 'B31 claim 用例：B 单元被删除或改动'
+[[ $(<"$TOOLBOX_NET_RELAY_STATE/tcp-18121.ledger") == "$(net_relay_identity "$b_unit")" ]] || fail 'B31 claim 用例：B 台账被删除或改动'
+[[ -e $SD/active ]] && grep -q ':18121 ' "$SD/ports" || fail 'B31 claim 用例：B 的运行态被拆除'
+! grep -qE 'disable|reset-failed' "$SD/systemctl.log" || fail 'B31 claim 用例：无 claim 的回滚执行了 disable/reset-failed'
+grep -q '本次未创建' "$work/o" || { cat "$work/o" >&2; fail 'B31 claim 用例：回滚未说明未创建'; }
+[[ $(ls -A "$TOOLBOX_NET_UNIT_DIR" | grep -vc '^terry-toolbox-relay-tcp-18121.service$') -eq 0 ]] || fail 'B31 claim 用例：残留临时文件'
+reset
+
+# ---------- B31 停止快照按 key 解析 + ss 失败显式传播 ----------
+# 控制：mock show 固定按 native 顺序（MainPID 在前）输出 Key=Value；正常卸载仍成功
+[[ $(systemctl show -p LoadState,ActiveState,SubState,MainPID,Job -- x.service | head -1) == MainPID=* ]] || fail 'B31 快照 mock 未按 native 顺序输出'
+MOCK_PORT=18130 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
+inst_relay tcp 18130 relay.example.test 443 >"$work/o" 2>&1 || fail 'B31 乱序快照场景安装失败'
+toolbox_network B31 uninstall tcp 18130 <<< YES >"$work/o" 2>&1 || { cat "$work/o" >&2; fail 'B31 native 顺序快照下正常卸载失败'; }
+[[ ! -e $TOOLBOX_NET_UNIT_DIR/terry-toolbox-relay-tcp-18130.service ]] || fail 'B31 native 顺序快照下未删除'
+reset
+# 快照缺字段（无 Job 行）：不确定 → 保留并返回非零；恢复后可卸载
+MOCK_PORT=18131 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
+inst_relay tcp 18131 relay.example.test 443 >"$work/o" 2>&1 || fail 'B31 缺字段场景安装失败'
+relay_unit=$TOOLBOX_NET_UNIT_DIR/terry-toolbox-relay-tcp-18131.service
+: > "$SD/show_missing_field"
+toolbox_network B31 uninstall tcp 18131 <<< YES >"$work/o" 2>&1 && fail 'B31 快照缺字段仍报成功'
+[[ -e $relay_unit && -f $TOOLBOX_NET_RELAY_STATE/tcp-18131.ledger ]] || fail 'B31 快照缺字段时删除了单元/台账'
+rm -f "$SD/show_missing_field"
+toolbox_network B31 uninstall tcp 18131 <<< YES >"$work/o" 2>&1 || fail 'B31 快照恢复后卸载失败'
+reset
+# 停止成功但 ss 读取失败（rc 73，无输出）：不得当作无监听，保留并返回非零；ss 恢复且确为空后才删除
+MOCK_PORT=18132 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
+inst_relay tcp 18132 relay.example.test 443 >"$work/o" 2>&1 || fail 'B31 ss 失败场景安装失败'
+relay_unit=$TOOLBOX_NET_UNIT_DIR/terry-toolbox-relay-tcp-18132.service
+: > "$SD/ss_fail"
+toolbox_network B31 uninstall tcp 18132 <<< YES >"$work/o" 2>&1 && fail 'B31 ss 失败仍报成功'
+[[ -e $relay_unit && -f $TOOLBOX_NET_RELAY_STATE/tcp-18132.ledger ]] || fail 'B31 ss 失败时删除了单元/台账'
+grep -q '仍在监听\|无法确认' "$work/o" || fail 'B31 ss 失败未说明'
+rm -f "$SD/ss_fail"
+[[ -z $(net_port_lines_strict tcp 18132) ]] || fail 'B31 ss 恢复后端口应为空（stop 已释放）'
+toolbox_network B31 uninstall tcp 18132 <<< YES >"$work/o" 2>&1 || { cat "$work/o" >&2; fail 'B31 ss 恢复后卸载失败'; }
+[[ ! -e $relay_unit ]] || fail 'B31 ss 恢复后未删除'
+reset
+# started=0 的 not-found 分支：daemon-reload 失败触发回滚；not-found 且其余字段一致 → 删除；不一致（残留 job）→ 保留
+MOCK_PORT=18133 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
+: > "$SD/reload_fail"; : > "$SD/notfound"
+inst_relay tcp 18133 relay.example.test 443 >"$work/o" 2>&1 && fail 'B31 daemon-reload 失败仍报成功'
+assert_clean 'B31 not-found 一致快照的回滚'
+reset
+MOCK_PORT=18134 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
+: > "$SD/reload_fail"; : > "$SD/notfound"; printf '3 start\n' > "$SD/pending_job"
+inst_relay tcp 18134 relay.example.test 443 >"$work/o" 2>&1 && fail 'B31 not-found+残留 job 仍报成功'
+relay_unit=$TOOLBOX_NET_UNIT_DIR/terry-toolbox-relay-tcp-18134.service
+[[ -e $relay_unit && -f $TOOLBOX_NET_RELAY_STATE/tcp-18134.ledger ]] || fail 'B31 not-found 但 job 残留时仍删除了单元/台账'
+rm -f "$SD/reload_fail" "$SD/notfound" "$SD/pending_job"
+toolbox_network B31 uninstall tcp 18134 <<< YES >"$work/o" 2>&1 || { cat "$work/o" >&2; fail 'B31 not-found 场景恢复后卸载失败'; }
 reset
 
 # B31 空参数补问，默认 tcp 与显式 udp 均生成对应单元；EOF 不写盘。

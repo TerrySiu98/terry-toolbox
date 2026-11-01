@@ -14,7 +14,11 @@ cleanup_packages() {
     rm -rf -- "$TEST_DIR"
     exit "$rc"
 }
-trap cleanup_packages EXIT
+# 非 root 用户 HOME 的场景需要用户可穿越的路径；scratch 根是 root 0700，故单独放在 /tmp 下。
+user_root=$(mktemp -d /tmp/toolbox-apps-user.XXXXXXXX)
+chmod 0711 "$user_root"
+cleanup_all() { local rc=$?; rm -rf -- "$user_root"; ( exit "$rc" ); cleanup_packages; }
+trap cleanup_all EXIT
 # Physical package guards also cover child Bash and an empty environment.
 mkdir -p "$TEST_DIR/package-deny"
 : > "$TEST_DIR/package-boundary.log"
@@ -282,5 +286,62 @@ if toolbox_app 28 <<< $'no\n\ny\nthis-is-a-strong-password' >/dev/null 2>&1; the
 ! grep -E '^CALL (run|network create)' "$LOG" >/dev/null || fail 'B28 reuse refusal wrote resources'
 toolbox_app 28 <<< $'REUSE\n\ny\nthis-is-a-strong-password' >/dev/null 2>&1 || fail 'B28 confirmed reuse failed'
 ! grep -E '^CALL (rm|container rm|network rm|volume rm)' "$LOG" >/dev/null || fail 'B28 automatic deletion'
+reset_test
+# ---- 数据目录父级：只独占创建、绝不接管既有对象 ----
+UHOME=$user_root/home
+user_reset() { rm -rf -- "$UHOME"; mkdir -m 0755 -- "$UHOME"; chown 65534:65534 "$UHOME"; : > "$LOG"; }
+# 正向：普通用户 HOME → .local、.local/share 归用户 0755；terry-toolbox、apps 仍为 root 0700
+user_reset
+HOME=$UHOME toolbox_app 3 <<< $'\ny' >"$TEST_DIR/user-out" 2>&1 || { cat "$TEST_DIR/user-out" >&2; fail 'user HOME deployment failed'; }
+[[ $(stat -c '%u:%g %a' "$UHOME/.local") == '65534:65534 755' ]] || fail "user .local ownership: $(stat -c '%u:%g %a' "$UHOME/.local")"
+[[ $(stat -c '%u:%g %a' "$UHOME/.local/share") == '65534:65534 755' ]] || fail 'user .local/share ownership'
+[[ $(stat -c '%u %a' "$UHOME/.local/share/terry-toolbox") == '0 700' ]] || fail 'terry-toolbox must stay root 0700'
+[[ $(stat -c '%u %a' "$UHOME/.local/share/terry-toolbox/apps") == '0 700' ]] || fail 'apps must stay root 0700'
+assert_log "type=bind,src=$UHOME/.local/share/terry-toolbox/apps/alist,dst=/opt/alist/data"
+# 既有目录的归属/权限不变：.local 已是 root 0711、.local/share 已是用户 0750
+user_reset
+mkdir -m 0711 -- "$UHOME/.local"; mkdir -m 0750 -- "$UHOME/.local/share"; chown 65534:65534 "$UHOME/.local/share"
+HOME=$UHOME toolbox_app 3 <<< $'\ny' >/dev/null 2>&1 || fail 'existing parents deployment failed'
+[[ $(stat -c '%u %a' "$UHOME/.local") == '0 711' ]] || fail 'existing .local was modified'
+[[ $(stat -c '%u %a' "$UHOME/.local/share") == '65534 750' ]] || fail 'existing .local/share was modified'
+# 用户无权限的既有 root 0700 .local：拒绝，不改动，不创建 share
+user_reset
+mkdir -m 0700 -- "$UHOME/.local"
+if HOME=$UHOME toolbox_app 3 <<< $'\ny' >/dev/null 2>&1; then fail 'root-only .local accepted under user HOME'; fi
+[[ $(stat -c '%u %a' "$UHOME/.local") == '0 700' && ! -e $UHOME/.local/share ]] || fail 'root-only .local modified or share created'
+! grep -E '^CALL (run|network create)' "$LOG" >/dev/null || fail 'root-only .local refusal wrote resources'
+# 符号链接竞态（预先换入）：.local → root 目录，拒绝且目标不变
+mkdir -m 0700 -- "$TEST_DIR/victim"
+user_reset
+ln -s "$TEST_DIR/victim" "$UHOME/.local"
+if HOME=$UHOME toolbox_app 3 <<< $'\ny' >/dev/null 2>&1; then fail 'symlinked .local accepted'; fi
+[[ -L $UHOME/.local && $(stat -c '%u %a' "$TEST_DIR/victim") == '0 700' && -z $(ls -A "$TEST_DIR/victim") ]] || fail 'symlink target modified'
+# .local 正常、.local/share 是符号链接：拒绝且目标不变
+user_reset
+mkdir -m 0755 -- "$UHOME/.local"; chown 65534:65534 "$UHOME/.local"; ln -s "$TEST_DIR/victim" "$UHOME/.local/share"
+if HOME=$UHOME toolbox_app 3 <<< $'\ny' >/dev/null 2>&1; then fail 'symlinked .local/share accepted'; fi
+[[ $(stat -c '%u %a' "$TEST_DIR/victim") == '0 700' && -z $(ls -A "$TEST_DIR/victim") ]] || fail 'symlink target (share) modified'
+rm -rf -- "$UHOME"
+reset_test
+# 竞态（root HOME 路径）：在模块检查之后、创建之前，用 mkdir 垫片把对象换入
+race_mkdir() {
+    if [[ ${!#} == "$HOME/.local" && ! -e $HOME/.local && ! -L $HOME/.local ]]; then
+        case ${RACE_KIND:-} in
+            dir) command mkdir -m 0700 -- "$HOME/.local" ;;
+            symlink) ln -s "$TEST_DIR/victim" "$HOME/.local" ;;
+        esac
+    fi
+    command mkdir "$@"
+}
+mkdir() { race_mkdir "$@"; }
+export RACE_KIND=dir
+toolbox_app 3 <<< $'\ny' >/dev/null 2>&1 || fail 'raced-in directory must be kept and deployment continue'
+[[ ! -L $HOME/.local && $(stat -c '%u %a' "$HOME/.local") == '0 700' ]] || fail 'raced-in directory was modified'
+reset_test
+export RACE_KIND=symlink
+if toolbox_app 3 <<< $'\ny' >/dev/null 2>&1; then fail 'raced-in symlink accepted'; fi
+[[ -L $HOME/.local && $(stat -c '%u %a' "$TEST_DIR/victim") == '0 700' && -z $(ls -A "$TEST_DIR/victim") ]] || fail 'raced-in symlink target modified'
+unset -f mkdir race_mkdir; unset RACE_KIND
+rm -f -- "$HOME/.local"
 reset_test
 printf 'All apps tests passed.\n'

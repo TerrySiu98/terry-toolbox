@@ -58,7 +58,7 @@ def stop(proc):
 def run(binary):
     binary = Path(binary).resolve(strict=True)
     version = subprocess.run([str(binary), 'version'], capture_output=True, text=True, check=True, timeout=10)
-    assert version.stdout.startswith('Xray 26.10.29 '), 'test requires the pinned 26.10.29 binary'
+    assert version.stdout.startswith('Xray 26.10.31 '), 'test requires the pinned 26.10.31 binary'
     digest = hashlib.sha256(binary.read_bytes()).hexdigest()
     temp_root = Path(os.environ.get('TOOLBOX_TEST_TMPDIR', os.environ.get('TMPDIR', Path.home() / '.cache/terry-toolbox-tests')))
     temp_root.mkdir(parents=True, exist_ok=True)
