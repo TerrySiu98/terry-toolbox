@@ -2,7 +2,7 @@
 
 ## Hermes 合并复核安全修正
 
-原候选 `02582cdfc6dd42bb14a5710217e8623ea31fc1f93b14db1edf6888b9103d47e6` 的独立复核发现：成功打开 SecureBoot/SetupMode 后的 read/fstat/close ENOENT 被误当作变量不存在，不能按原文“已存在变量继续拒绝”发布。现已限定仅文件名 open 的 ENOENT 可视为缺失，open 成功即拒绝，并在清理 backend 环境覆盖失败时终止。修正候选 `2f8f180fa295cd08f4300f63184c10264210e3cd31b4280d0477b479389ffea7`（705455 字节）与 9 项相关检查的范围见[安全补丁记录](m3-secureboot-safety-followup-20261101.md)。本页下方及原 JSON 保留作者原始候选/原生预检历史；不把原生结论外推到修正候选。目前修正候选尚未合并/部署。
+原候选 `02582cdfc6dd42bb14a5710217e8623ea31fc1f93b14db1edf6888b9103d47e6` 的独立复核发现：成功打开 SecureBoot/SetupMode 后的 read/fstat/close ENOENT 被误当作变量不存在，不能按原文“已存在变量继续拒绝”发布。现已限定仅文件名 open 的 ENOENT 可视为缺失，open 成功即拒绝，并在清理 backend 环境覆盖失败时终止。修正候选 `2f8f180fa295cd08f4300f63184c10264210e3cd31b4280d0477b479389ffea7`（705455 字节）与 9 项相关检查的范围见[安全补丁记录](m3-secureboot-safety-followup-20261101.md)。本页下方及原 JSON 保留作者原始候选/原生预检历史；不把原生结论外推到修正候选。修正后已按精确 head `4dcb4af3bb890bfbd49a99dfb990eeac6aefd7a2` 合并为 `7e3656c2de4661168a384e7184afa86ec82f6269` 并发布；见[PR #4 发布记录](release-pr4-20261101.md)。
 
 ## 问题与处理
 
@@ -18,7 +18,7 @@ mokutil 0.3.0/0.6.0 在读取 SecureBoot 的任意错误时都可能输出这句
 
 基线为 `972c7d0f7a0108f34ef4c415ad9dafde292ec578`，已包含 Hermes 合并并发布的 PR #3 lsblk 修复。[PR #4](https://github.com/TerrySiu98/terry-toolbox/pull/4) 候选分支为 `codex/m3-secureboot-compat`，源码与构建冻结提交 `d5368c9be802531a0b493165af3c7c4d8aeb0c4c`。候选 SHA-256：`02582cdfc6dd42bb14a5710217e8623ea31fc1f93b14db1edf6888b9103d47e6`，705208 字节；15 个内嵌模块与源模块逐字节一致；固定提交的 GitHub HTTPS 下载已核对信任并逐字节匹配。
 
-**本次尚未合并、未部署。** 线上只读回查仍为 `042bffafc28c9e47c5fddf485a4c60ac7e0d14cae39ae18f677cbea293f40da4`，702279 字节，见[当前 PR #3 发布记录](release-pr3-20261101.md)。Hermes 合并并按[Workers 流程](../HANDOFF.md#workers-发布与失败恢复)备份、上传和完整回读后，原命令才会包含本次修复。托管和域名保持 Cloudflare Workers，GitHub 保存源码。
+**作者提交时尚未合并、未部署（历史）。** 当时线上只读回查为 `042bffafc28c9e47c5fddf485a4c60ac7e0d14cae39ae18f677cbea293f40da4`，702279 字节，见[PR #3 历史发布记录](release-pr3-20261101.md)。Hermes 合并并按[Workers 流程](../HANDOFF.md#workers-发布与失败恢复)备份、上传和完整回读后，原命令才会包含本次修复。托管和域名保持 Cloudflare Workers，GitHub 保存源码。
 
 ## 验证范围
 

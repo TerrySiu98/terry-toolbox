@@ -1,0 +1,82 @@
+{
+  "schema": 1,
+  "pr": 4,
+  "head": "4dcb4af3bb890bfbd49a99dfb990eeac6aefd7a2",
+  "merge_commit": "7e3656c2de4661168a384e7184afa86ec82f6269",
+  "merged_tree_equals_tested_head": true,
+  "source_branch_preserved": true,
+  "sha256": "2f8f180fa295cd08f4300f63184c10264210e3cd31b4280d0477b479389ffea7",
+  "bytes": 705455,
+  "worker": "terry-toolbox",
+  "url": "https://sh.uw.cx",
+  "published_utc": "2026-11-01T00:43:13.199648+00:00",
+  "ci": {
+    "checks_count": 0,
+    "statuses_count": 0,
+    "required_checks": [],
+    "green_claimed": false
+  },
+  "fixes": [
+    "UEFI firmware with readable boot variables and precisely missing SecureBoot/SetupMode can pass unsupported path",
+    "only os.open ENOENT may establish missing variable; opened variable fails closed without read/fstat",
+    "readonly backend override cleanup failure stops before mokutil"
+  ],
+  "verification": {
+    "focused_checks": 9,
+    "checks": [
+      "syntax",
+      "build-test.sh",
+      "entry-test.sh",
+      "reinstall-test.sh",
+      "secureboot-error-boundary-test.sh",
+      "system-reboot-plan-test.sh",
+      "menu-test.py",
+      "deploy-cloudflare-test.py",
+      "worker-test.mjs"
+    ],
+    "reinstall_mock_cases": 85,
+    "new_safety_cases": 49,
+    "independent_patch_cases": 15,
+    "reboot_gate_cases": 18,
+    "full_repository_run": false,
+    "public_checks": 14,
+    "download_safe_smoke": 7,
+    "browser_viewports": [
+      1440,
+      390
+    ],
+    "clipboard_readback": true,
+    "no_horizontal_overflow": true,
+    "console_errors": 0,
+    "tls_system_trust": true,
+    "modules_exact": true,
+    "module_count": 4,
+    "embedded_modules_exact": 15,
+    "settings_exact": true,
+    "subdomain_exact": true,
+    "domain_binding_exact": true,
+    "dns_exact": true,
+    "descendants_cleaned": true,
+    "browser_processes_cleaned": true
+  },
+  "previous_sha256": "042bffafc28c9e47c5fddf485a4c60ac7e0d14cae39ae18f677cbea293f40da4",
+  "native_retest": false,
+  "limitations": [
+    "development preview, not native UEFI/arm64 install or boot acceptance",
+    "prior native readonly Alpine preflight applies to original candidate only",
+    "existing loop parent unmounted with mounted child partition remains; do not M3 prepare that layout",
+    "some errors give traceback but fail closed; concurrent root mount replacement not in threat model",
+    "no actual prepare, install, boot mutation, disk erase or host restart"
+  ],
+  "evidence_sha256": {
+    "fixed-focused-run/summary.json": "4f2493ca0d8c51c9b66a422a300b7050af5cf4a05046a9e01df4b8a17c739151",
+    "fixed-test-verified.json": "fe676c2a4caca1787b71de6849d4e51b8591f53473d0681edb160d72785f2d2b",
+    "fixed-independent-review.json": "f293a6db2c75ff36920e4c55d6025dc3348a3e74ffdd1d42ae2d7521d4b93da4",
+    "fixed-independent-cases.json": "067034b366eb927b29d78a78f007b8d30b25c9090656edf0c57a62abef06cf46",
+    "merge-readback.json": "6add9d5e2006d9cb2b1e5087f130e397c3aed850632870e1714e48ee000ed044",
+    "provider-after-verified.json": "0b607e79070ef4a935f42f167ee94f6b91854155ee6193c483565b0e92c814f0",
+    "public-readback/summary.json": "528480b4c4ac924547960cff591400fd025339f84cea4ec81828ab882a4162e7",
+    "browser/summary.json": "1f0b3c8d4f5e0d99150beeac60a43f372359b723d20865c64303e2da7bff604d",
+    "browser/cleanup.json": "c5f27030915a2b2e0e76148635caaf2e9eb67559a9e47c8953cf4269cb0bc68d"
+  }
+}

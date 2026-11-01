@@ -17,4 +17,4 @@
 
 未实际安装服务、prepare、挂载、修改引导、擦盘或重启，宿主软件包数据库/日志哈希未变。作者真实 Alpine UEFI 只读预检只对应原候选，不是当前补丁原生复验。部分异常只报 Python traceback 但 fail closed；不承诺抵御另一个 root 并发换挂载。既有 loop 父设备未挂载而子分区已挂载的边界仍在，此类布局不要 M3 prepare。
 
-当前尚未合并或上线，原域名和 Worker 保持 PR #3。待精确 head 合并、Worker 四模块/完整设置/DNS 与公网回读后另记录发布结果。
+已将补丁提交为 `4dcb4af3bb890bfbd49a99dfb990eeac6aefd7a2`，精确 head 合并为 `7e3656c2de4661168a384e7184afa86ec82f6269`，并发布到原 Worker。模块、设置、域名/DNS、公网/下载和浏览器回读通过，详见[PR #4 发布记录](release-pr4-20261101.md)。

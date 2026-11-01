@@ -2,13 +2,13 @@
 
 更新日期：2026-11-01。本文件记录 Codex 接续后的当前维护入口；原 Hermes 交接已逐字节保存为 [2026-10-31 历史快照](docs/handoff-hermes-20261031.md)。快照中的 Claude Code 称谓、旧测试限制、失败记录及授权说明只描述当时状态，不代表当前分工或新的操作授权。后续工作以 Terry 的当前指示和本文件的证据边界为准。
 
-## 本次 M3 Secure Boot 兼容修复待发布
+## 当前发布：M3 Secure Boot 兼容及安全补丁（PR #4）
 
-[PR #4](https://github.com/TerrySiu98/terry-toolbox/pull/4) 分支 `codex/m3-secureboot-compat` 处理固件未提供 SecureBoot/SetupMode 的预检阻塞。合并复核发现的已打开变量读取 ENOENT 误放行已修正：仅文件名 open ENOENT 可判缺失，open 成功即拒绝，backend 环境覆盖清理失败即终止。修正候选 SHA-256 `2f8f180fa295cd08f4300f63184c10264210e3cd31b4280d0477b479389ffea7`（705455 字节）；冻结源码 9/9 相关检查通过，含 85 项重装模拟、49 项新安全边界和 18 项重启门禁；独立补丁复核 15/15 无新增阻塞。见[安全补丁记录](docs/m3-secureboot-safety-followup-20261101.md)。作者 Alpine 原生只读预检对应原候选，不能当作修正补丁原生复验；未执行 prepare/实际重装或重启。**当前未合并、未部署；下方 PR #3 仍是线上版本。**
+[PR #4](https://github.com/TerrySiu98/terry-toolbox/pull/4) 分支 `codex/m3-secureboot-compat` 处理固件未提供 SecureBoot/SetupMode 的预检阻塞。合并复核发现的已打开变量读取 ENOENT 误放行已修正：仅文件名 open ENOENT 可判缺失，open 成功即拒绝，backend 环境覆盖清理失败即终止。修正候选 SHA-256 `2f8f180fa295cd08f4300f63184c10264210e3cd31b4280d0477b479389ffea7`（705455 字节）；冻结源码 9/9 相关检查通过，含 85 项重装模拟、49 项新安全边界和 18 项重启门禁；独立补丁复核 15/15 无新增阻塞。见[安全补丁记录](docs/m3-secureboot-safety-followup-20261101.md)。作者 Alpine 原生只读预检对应原候选，不能当作修正补丁原生复验；未执行 prepare/实际重装或重启。**已合并并发布到现有 Worker。** 修正 head `4dcb4af3bb890bfbd49a99dfb990eeac6aefd7a2`，发布源码 `7e3656c2de4661168a384e7184afa86ec82f6269`；Worker 四模块、原设置、域名/DNS、公网 14 项及下载 7 项安全 smoke、桌面/手机检查通过。见[当前发布记录](docs/release-pr4-20261101.md)。
 
-## 本次 M3 旧版 lsblk 修复已发布
+## 上一版发布：M3 旧版 lsblk 修复（PR #3，历史）
 
-[PR #3](https://github.com/TerrySiu98/terry-toolbox/pull/3) 候选分支 `codex/m3-lsblk-compat` 修复 util-linux 2.36.1 不支持 `MOUNTPOINTS` 导致 M3 准备失败的问题，改用 `MOUNTPOINT` 并递归归一，保留挂载与磁盘身份门禁。新候选 SHA-256 为 `042bffafc28c9e47c5fddf485a4c60ac7e0d14cae39ae18f677cbea293f40da4`（702279 字节）。相关 7 项检查和真实旧版只读采集/inventory 已通过；最终调用次数断言补跑的 79 项模拟检查也已通过，完整来源与边界见[本次修复记录](docs/m3-lsblk-fix-20261101.md)。**PR #3 已合并并上线。** 发布源码 `37b0ebb365ebcd8f43873238368b9a7e1cf3cd33`，新候选哈希现为当前线上哈希；Hermes 8 项重点回归和公网/配置精确回读通过，见[当前发布记录](docs/release-pr3-20261101.md)。既有 loop 子分区挂载过滤边界保留，此类布局不要执行 M3 prepare；本轮未重复真实重装。
+[PR #3](https://github.com/TerrySiu98/terry-toolbox/pull/3) 候选分支 `codex/m3-lsblk-compat` 修复 util-linux 2.36.1 不支持 `MOUNTPOINTS` 导致 M3 准备失败的问题，改用 `MOUNTPOINT` 并递归归一，保留挂载与磁盘身份门禁。新候选 SHA-256 为 `042bffafc28c9e47c5fddf485a4c60ac7e0d14cae39ae18f677cbea293f40da4`（702279 字节）。相关 7 项检查和真实旧版只读采集/inventory 已通过；最终调用次数断言补跑的 79 项模拟检查也已通过，完整来源与边界见[本次修复记录](docs/m3-lsblk-fix-20261101.md)。**PR #3 已合并并上线。** 发布源码 `37b0ebb365ebcd8f43873238368b9a7e1cf3cd33`，此哈希为 PR #3 历史线上哈希，当前已被顶部 PR #4 替代；Hermes 8 项重点回归和公网/配置精确回读通过，见[PR #3 历史发布记录](docs/release-pr3-20261101.md)。既有 loop 子分区挂载过滤边界保留，此类布局不要执行 M3 prepare；本轮未重复真实重装。
 
 ## 本次依赖补装修复已发布
 
@@ -29,7 +29,7 @@ git log -3 --oneline
 sha256sum docs/index.html
 ```
 
-脚本哈希应与本文顶部 PR #3 当前发布版本一致。PR 合并与 Worker 发布各自独立，本次二者均已完成；后续文档提交不改变已验脚本字节。后续更新先看回归及当前发布记录，再按下方 Workers 流程备份、发布和回读。
+脚本哈希应与本文顶部 PR #4 当前发布版本一致。PR 合并与 Worker 发布各自独立，本次二者均已完成；后续文档提交不改变已验脚本字节。后续更新先看回归及当前发布记录，再按下方 Workers 流程备份、发布和回读。
 
 ## 首次交付与上一版生产记录
 
@@ -41,7 +41,7 @@ sha256sum docs/index.html
 
 接手先运行 `git status --short --branch`、`git rev-parse HEAD` 和 `git diff --stat`，保留已有修改。不要用覆盖式复制、`reset --hard`、`clean -fd` 或强推处理不明工作。
 
-Hermes 在新目录取用已发布分支（包含 PR #3 lsblk 兼容及 PR #2 依赖修复）：
+Hermes 在新目录取用已发布分支（包含 PR #4 Secure Boot 安全兼容、PR #3 lsblk 及 PR #2 依赖修复）：
 
 ```bash
 git clone --branch main --single-branch https://github.com/TerrySiu98/terry-toolbox.git
@@ -152,4 +152,4 @@ python3 scripts/deploy-cloudflare.py
 | HY2 / 菜单修复复验 | `hy2-openssl-compat-swr2z893/remote/summary-02.json`、`final-regression-v4-affected/`、`final-regression-v5-menu/` | 独立 HY2 58.799 秒通过，最终候选 HY2 再验 57.92 秒；菜单原始失败与错位 transcript 保留，补目标输入后真实 PTY 22.29 秒通过；没有增加 HY2 原生部署声明 |
 | 全仓回归 | `final-regression-consolidated.json`；完整 v3 与最终 v8 原始日志分别保留 | 30 项全部取得有效 PASS：16 项复用 v3 未变传递依赖，14 项在最终 v8 补跑；0 跳过，源码前后不变、进程清理完成。不是同一源码单次 30 项通过；汇总 SHA-256 `77a66da81257993bc2e9baa8ae912403144c22c442b47831ae08b99c4ebd2e58` |
 
-Codex 首次交付的源码修复、限定范围的原生验收、30 项回归与候选构建已完成，结果已关联到源码 commit 和文件哈希。Hermes 后续发布复核、M3 重启门禁补丁与 31 项默认检查的跨冻结运行结果另见发布记录。v1 环境拒绝、v2/v3/v6 超时，以及旧 HY2、菜单、VMess 信任夹具和监督器启动时序失败均保留。首次交付已按 Terry 指示合并并发布，未调整 DNS/托管平台。PR #2 依赖修复已经发布；当前 PR #3 的旧版 lsblk 修复、测试和已发布状态以本文顶部及本次修复记录为准，后续由 Hermes 按本手册维护。
+Codex 首次交付的源码修复、限定范围的原生验收、30 项回归与候选构建已完成，结果已关联到源码 commit 和文件哈希。Hermes 后续发布复核、M3 重启门禁补丁与 31 项默认检查的跨冻结运行结果另见发布记录。v1 环境拒绝、v2/v3/v6 超时，以及旧 HY2、菜单、VMess 信任夹具和监督器启动时序失败均保留。首次交付已按 Terry 指示合并并发布，未调整 DNS/托管平台。PR #2 依赖修复已经发布；当前 PR #4 的 Secure Boot 安全兼容修复、测试和已发布状态以本文顶部及当前发布记录为准，后续由 Hermes 按本手册维护。

@@ -23,5 +23,8 @@
     "native_retest": false
   },
   "native_retest": false,
-  "published": false
+  "published": true,
+  "fixed_head": "4dcb4af3bb890bfbd49a99dfb990eeac6aefd7a2",
+  "merge_commit": "7e3656c2de4661168a384e7184afa86ec82f6269",
+  "release_record": "release-pr4-20261101.json"
 }
