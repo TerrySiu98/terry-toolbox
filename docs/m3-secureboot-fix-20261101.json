@@ -109,7 +109,8 @@
           "bytes": 11055
         }
       }
-    }
+    },
+    "downloaded_committed_current_bytes_identical": true
   },
   "regression": {
     "final_run": "m3-secure-02",
@@ -552,5 +553,6 @@
       "name": "m3-secure-native-evidence.tar.gz",
       "sha256": "dedd1cd862b8280ca89093529eb677ab3150fbff027c46e01a5caf484a249c6f"
     }
-  ]
+  ],
+  "pull_request": "https://github.com/TerrySiu98/terry-toolbox/pull/4"
 }

@@ -4,7 +4,7 @@
 
 ## 本次 M3 Secure Boot 兼容修复待发布
 
-新候选分支 `codex/m3-secureboot-compat` 处理 UEFI 固件未提供 SecureBoot/SetupMode 变量而 mokutil exit 255 的预检阻塞；仅在固定 efivarfs 及引导变量确实可读、相关变量精确缺失时通过，已开启、权限/I/O 和未知状态仍拒绝。真实宿主生产 Alpine 完整只读预检已通过，未执行 prepare 或重启。候选 SHA-256 为 `02582cdfc6dd42bb14a5710217e8623ea31fc1f93b14db1edf6888b9103d47e6`（705208 字节）。最终冻结源 7 项相关检查及 85 项重装模拟检查全通过；原始 harness 失败与限定范围见[本次修复记录](docs/m3-secureboot-fix-20261101.md)。**当前未合并、未部署；下方 PR #3 仍是线上版本。**
+[PR #4](https://github.com/TerrySiu98/terry-toolbox/pull/4) 候选分支 `codex/m3-secureboot-compat` 处理 UEFI 固件未提供 SecureBoot/SetupMode 变量而 mokutil exit 255 的预检阻塞；仅在固定 efivarfs 及引导变量确实可读、相关变量精确缺失时通过，已开启、权限/I/O 和未知状态仍拒绝。真实宿主生产 Alpine 完整只读预检已通过，未执行 prepare 或重启。候选 SHA-256 为 `02582cdfc6dd42bb14a5710217e8623ea31fc1f93b14db1edf6888b9103d47e6`（705208 字节）。最终冻结源 7 项相关检查及 85 项重装模拟检查全通过；原始 harness 失败与限定范围见[本次修复记录](docs/m3-secureboot-fix-20261101.md)。**当前未合并、未部署；下方 PR #3 仍是线上版本。**
 
 ## 本次 M3 旧版 lsblk 修复已发布
 

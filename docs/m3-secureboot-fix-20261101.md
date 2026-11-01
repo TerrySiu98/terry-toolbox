@@ -12,7 +12,7 @@ mokutil 0.3.0/0.6.0 在读取 SecureBoot 的任意错误时都可能输出这句
 
 ## 候选与发布边界
 
-基线为 `972c7d0f7a0108f34ef4c415ad9dafde292ec578`，已包含 Hermes 合并并发布的 PR #3 lsblk 修复。新候选分支为 `codex/m3-secureboot-compat`，源码与构建冻结提交 `d5368c9be802531a0b493165af3c7c4d8aeb0c4c`。候选 SHA-256：`02582cdfc6dd42bb14a5710217e8623ea31fc1f93b14db1edf6888b9103d47e6`，705208 字节；15 个内嵌模块与源模块逐字节一致。
+基线为 `972c7d0f7a0108f34ef4c415ad9dafde292ec578`，已包含 Hermes 合并并发布的 PR #3 lsblk 修复。[PR #4](https://github.com/TerrySiu98/terry-toolbox/pull/4) 候选分支为 `codex/m3-secureboot-compat`，源码与构建冻结提交 `d5368c9be802531a0b493165af3c7c4d8aeb0c4c`。候选 SHA-256：`02582cdfc6dd42bb14a5710217e8623ea31fc1f93b14db1edf6888b9103d47e6`，705208 字节；15 个内嵌模块与源模块逐字节一致；固定提交的 GitHub HTTPS 下载已核对信任并逐字节匹配。
 
 **本次尚未合并、未部署。** 线上只读回查仍为 `042bffafc28c9e47c5fddf485a4c60ac7e0d14cae39ae18f677cbea293f40da4`，702279 字节，见[当前 PR #3 发布记录](release-pr3-20261101.md)。Hermes 合并并按[Workers 流程](../HANDOFF.md#workers-发布与失败恢复)备份、上传和完整回读后，原命令才会包含本次修复。托管和域名保持 Cloudflare Workers，GitHub 保存源码。
 
