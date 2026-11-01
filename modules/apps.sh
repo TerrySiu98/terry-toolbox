@@ -196,6 +196,21 @@ toolbox_app() (
     # Docker itself arbitrates ports and container names atomically. Never remove
     # anything after failure: a newly created directory may contain valuable data.
     if [[ -n $data_target ]]; then
+        # sudo -E 提权时 HOME 仍属原用户：若 ~/.local、~/.local/share 尚不存在，
+        # 不能由下方 umask 077 顺手建成 root:root 0700，否则用户会被挡在自己的
+        # ~/.local 之外。只补建缺失的祖先，归属跟随其已存在的父目录（用户家目录
+        # 下归用户、/root 下归 root），模式 0755；terry-toolbox/apps 仍为 root 0700。
+        if [[ ! -d ${root%/*/*} ]]; then
+            ( set -f; IFS=/; acc=''
+              for p in ${root%/*/*}; do
+                  [[ -n $p ]] || continue
+                  acc="$acc/$p"
+                  [[ -e $acc ]] && continue
+                  parent=${acc%/*}; parent=${parent:-/}
+                  owner=$(stat -c '%u:%g' -- "$parent") || exit 1
+                  install -d -o "${owner%%:*}" -g "${owner##*:}" -m 0755 -- "$acc" || exit 1
+              done ) || { printf '无法创建数据目录父级: %s\n' "${root%/*/*}" >&2; return 1; }
+        fi
         umask 077
         if ! mkdir -p -- "$root" || { (( ! reuse )) && ! mkdir -- "$data"; }; then
             printf '无法安全创建数据目录: %s\n' "$data" >&2; return 1

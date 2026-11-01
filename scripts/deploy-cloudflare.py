@@ -184,7 +184,9 @@ def main(argv=None, session_factory=None, sleeper=time.sleep):
         account, token = cfg['account_id'], cfg['api_token']
     else:
         account, token = os.environ['CLOUDFLARE_ACCOUNT_ID'], os.environ['CLOUDFLARE_API_TOKEN']
-    need(re.fullmatch(r'[a-fA-F0-9]{32}', account) and isinstance(token, str) and token.strip(), 'Invalid Cloudflare credentials')
+    # Reject whitespace/control characters outright: a stray CR/LF would make
+    # requests raise InvalidHeader, whose message embeds the raw token.
+    need(re.fullmatch(r'[a-fA-F0-9]{32}', account) and isinstance(token, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,256}', token), 'Invalid Cloudflare credentials')
     if session_factory is None:
         import requests
         session_factory = requests.Session

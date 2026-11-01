@@ -100,7 +100,7 @@ curl -fsSL sh.uw.cx | sha256sum
 **已包含在 `sh.uw.cx` 当前开发预览。** 运行脚本后输入 `A5`：`1/2/3` 仍是 REALITY，`4` 安装 VMess + WS，`5` 卸载，`6` 查看状态，`7/8/9` 启用、禁用和查看开机自启，`10` 受控换证。两种协议使用独立服务和目录，但默认都用 TCP 443，不能占用同一端口。
 
 - 仅支持 **Debian + systemd、amd64/arm64**；arm64 有固定官方校验值，尚未实际运行验收。需先备好可信的完整 PEM 证书链、无口令 PEM 私钥和证书覆盖的域名；证书路径不接受空白或特殊字符。当前源码候选缺少普通依赖时按 `y` 确认补装；发行版、Python 版本或 init 不满足要求时给出具体原因。
-- 新建 `/etc/terry-toolbox-vmess`、`/usr/local/bin/terry-toolbox-vmess`、`terry-toolbox-vmess.service`，固定 Xray 26.10.29；两次输入 `YES` 后才安装。默认 IPv4 `0.0.0.0:443`，可选端口与 WS 路径。不改 REALITY、DNS、防火墙或 ACME，也不设开机自启。
+- 新建 `/etc/terry-toolbox-vmess`、`/usr/local/bin/terry-toolbox-vmess`、`terry-toolbox-vmess.service`，固定 Xray 26.10.31；两次输入 `YES` 后才安装。默认 IPv4 `0.0.0.0:443`，可选端口与 WS 路径。不改 REALITY、DNS、防火墙或 ACME，也不设开机自启。
 - 随机 UUID 不回显。Xray 客户端配置保存在 `client.json`，导入链接保存在 `vmess.txt`，均为 `0600`；请通过自己的安全渠道取用。客户端本地 SOCKS 为 `127.0.0.1:1080`。
 - 状态会核对资源清单、systemd、指定 TCP 端口及实际可执行文件、证书和 WS 握手；安装自检**不是认证数据面或公网可达证明**。测试脚本另外验证正确/错误认证、路径/Host/信任拒绝、进程重启及默认私网阻断。
 - 不覆盖既有资源。停止失败、pending job、未知状态或内容/inode 改动时保留文件并报错；不要手工改配置或换证书后期待自动卸载仍接管。使用管理页启用/禁用自启或更新证书；换证保持 UUID、客户端配置与自启策略，失败时只有确认归属和停止状态后才恢复旧证书。不要删除归属清单强行重装。
@@ -193,13 +193,13 @@ curl -fsSL sh.uw.cx | sha256sum
 
 菜单编号与「启动检测后进分层菜单」的交互参照 [jht.one](https://jht.one)（jinhuaitao）的公开脚本，脚本实现独立；上游未附版权与许可声明，因此本仓库不代为标注上游许可证。本仓库自身也尚未声明许可证，公开可读不代表已授予开源许可。
 
-源码、欢迎页与 Worker 路由均已公开。默认回归只模拟特权命令，文件写入使用临时路径；设置 `TOOLBOX_NETWORK_REAL_TESTS=1` 后，网络套件另启用本机回环 TLS 和真实 socat 往返，但不安装系统服务。在隔离 Debian/Ubuntu Linux 测试机准备 Bash 4+、Python 3.11+（含 cryptography）、Node.js 20+、OpenSSL、编译工具、APT/dpkg、jq、socat 和测试依赖后运行完整默认套件。默认临时目录为受保护的 `/root/.cache/terry-toolbox-tests`，可用 `TOOLBOX_TEST_TMPDIR` 指定 `/root/` 下无符号链接、私有且父目录不可被其他用户写入的路径（完整套件的 ACME fixture 要求 `/root/`）：
+源码、欢迎页与 Worker 路由均已公开。默认回归只模拟特权命令，文件写入使用临时路径；设置 `TOOLBOX_NETWORK_REAL_TESTS=1` 后，网络套件另启用本机回环 TLS 和真实 socat 往返，但不安装系统服务。在隔离 Debian/Ubuntu Linux 测试机准备 Bash 4+、Python 3.11+（含 cryptography、PyYAML）、Node.js 20+、OpenSSL、编译工具、APT/dpkg、jq、socat 和测试依赖后运行完整默认套件。默认临时目录为受保护的 `/root/.cache/terry-toolbox-tests`，可用 `TOOLBOX_TEST_TMPDIR` 指定 `/root/` 下无符号链接、私有且父目录不可被其他用户写入的路径（完整套件的 ACME fixture 要求 `/root/`）：
 
 ```bash
 bash scripts/test.sh --output /root/toolbox-evidence/run-001
 ```
 
-VMess 的真实协议验证单独运行（需自行准备已核验的 Xray 26.10.29 二进制；测试只创建短命回环进程和私有临时文件，不安装服务）：
+VMess 的真实协议验证单独运行（需自行准备已核验的 Xray 26.10.31 二进制；测试只创建短命回环进程和私有临时文件，不安装服务）：
 
 ```bash
 python3 tests/vmess-protocol-test.py /absolute/path/to/xray

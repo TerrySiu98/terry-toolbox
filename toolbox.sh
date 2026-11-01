@@ -16,7 +16,7 @@ if (( EUID != 0 )) && [[ -z ${TOOLBOX_ELEVATED:-} ]]; then
       # 流式执行时脚本本身在已关闭/被读空的 fd 上，重新取一份完整副本再提权。
       command -v curl >/dev/null 2>&1 || { printf '需要 curl 才能自动提权。\n' >&2; exit 1; }
       _tb_tmp=$(mktemp "${TMPDIR:-/tmp}/toolbox.XXXXXXXX") || exit 1
-      if ! curl -fsSL --proto '=https,http' sh.uw.cx >"$_tb_tmp"; then
+      if ! curl -fsSL --proto '=https' --proto-redir '=https' https://sh.uw.cx >"$_tb_tmp"; then
         printf '下载脚本失败（sh.uw.cx）。\n' >&2
         exit 1
       fi

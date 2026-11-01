@@ -243,17 +243,23 @@ net_port_busy() { [[ -n $(net_port_lines "$1" "$2") ]]; }
 # 可执行文件。两者都不成立就算「不是我们的」。
 net_port_owned_by() {
     local proto=$1 port=$2 bin=$3 unit=${4:-} line pid exe want main=''
+    local flags=(-lunpH)
+    [[ $proto == tcp ]] && flags=(-ltnpH)
     want=$(readlink -f -- "$bin" 2>/dev/null) || want=$bin
     [[ -n $unit ]] && main=$(systemctl show -p MainPID --value "$unit" 2>/dev/null)
     [[ $main =~ ^[0-9]+$ ]] || main=''
     while IFS= read -r line; do
+        # 只看指定协议/端口的 socket（与 hy2_port_owned_by 同一判据），
+        # 否则任何监听端口的同名进程都会被误判为「本服务已持有该端口」。
+        read -r -a _net_f <<< "$line"
+        [[ ${_net_f[3]:-} == *":$port" ]] || continue
         while IFS= read -r pid; do
             [[ -n $pid ]] || continue
             [[ -n $main && $pid == "$main" ]] && return 0
             exe=$(readlink -f "/proc/$pid/exe" 2>/dev/null) || exe=''
             [[ -n $exe && $exe == "$want" ]] && return 0
         done < <(grep -o 'pid=[0-9]*' <<< "$line" | cut -d= -f2)
-    done < <(ss -lunpH 2>/dev/null; ss -ltnpH 2>/dev/null)
+    done < <(ss "${flags[@]}" 2>/dev/null)
     return 1
 }
 
@@ -1181,11 +1187,17 @@ net_relay_parse_unit() {
     printf '%s %s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
 }
 
+# 归属看单元自身写入的固定标记，而不是当前 socat 路径：socat 被卸载或移动后，
+# 本模块写的单元仍应识别为 ours，否则会被当成「他人单元」静默保留。
+net_relay_unit_state() {
+    [[ -e $1 ]] || { printf 'absent\n'; return 0; }
+    if grep -qF 'Description=Terry Toolbox relay ' "$1" 2>/dev/null; then printf 'ours\n'; else printf 'foreign\n'; fi
+}
+
 _net_relay_uninstall() {
-    local units=() unit proto lport socat name state
+    local units=() unit proto lport name state
     net_require_root || return 1
     net_require_systemd || return 1
-    socat=$(net_relay_socat) || socat=''
 
     mapfile -t units < <(net_relay_units)
     (( ${#units[@]} > 0 )) || { net_die '没有找到本模块的转发单元。'; return 1; }
@@ -1207,14 +1219,14 @@ _net_relay_uninstall() {
 
     printf '将停止并删除：\n'
     for unit in "${units[@]}"; do
-        state=$(net_unit_state "$unit" "${socat:-socat}")
+        state=$(net_relay_unit_state "$unit")
         printf '  %s%s\n' "$unit" "$( [[ $state == foreign ]] && printf '（他人单元，将保留）')"
     done
     net_confirm_once || return 1
     net_lock relay || return 1
 
     for unit in "${units[@]}"; do
-        if [[ $(net_unit_state "$unit" "${socat:-socat}") == foreign ]]; then
+        if [[ $(net_relay_unit_state "$unit") == foreign ]]; then
             continue
         fi
         name=${unit##*/}
@@ -1253,7 +1265,7 @@ net_relay_status() {
 # 与 /proc/<pid>/exe，pidfile 只能增加约束，不靠进程名猜测。
 
 net_const NET_ALPINE_HY2_VERSION '2.13.0'
-net_const NET_ALPINE_XRAY_VERSION '26.10.29'
+net_const NET_ALPINE_XRAY_VERSION '26.10.31'
 net_const NET_ALPINE_HY2_NAME 'terry-toolbox-hy2'
 net_const NET_ALPINE_XRAY_NAME 'terry-toolbox-xray'
 net_const NET_ALPINE_DEFAULT_PORT 443
@@ -1296,11 +1308,13 @@ net_alpine_hy2_sha256() {
     esac
 }
 
-# XTLS/Xray-core v26.10.29 官方 zip 的 SHA-256 白名单（取自上游 .dgst 并本地复核）。
+# XTLS/Xray-core v26.10.31 官方 zip 的 SHA-256 白名单（取自上游 .dgst；amd64 已在测试机
+# 下载实测一致，arm64 仅核对 .dgst）。v26.10.29 已被上游以 MPTCP 安全问题为由撤版，
+# 其下载地址返回 404，不能再 pin。
 net_alpine_xray_sha256() {
     case $1 in
-        amd64) printf '%s\n' "${TOOLBOX_A2_SHA256:-8a5f3e6a1057e4bd0f8a7c57c9d91204b4be0b74222a6e210d070603101163c2}" ;;
-        arm64) printf '%s\n' "${TOOLBOX_A2_SHA256_ARM64:-afe01f19045b05237420328028ee1ee2e1edd2100eb41a8cbbf50e683b0a6e58}" ;;
+        amd64) printf '%s\n' "${TOOLBOX_A2_SHA256:-e4bd9119f50ae7c41658b1abd0679ae06f98bd864a2907ff33f2f2cf7081b214}" ;;
+        arm64) printf '%s\n' "${TOOLBOX_A2_SHA256_ARM64:-1811c8f1da0c3b6dc707ebaf1c8390e987ba39859a8f0a7aadd8526157f2ec8d}" ;;
         *) return 1 ;;
     esac
 }
@@ -2213,7 +2227,7 @@ net_alpine_status() { # name init bin etc proto
 #
 # 没有证书：REALITY 借用回落目标的证书，本模块不碰证书文件。
 
-net_const NET_A5_VERSION '26.10.29'
+net_const NET_A5_VERSION '26.10.31'
 net_const NET_A5_BIN_NAME 'terry-toolbox-xray'
 net_const NET_A5_UNIT_NAME 'terry-toolbox-xray.service'
 net_const NET_A5_DEFAULT_PORT 443
@@ -2990,7 +3004,10 @@ net_dns_write() { # servers...
     file=$(net_dns_dropin)
     install -d -m 0755 "$(dirname -- "$file")" || { net_die "无法创建 $(dirname -- "$file")"; return 1; }
     # 只保留第一次的原始备份：多次切换后回滚仍回到本工具接管前的状态。
-    if [[ -e $file && ! -e $file.pre-toolbox ]]; then
+    # 本工具自己写的 drop-in 不是「原始配置」：原机没有 drop-in 时，第二次切换
+    # 若把第一次的产物备份下来，恢复就会落在第一次的 DNS 而不是原状。
+    if [[ -e $file && ! -e $file.pre-toolbox ]] \
+        && ! grep -qF '由 Terry Toolbox B23 生成' "$file" 2>/dev/null; then
         cp -p -- "$file" "$file.pre-toolbox" || { net_die '备份现有配置失败。'; return 1; }
     fi
     tmp=$file.new.$$

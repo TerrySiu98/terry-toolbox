@@ -69,7 +69,7 @@ B1 模块内仍保留“尚未真实验收”的旧静态提示；上表及历�
 
 主要入口：`toolbox.sh` 为菜单与分发；`modules/` 为按需加载的源模块；`scripts/build.sh` 生成独立 Bash；`web/` 为欢迎页和 Worker 路由；`docs/index.html` 保存发布用 Bash 字节。
 
-在隔离 Debian/Ubuntu Linux 测试机准备 root、Bash 4+、Python 3.11+/cryptography、Node.js 20+、OpenSSL、C 编译器、APT/dpkg、jq、socat 及各测试声明的依赖。macOS 系统 Bash 3 不足以验证全部项目语法。默认回归中的服务/磁盘变更使用模拟；部分测试会启动短命回环进程。
+在隔离 Debian/Ubuntu Linux 测试机准备 root、Bash 4+、Python 3.11+/cryptography/PyYAML、Node.js 20+、OpenSSL、C 编译器、APT/dpkg、jq、socat 及各测试声明的依赖。macOS 系统 Bash 3 不足以验证全部项目语法。默认回归中的服务/磁盘变更使用模拟；部分测试会启动短命回环进程。
 
 ```bash
 bash toolbox.sh --help
