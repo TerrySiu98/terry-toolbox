@@ -250,7 +250,7 @@ def main():
     commands.extend((p.name, ["bash", str(p)], limits.get(p.name, 600))
                     for p in sorted((ROOT / "tests").glob("*-test.sh")))
     commands.extend((name, ["python3", str(ROOT / "tests" / name)], 180)
-                    for name in ("regression-runner-test.py", "menu-test.py", "entry-feedback-test.py", "docker-origin-test.py", "deploy-cloudflare-test.py", "certificate-recovery-test.py"))
+                    for name in ("regression-runner-test.py", "menu-test.py", "entry-feedback-test.py", "docker-origin-test.py", "deploy-cloudflare-test.py", "certificate-recovery-test.py", "reinstall-auth-test.py"))
     commands.append(("worker-test.mjs", ["node", str(ROOT / "tests/worker-test.mjs")], 60))
     if args.only:
         known = {c[0] for c in commands}

@@ -255,6 +255,24 @@ def canonical(x):return json.dumps(x,sort_keys=True,separators=(',',':')).encode
 def statecheck():
     anchor(state);s=os.lstat(state)
     if not stat.S_ISDIR(s.st_mode) or s.st_uid!=os.geteuid() or stat.S_IMODE(s.st_mode)!=0o700:fail('state 目录身份/权限不可信')
+def secret_read(p):
+    anchor(p);s=regular(p)
+    if s.st_size>256 or s.st_uid!=os.geteuid() or stat.S_IMODE(s.st_mode)!=0o600:fail('密码 hash 文件身份/权限不可信')
+    fd=os.open(p,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+    try:
+        h=os.fstat(fd)
+        if (h.st_dev,h.st_ino,h.st_mode,h.st_uid,h.st_nlink)!=(s.st_dev,s.st_ino,s.st_mode,s.st_uid,s.st_nlink):fail('密码 hash 文件读取竞争')
+        b=os.read(fd,257)
+    finally:os.close(fd)
+    if not re.fullmatch(rb'\$6\$[./A-Za-z0-9]{1,16}\$[./A-Za-z0-9]{86}\n',b):fail('密码 SHA512 crypt 格式无效')
+    return b
+def auth_private(p,mode):
+    if mode=='password':
+        if os.path.lexists(p+'/key.pub'):fail('密码模式包含相反 SSH 公钥')
+        return secret_read(p+'/password.sha512')
+    if mode!='key':fail('认证模式未知')
+    if os.path.lexists(p+'/password.sha512'):fail('密钥模式包含相反密码 hash')
+    return read(p+'/key.pub')
 def load():
     statecheck();p=state+'/active';anchor(p)
     s=os.lstat(p)
@@ -266,6 +284,9 @@ def load():
     if len(key)!=32 or not hmac.compare_digest(read(p+'/seal').decode(),hmac.new(key,b,hashlib.sha256).hexdigest()):fail('owned plan seal 不匹配；保留现场')
     m=json.loads(b)
     if m['state_identity']!=[os.lstat(state).st_dev,os.lstat(state).st_ino] or m['plan_identity']!=[os.lstat(p).st_dev,os.lstat(p).st_ino]:fail('owned plan 目录身份变更')
+    schema=m.get('schema')
+    if schema not in (1,2,3) or (schema in (1,2) and 'auth_mode' in m) or (schema==3 and m.get('auth_mode') not in ('key','password')):fail('plan schema/auth 模式未知')
+    auth_private(p,m.get('auth_mode','key'))
     for f,z in m['private'].items():
         if stamp(p+'/'+f)!=z:fail('owned plan 私有文件变更: '+f)
     return m
@@ -362,10 +383,22 @@ elif op=='clean':
     for k in ('/boot/grub/grubenv','/boot/grub2/grubenv'):
         if os.path.exists(path(k)) and re.search(rb'next_entry=[^\n\x00]+',read(path(k))):fail('已有 GRUB next_entry；不接管')
     print(json.dumps(s,sort_keys=True))
+elif op=='auth-write':
+    statecheck();p=state+'/active';anchor(p);s=os.lstat(p)
+    if not stat.S_ISDIR(s.st_mode) or s.st_uid!=os.geteuid() or stat.S_IMODE(s.st_mode)!=0o700:fail('auth plan 身份/权限不可信')
+    if os.path.lexists(p+'/key.pub'):fail('密码模式包含相反公钥')
+    b=os.read(3,257)
+    if not re.fullmatch(rb'\$6\$[./A-Za-z0-9]{1,16}\$[./A-Za-z0-9]{86}\n',b):fail('密码 SHA512 crypt 格式无效')
+    fd=os.open(p+'/password.sha512',os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+    with os.fdopen(fd,'wb') as f:f.write(b)
+    secret_read(p+'/password.sha512')
 elif op=='init':
     statecheck();p=state+'/active';anchor(p)
     before=snapshot();baseline_efi=args[4]
-    m={'schema':2,'phase':'preparing','target':args[0],'host_init':args[5],'disk':json.loads(args[1]),'boot_id':args[2],'commit':args[3],'before':before,'before_efi':baseline_efi,'state_identity':[os.lstat(state).st_dev,os.lstat(state).st_ino],'plan_identity':[os.lstat(p).st_dev,os.lstat(p).st_ino],'private':{},'backups':{}}
+    auth_mode=args[6] if len(args)>6 else 'key'
+    if auth_mode not in ('key','password'):fail('认证模式未知')
+    auth_private(p,auth_mode)
+    m={'schema':3,'auth_mode':auth_mode,'phase':'preparing','target':args[0],'host_init':args[5],'disk':json.loads(args[1]),'boot_id':args[2],'commit':args[3],'before':before,'before_efi':baseline_efi,'state_identity':[os.lstat(state).st_dev,os.lstat(state).st_ino],'plan_identity':[os.lstat(p).st_dev,os.lstat(p).st_ino],'private':{},'backups':{}}
     fd=os.open(p+'/seal.key',os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
     with os.fdopen(fd,'wb') as f:f.write(os.urandom(32))
     for k,z in before.items():
@@ -401,14 +434,24 @@ elif op=='prepared':
     for f,digest in [('trans.sh','d8f34529c0a706b17d67965b99a107f8299a30d5303744a20f0fb96556365bf7'),('initrd-network.sh','78fd74716b236d0e41e4f5c4034d45db8bcc47fba2d53c4a19a0d21ef60510bc')]:
         expected=read(state+'/active/expected-debian-trans.sh') if f=='trans.sh' and target=='debian 13' else read(state+'/active/'+f)
         if read(path('/reinstall-tmp/initrd/'+f))!=expected:fail('initrd runtime helper pin SHA 不匹配: '+f)
-    if read(path('/reinstall-tmp/initrd/configs/ssh_keys')).strip()!=read(state+'/active/key.pub').strip():fail('initrd SSH 公钥不匹配')
+    auth_mode=m.get('auth_mode','key');credential=auth_private(state+'/active',auth_mode)
+    auth_name='configs/password-linux-sha512' if auth_mode=='password' else 'configs/ssh_keys'
+    def auth_member(name):return name=='configs/ssh_keys' or (name.startswith('configs/') and name.split('/')[-1].startswith('password'))
+    workspace=path('/reinstall-tmp/initrd');anchor(workspace)
+    for d,ds,fs in os.walk(workspace,followlinks=False):
+        for n in ds+fs:
+            name=os.path.relpath(os.path.join(d,n),workspace)
+            if auth_member(name) and name!=auth_name:fail('initrd 存在相反/额外认证配置')
+    anchor(workspace+'/'+auth_name);regular(workspace+'/'+auth_name)
+    current=secret_read(workspace+'/'+auth_name) if auth_mode=='password' else read(workspace+'/'+auth_name)
+    if current.strip()!=credential.strip():fail('initrd 认证配置不匹配')
     if not os.path.isfile(path('/reinstall-vmlinuz')) or not os.path.getsize(path('/reinstall-initrd')):fail('prepared 内核/initrd 缺失')
     # Read the FINAL repacked newc archive, not only upstream's work directory.
     # No extraction/mount/exec. The WHOLE stream is walked: Linux concatenates
     # archive/gzip members, so stopping at TRAILER!!! would accept a second
     # appended member that later overrides a verified one.
     import gzip
-    wanted={'trans.sh':read(state+'/active/expected-debian-trans.sh') if target=='debian 13' else read(state+'/active/trans.sh'),'initrd-network.sh':read(state+'/active/initrd-network.sh'),'configs/ssh_keys':read(state+'/active/key.pub')}
+    wanted={'trans.sh':read(state+'/active/expected-debian-trans.sh') if target=='debian 13' else read(state+'/active/trans.sh'),'initrd-network.sh':read(state+'/active/initrd-network.sh'),auth_name:credential}
     found={};seen=set();consumed=0;limit=2147483648
     kinds={0o040000:'dir',0o100000:'file',0o120000:'symlink',0o020000:'chr',0o060000:'blk',0o010000:'fifo',0o140000:'sock'}
     def take(g,n):
@@ -426,7 +469,7 @@ elif op=='prepared':
                 h=take(g,110)
                 if h[:6] not in (b'070701',b'070702'):fail('initrd archive 不是 newc')
                 try:
-                    mode=int(h[14:22],16);links=int(h[38:46],16);size=int(h[54:62],16);namesize=int(h[94:102],16)
+                    mode=int(h[14:22],16);uid=int(h[22:30],16);gid=int(h[30:38],16);links=int(h[38:46],16);size=int(h[54:62],16);namesize=int(h[94:102],16)
                 except ValueError:fail('initrd header 字段非十六进制')
                 if namesize<1 or namesize>4096:fail('initrd filename 长度无效')
                 raw=take(g,namesize)
@@ -449,6 +492,9 @@ elif op=='prepared':
                 if not name or name.startswith('/') or name.endswith('/') or any(p in ('','.','..') for p in name.split('/')):fail('initrd member 路径非法: '+name)
                 if name in seen:fail('initrd member 重复（后者会静默覆盖）: '+name)
                 seen.add(name)
+                if any(n.startswith(name+'/') for n in wanted) and kind!='dir':fail('最终 initrd 受检路径祖先不是目录')
+                if auth_member(name) and name!=auth_name:fail('最终 initrd 存在相反/额外认证配置')
+                if name==auth_name and auth_mode=='password' and (mode&0o7777!=0o600 or uid!=0 or gid!=0):fail('最终 initrd 密码 hash 权限不可信')
                 if name in wanted:
                     if kind!='file':fail('initrd 受检 member 非普通文件('+kind+'): '+name)
                     if links!=1:fail('initrd 受检 member hardlink 未审定: '+name)
@@ -505,6 +551,7 @@ elif op in ('status','verify'):
         cancelled_check(m)
         if args[1]!=m['before_efi']:fail('cancelled plan 后 EFI 状态变化；拒绝普通重启')
     print('M3 phase='+m['phase']+' target='+m['target']+' disk='+m['disk']['name']+' commit='+m['commit'])
+    if m.get('schema')==3:print('Authentication: '+m['auth_mode'])
     if m.get('detail'):print(m['detail'])
 elif op=='restore':
     m=load();s=snapshot();checkdiff(m['after'],s)
@@ -650,9 +697,51 @@ _toolbox_reinstall_confirm() {
     printf '逐字输入 whole physical disk 路径 %s: ' "$1" >&2
     if ! IFS= read -r answer || [[ $answer != "$1" ]]; then _toolbox_reinstall_error 'disk exact typed confirm 不匹配/EOF；取消'; return 1; fi
 }
+# No plaintext password interface via argv/environment/files. Collect only on the
+# caller's TTY; read -s and signal traps restore its exact terminal state.
+_toolbox_reinstall_password() {
+    [[ -t 0 ]] || { _toolbox_reinstall_error '密码必须从交互 TTY 隐藏输入；拒绝管道/EOF'; return 1; }
+    _toolbox_reinstall_need openssl stty || return
+    local LC_ALL=C auth_first='' auth_second='' tty_state
+    builtin export -n auth_first auth_second _toolbox_reinstall_password_hash
+    tty_state=$(stty -g) || return
+    trap 'stty "$tty_state"; unset auth_first auth_second _toolbox_reinstall_password_hash; exit 130' INT TERM HUP
+    # Disable echo before publishing the prompt: otherwise a fast PTY/client can
+    # send credentials between printf and read -s, leaking them through echo.
+    stty -echo || return
+    printf '密码（隐藏，12–256 字节，保留空格/特殊字符）: ' >&2
+    if ! IFS= read -rs auth_first; then
+        stty "$tty_state"; trap - INT TERM HUP
+        _toolbox_reinstall_error '密码输入 EOF；取消'; return 1
+    fi
+    printf '\n再次输入密码（隐藏）: ' >&2
+    if ! IFS= read -rs auth_second; then
+        stty "$tty_state"; trap - INT TERM HUP
+        _toolbox_reinstall_error '密码确认 EOF；取消'; return 1
+    fi
+    stty "$tty_state" || return
+    trap - INT TERM HUP
+    printf '\n' >&2
+    # OpenSSL passwd -stdin truncates beyond 256 bytes on reviewed hosts. Count
+    # bytes (C locale), reject rather than silently changing the entered secret.
+    if [[ -z $auth_first || ${#auth_first} -lt 12 || ${#auth_first} -gt 256 ]]; then
+        _toolbox_reinstall_error '密码必须非空且为 12–256 字节；取消'; return 1
+    fi
+    [[ $auth_first == "$auth_second" ]] || { _toolbox_reinstall_error '两次密码不一致；取消'; return 1; }
+    _toolbox_reinstall_password_hash=$(builtin printf '%s\n' "$auth_first" | command env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin openssl passwd -6 -stdin) || return
+    unset auth_first auth_second
+    [[ $_toolbox_reinstall_password_hash =~ ^\$6\$[./A-Za-z0-9]{1,16}\$[./A-Za-z0-9]{86}$ ]] || { _toolbox_reinstall_error 'SHA512 密码生成失败；取消'; return 1; }
+}
 _toolbox_reinstall_prepare() (
+    # Disable inherited tracing/hooks BEFORE collecting any secret. This is an
+    # isolated subshell: the caller's tracing options/traps are not changed.
+    set +x
+    set +T
+    trap - DEBUG RETURN ERR
     umask 077
-    local distro=${1:-debian} version=${2:-} key state r name target first efi boot rc=0 lockfd lock_identity key_digest copied_digest
+    local distro=${1:-debian} version=${2:-} key state r name target first efi boot rc=0 lockfd lock_identity key_digest copied_digest auth_mode choice _toolbox_reinstall_password_hash=''
+    local -a auth_args=()
+    export -n _toolbox_reinstall_password_hash
     case $distro in
         debian) version=${version:-13}; [[ $version == 13 ]] || return 1;;
         ubuntu) version=${version:-24.04}; [[ $version == 24.04 ]] || return 1;;
@@ -667,15 +756,30 @@ _toolbox_reinstall_prepare() (
         printf '上次取消已验证；确认后保留其 sealed report 为 cancelled 历史，再创建新计划。\n'
     fi
     key=${TOOLBOX_REINSTALL_SSH_KEY_FILE:-}
-    if [[ -z $key ]]; then
-        printf '本地 ssh-ed25519 公钥绝对路径 (.pub): ' >&2
-        IFS= read -r key || { _toolbox_reinstall_error 'SSH 公钥未输入/EOF'; return 1; }
+    auth_mode=${TOOLBOX_REINSTALL_AUTH_MODE:-}
+    # Preserve existing noninteractive key-file callers: never consume their YES
+    # as a new menu choice. Explicit mode still overrides that legacy default.
+    [[ -n $auth_mode || -z $key ]] || auth_mode=key
+    if [[ -z $auth_mode ]]; then
+        printf '登录方式：1 密码 / 2 SSH 密钥（推荐） / 0 取消: ' >&2
+        IFS= read -r choice || { _toolbox_reinstall_error '登录方式 EOF；取消'; return 1; }
+        case $choice in 1) auth_mode=password;; 2) auth_mode=key;; 0) _toolbox_reinstall_error '已取消'; return 1;; *) _toolbox_reinstall_error '登录方式无效；取消'; return 1;; esac
     fi
-    _toolbox_reinstall_pubkey "$key" || return
-    key_digest=$(sha256sum "$key") || return
-    key_digest=${key_digest%% *}
+    case $auth_mode in
+        password) _toolbox_reinstall_password || return;;
+        key)
+            if [[ -z $key ]]; then
+                printf '本地 ssh-ed25519 公钥绝对路径 (.pub): ' >&2
+                IFS= read -r key || { _toolbox_reinstall_error 'SSH 公钥未输入/EOF'; return 1; }
+            fi
+            _toolbox_reinstall_pubkey "$key" || return
+            key_digest=$(sha256sum "$key") || return
+            key_digest=${key_digest%% *};;
+        *) _toolbox_reinstall_error '认证模式仅允许 password/key；取消'; return 1;;
+    esac
     name=$(python3 -c 'import json,sys;print(json.loads(sys.argv[1])["name"])' "$_toolbox_reinstall_disk") || return
     target="$distro $version";first=$_toolbox_reinstall_disk
+    printf 'Authentication: %s（root 登录；只启用所选模式）\n' "$auth_mode"
     printf 'Target: %s；上游 commit: %s\n' "$target" "$_TOOLBOX_REINSTALL_COMMIT"
     printf '精确 boot 范围: /reinstall-{vmlinuz,initrd,firmware}, /reinstall-tmp, BIOS /boot/grub{,2}/{custom.cfg,grub.cfg,grubenv} 或唯一 ESP/EFI/reinstall；/etc/default/kexec。\n'
     printf '上游 runtime 可能仅补缺 curl/grep/fdisk/lsblk/findmnt/gzip/cpio/dmidecode/virt-what 等（UEFI efibootmgr、Debian ar/dpkg/xz 等）；包仓库/镜像不是内容 pin，cancel 不卸载包。\n'
@@ -711,21 +815,30 @@ PY
     mkdir "$state/active" || { _toolbox_reinstall_error '已有 plan（竞争）；拒绝'; return 1; }
     # Keep failures/signals with reports. NEVER auto-reset an uncertain plan.
     trap '_toolbox_reinstall_error "收到信号；保留 report，本工具不自动 reset/reboot"; if _toolbox_reinstall_lock_guard "$state" "$lockfd" "$lock_identity" >/dev/null && [[ -f $state/active/seal ]]; then _toolbox_reinstall_data phase "$r" "$state" interrupted "信号中断；人工检查 boot 与日志"; fi; exit 130' INT TERM HUP
-    cp -- "$key" "$state/active/key.pub" || return
-    _toolbox_reinstall_pubkey "$state/active/key.pub" || return
-    copied_digest=$(sha256sum "$state/active/key.pub") || return
-    [[ ${copied_digest%% *} == "$key_digest" ]] || { _toolbox_reinstall_error '确认的 SSH 公钥在复制前发生变化；未执行上游，保留 report'; return 1; }
+    if [[ $auth_mode == key ]]; then
+        cp -- "$key" "$state/active/key.pub" || return
+        _toolbox_reinstall_pubkey "$state/active/key.pub" || return
+        copied_digest=$(sha256sum "$state/active/key.pub") || return
+        [[ ${copied_digest%% *} == "$key_digest" ]] || { _toolbox_reinstall_error '确认的 SSH 公钥在复制前发生变化；未执行上游，保留 report'; return 1; }
+        auth_args=(--ssh-key "$state/active/key.pub")
+    else
+        # Hash travels only over this dedicated descriptor; exclusive owned0600
+        # creation is validated before the pinned installer receives its pathname.
+        _toolbox_reinstall_data auth-write "$r" "$state" 3< <(builtin printf '%s\n' "$_toolbox_reinstall_password_hash") || return
+        unset _toolbox_reinstall_password_hash
+        auth_args=(--toolbox-password-hash-file "$state/active/password.sha512")
+    fi
     _toolbox_reinstall_fetch "$state/active" || { _toolbox_reinstall_error "provenance 失败；保留 $state/active；未执行上游"; return 1; }
     # Downloads can take time. Do not adopt boot files or topology that raced in.
     _toolbox_reinstall_preflight "$distro" || return
     [[ $first == "$_toolbox_reinstall_disk" ]] || { _toolbox_reinstall_error '下载后 disk 身份变化；拒绝上游'; return 1; }
     _toolbox_reinstall_lock_guard "$state" "$lockfd" "$lock_identity" >/dev/null || return
     boot=$(_toolbox_reinstall_boot_id) || return
-    _toolbox_reinstall_data init "$r" "$state" "$target" "$_toolbox_reinstall_disk" "$boot" "$_TOOLBOX_REINSTALL_COMMIT" "$_toolbox_reinstall_efi_before" "$_toolbox_reinstall_host_init" || return
+    _toolbox_reinstall_data init "$r" "$state" "$target" "$_toolbox_reinstall_disk" "$boot" "$_TOOLBOX_REINSTALL_COMMIT" "$_toolbox_reinstall_efi_before" "$_toolbox_reinstall_host_init" "$auth_mode" || return
     _toolbox_reinstall_lock_guard "$state" "$lockfd" "$lock_identity" >/dev/null || return
     # Print real errors to stderr as well as retain the private log, preserving rc.
     _toolbox_reinstall_run_upstream "$state/active/reinstall.sh" "$distro" "$version" \
-        --username root --ssh-key "$state/active/key.pub" --target-disk "$name" \
+        --username root "${auth_args[@]}" --target-disk "$name" \
         >"$state/active/prepare.log" 2>&1 || rc=$?
     command cat "$state/active/prepare.log" >&2
     _toolbox_reinstall_lock_guard "$state" "$lockfd" "$lock_identity" >/dev/null || return
