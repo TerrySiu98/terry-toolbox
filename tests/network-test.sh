@@ -457,23 +457,28 @@ systemctl() {
             fi
             return 0 ;;
         show)
-            local show_props='' show_list=() show_p show_i show_j
-            for ((show_i = 1; show_i < $#; show_i++)); do
+            [[ -e $SD/show_fail ]] && return 1
+            local show_props='' show_i show_j show_value=0 show_k show_v
+            for ((show_i = 1; show_i <= $#; show_i++)); do
+                [[ ${!show_i} == --value ]] && show_value=1
                 if [[ ${!show_i} == -p ]]; then show_j=$((show_i + 1)); show_props=${!show_j}; fi
             done
-            [[ -e $SD/show_fail ]] && return 1
-            IFS=, read -r -a show_list <<< "$show_props"
-            for show_p in "${show_list[@]}"; do
-                case $show_p in
-                    LoadState) if [[ -e $SD/notfound ]]; then printf 'not-found\n'; else printf 'loaded\n'; fi ;;
-                    ActiveState) if [[ -e $SD/active ]]; then printf 'active\n'; elif [[ -e $SD/failed ]]; then printf 'failed\n'; else printf 'inactive\n'; fi ;;
-                    SubState) if [[ -e $SD/active ]]; then printf 'running\n'; else printf 'dead\n'; fi ;;
-                    MainPID) if [[ -e $SD/active && -e $SD/mainpid ]]; then cat "$SD/mainpid"; else printf '0\n'; fi ;;
-                    Job) if [[ -e $SD/pending_job ]]; then cat "$SD/pending_job"; else printf '\n'; fi ;;
-                    *) printf '\n' ;;
+            # 按 native systemd 的序列化顺序输出（MainPID 在前），与 -p 请求顺序无关；
+            # show_missing_field 注入时省略 Job 行。
+            for show_k in MainPID LoadState ActiveState SubState Job; do
+                [[ ",$show_props," == *",$show_k,"* ]] || continue
+                [[ $show_k == Job && -e $SD/show_missing_field ]] && continue
+                case $show_k in
+                    LoadState) if [[ -e $SD/notfound ]]; then show_v=not-found; else show_v=loaded; fi ;;
+                    ActiveState) if [[ -e $SD/active ]]; then show_v=active; elif [[ -e $SD/failed ]]; then show_v=failed; else show_v=inactive; fi ;;
+                    SubState) if [[ -e $SD/active ]]; then show_v=running; else show_v=dead; fi ;;
+                    MainPID) if [[ -e $SD/active && -e $SD/mainpid ]]; then show_v=$(<"$SD/mainpid"); else show_v=0; fi ;;
+                    Job) if [[ -e $SD/pending_job ]]; then show_v=$(<"$SD/pending_job"); else show_v=''; fi ;;
                 esac
+                if (( show_value )); then printf '%s\n' "$show_v"; else printf '%s=%s\n' "$show_k" "$show_v"; fi
             done
             return 0 ;;
+        daemon-reload) [[ -e $SD/reload_fail ]] && return 1; return 0 ;;
         is-active-fg) return 0 ;;
         *) return 0 ;;
     esac
@@ -486,6 +491,7 @@ emit_port() { # <proto> <port> <exe> <pid>
     fi
 }
 ss() {
+    [[ -e $SD/ss_fail ]] && return 73
     [[ -e $SD/ports ]] || return 0
     # 尊重 -ltn / -lun 的协议过滤，否则 UDP 行会污染 TCP 判定。
     case " $* " in
@@ -517,7 +523,7 @@ reset() {
     find "$TOOLBOX_NET_UNIT_DIR" -mindepth 1 -delete
     find "$TOOLBOX_NET_BIN_DIR" -mindepth 1 -delete
     rm -f "$SD"/*.log "$SD/ports" "$SD/loaded" "$SD/active" "$SD/mainpid" "$SD/mainexe" "$SD"/a5_*
-    rm -f "$SD/pending_job" "$SD/listener_stays" "$SD/notfound" "$SD/failed" "$SD/show_fail" "$SD/enable_fail_dirty"
+    rm -f "$SD/pending_job" "$SD/listener_stays" "$SD/notfound" "$SD/failed" "$SD/show_fail" "$SD/enable_fail_dirty" "$SD/show_missing_field"
     rm -f "$SD/cc_current" "$SD/cc_available"
     for f in "$SD"/*_fail "$SD"/noactivate "$SD"/no_register "$SD"/sysctl_fail "$SD"/tuic_badconf; do
         [[ -e $f ]] && rm -f "$f"
@@ -1459,6 +1465,52 @@ b_unit=$TOOLBOX_NET_UNIT_DIR/terry-toolbox-relay-tcp-18121.service
 ! grep -qE 'disable|reset-failed' "$SD/systemctl.log" || fail 'B31 claim 用例：无 claim 的回滚执行了 disable/reset-failed'
 grep -q '本次未创建' "$work/o" || { cat "$work/o" >&2; fail 'B31 claim 用例：回滚未说明未创建'; }
 [[ $(ls -A "$TOOLBOX_NET_UNIT_DIR" | grep -vc '^terry-toolbox-relay-tcp-18121.service$') -eq 0 ]] || fail 'B31 claim 用例：残留临时文件'
+reset
+
+# ---------- B31 停止快照按 key 解析 + ss 失败显式传播 ----------
+# 控制：mock show 固定按 native 顺序（MainPID 在前）输出 Key=Value；正常卸载仍成功
+[[ $(systemctl show -p LoadState,ActiveState,SubState,MainPID,Job -- x.service | head -1) == MainPID=* ]] || fail 'B31 快照 mock 未按 native 顺序输出'
+MOCK_PORT=18130 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
+inst_relay tcp 18130 relay.example.test 443 >"$work/o" 2>&1 || fail 'B31 乱序快照场景安装失败'
+toolbox_network B31 uninstall tcp 18130 <<< YES >"$work/o" 2>&1 || { cat "$work/o" >&2; fail 'B31 native 顺序快照下正常卸载失败'; }
+[[ ! -e $TOOLBOX_NET_UNIT_DIR/terry-toolbox-relay-tcp-18130.service ]] || fail 'B31 native 顺序快照下未删除'
+reset
+# 快照缺字段（无 Job 行）：不确定 → 保留并返回非零；恢复后可卸载
+MOCK_PORT=18131 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
+inst_relay tcp 18131 relay.example.test 443 >"$work/o" 2>&1 || fail 'B31 缺字段场景安装失败'
+relay_unit=$TOOLBOX_NET_UNIT_DIR/terry-toolbox-relay-tcp-18131.service
+: > "$SD/show_missing_field"
+toolbox_network B31 uninstall tcp 18131 <<< YES >"$work/o" 2>&1 && fail 'B31 快照缺字段仍报成功'
+[[ -e $relay_unit && -f $TOOLBOX_NET_RELAY_STATE/tcp-18131.ledger ]] || fail 'B31 快照缺字段时删除了单元/台账'
+rm -f "$SD/show_missing_field"
+toolbox_network B31 uninstall tcp 18131 <<< YES >"$work/o" 2>&1 || fail 'B31 快照恢复后卸载失败'
+reset
+# 停止成功但 ss 读取失败（rc 73，无输出）：不得当作无监听，保留并返回非零；ss 恢复且确为空后才删除
+MOCK_PORT=18132 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
+inst_relay tcp 18132 relay.example.test 443 >"$work/o" 2>&1 || fail 'B31 ss 失败场景安装失败'
+relay_unit=$TOOLBOX_NET_UNIT_DIR/terry-toolbox-relay-tcp-18132.service
+: > "$SD/ss_fail"
+toolbox_network B31 uninstall tcp 18132 <<< YES >"$work/o" 2>&1 && fail 'B31 ss 失败仍报成功'
+[[ -e $relay_unit && -f $TOOLBOX_NET_RELAY_STATE/tcp-18132.ledger ]] || fail 'B31 ss 失败时删除了单元/台账'
+grep -q '仍在监听\|无法确认' "$work/o" || fail 'B31 ss 失败未说明'
+rm -f "$SD/ss_fail"
+[[ -z $(net_port_lines_strict tcp 18132) ]] || fail 'B31 ss 恢复后端口应为空（stop 已释放）'
+toolbox_network B31 uninstall tcp 18132 <<< YES >"$work/o" 2>&1 || { cat "$work/o" >&2; fail 'B31 ss 恢复后卸载失败'; }
+[[ ! -e $relay_unit ]] || fail 'B31 ss 恢复后未删除'
+reset
+# started=0 的 not-found 分支：daemon-reload 失败触发回滚；not-found 且其余字段一致 → 删除；不一致（残留 job）→ 保留
+MOCK_PORT=18133 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
+: > "$SD/reload_fail"; : > "$SD/notfound"
+inst_relay tcp 18133 relay.example.test 443 >"$work/o" 2>&1 && fail 'B31 daemon-reload 失败仍报成功'
+assert_clean 'B31 not-found 一致快照的回滚'
+reset
+MOCK_PORT=18134 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
+: > "$SD/reload_fail"; : > "$SD/notfound"; printf '3 start\n' > "$SD/pending_job"
+inst_relay tcp 18134 relay.example.test 443 >"$work/o" 2>&1 && fail 'B31 not-found+残留 job 仍报成功'
+relay_unit=$TOOLBOX_NET_UNIT_DIR/terry-toolbox-relay-tcp-18134.service
+[[ -e $relay_unit && -f $TOOLBOX_NET_RELAY_STATE/tcp-18134.ledger ]] || fail 'B31 not-found 但 job 残留时仍删除了单元/台账'
+rm -f "$SD/reload_fail" "$SD/notfound" "$SD/pending_job"
+toolbox_network B31 uninstall tcp 18134 <<< YES >"$work/o" 2>&1 || { cat "$work/o" >&2; fail 'B31 not-found 场景恢复后卸载失败'; }
 reset
 
 # B31 空参数补问，默认 tcp 与显式 udp 均生成对应单元；EOF 不写盘。
