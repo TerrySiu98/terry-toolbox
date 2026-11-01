@@ -1027,16 +1027,35 @@ net_relay_unit_state() { # unit ledger → absent | ours | foreign
     have=$(net_relay_identity "$unit") || { printf 'foreign\n'; return 0; }
     if [[ -n $want && $want == "$have" ]]; then printf 'ours\n'; else printf 'foreign\n'; fi
 }
-# 停止确认：ActiveState 回读为 inactive/failed 才算停止；读不到或仍为 active /
-# activating / deactivating 都视为未确认，调用方不得删除。
-net_relay_stopped() {
-    local name=$1 i st
+# 停止确认。单字段 inactive 不证明停止：一次性读取 LoadState/ActiveState/SubState/
+# MainPID/Job 快照，要求无待处理 job、PID 为 0，且该协议端口没有任何监听。
+# started=1（本次或历史上尝试过启动）：disable --now 必须返回 0，快照须为
+# inactive|failed + dead|failed + PID 0 + 无 job。started=0（从未尝试启动）：允许
+# not-found，或 inactive + dead + PID 0 + 无 job。读回失败、超时一律视为未确认。
+net_relay_snapshot() { systemctl show -p LoadState,ActiveState,SubState,MainPID,Job --value "$1" 2>/dev/null; }
+net_relay_stop_confirmed() { # name proto lport started
+    local name=$1 proto=$2 lport=$3 started=$4 snap load active sub pid job i ok=0
+    if (( started )); then
+        systemctl disable --now "$name" >/dev/null 2>&1 || return 1
+    else
+        systemctl disable "$name" >/dev/null 2>&1 || true
+    fi
     for ((i = 0; i < 20; i++)); do
-        st=$(systemctl show -p ActiveState --value "$name" 2>/dev/null) || st=''
-        case $st in inactive|failed) return 0 ;; esac
+        snap=$(net_relay_snapshot "$name") || snap=''
+        load=''; active=''; sub=''; pid=''; job=''
+        { read -r load; read -r active; read -r sub; read -r pid; read -r job; } <<< "$snap"
+        if [[ -n $load ]]; then
+            if (( started )); then
+                [[ ($active == inactive || $active == failed) && ($sub == dead || $sub == failed) && $pid == 0 && -z $job ]] && { ok=1; break; }
+            else
+                [[ $load == not-found || ($active == inactive && $sub == dead && $pid == 0 && -z $job) ]] && { ok=1; break; }
+            fi
+        fi
         sleep 0.3
     done
-    return 1
+    (( ok )) || return 1
+    [[ -z $(net_port_lines "$proto" "$lport") ]] || return 1
+    return 0
 }
 
 net_relay_socat() {
@@ -1108,35 +1127,46 @@ EOF
     ln -T -- "$tmp" "$unit" || { rm -f -- "$tmp"; return 1; }
     rm -f -- "$tmp"
     identity=$(net_relay_identity "$unit") || return 1
-    install -d -m 0700 -- "$state" || { rm -f -- "$unit"; return 1; }
-    tmp=$(mktemp "$state/.ledger.XXXXXXXX") || { rm -f -- "$unit"; return 1; }
-    { printf '%s\n' "$identity" > "$tmp" && chmod 0600 "$tmp" && mv -f -- "$tmp" "$ledger"; } \
-        || { rm -f -- "$tmp"; [[ $(net_relay_identity "$unit" 2>/dev/null) == "$identity" ]] && rm -f -- "$unit"; return 1; }
+    # 本次独占创建成功：记录 per-attempt claim（调用方作用域变量）。回滚只认它，
+    # 绝不从持久台账反推"本次创建"。ln 失败到不了这里，因此无 claim。
+    net_relay_claim=$identity
+    install -d -m 0700 -- "$state" || return 1
+    tmp=$(mktemp "$state/.ledger.XXXXXXXX") || return 1
+    { printf '%s\n' "$identity" > "$tmp" && chmod 0600 "$tmp" && mv -f -- "$tmp" "$ledger"; } || { rm -f -- "$tmp"; return 1; }
 }
 
-net_relay_rollback() {
-    local proto=$1 lport=$2 unit ledger name
+# 回滚只处理本次独占创建的单元：无 claim（ln 失败、写入前失败）则不停止、不
+# reset-failed、不删除任何既有资源；claim 与当前身份不一致、停止未确认均保留。
+net_relay_rollback() { # proto lport；读取调用方作用域的 net_relay_claim / net_relay_started
+    local proto=$1 lport=$2 unit ledger name have
     unit=$(net_relay_unit "$proto" "$lport"); ledger=$(net_relay_ledger "$proto" "$lport")
     name=$(net_relay_unit_name "$proto" "$lport")
     net_err '--- 开始回滚 ---'
-    case $(net_relay_unit_state "$unit" "$ledger") in
-        ours)
-            systemctl disable --now "$name" >/dev/null 2>&1 || true
-            if net_relay_stopped "$name" && [[ $(net_relay_unit_state "$unit" "$ledger") == ours ]]; then
-                rm -f -- "$unit" "$ledger"
-                net_err '已删除本次写入的单元。'
-            else
-                net_err "警告：$name 未能确认停止或内容已变，保留单元与台账；请人工检查。"
-            fi ;;
-        foreign) net_err "警告：$unit 与本次写入不一致，保留；请人工确认。" ;;
-    esac
+    if [[ -z ${net_relay_claim:-} ]]; then
+        net_err '本次未创建任何单元；不停止、不删除任何既有资源。'
+        return 0
+    fi
+    have=$(net_relay_identity "$unit" 2>/dev/null) || have=''
+    if [[ $have != "$net_relay_claim" ]]; then
+        net_err "警告：$unit 已不是本次创建的内容，保留；请人工确认。"
+        return 1
+    fi
+    if ! net_relay_stop_confirmed "$name" "$proto" "$lport" "${net_relay_started:-0}"; then
+        net_err "警告：$name 停止失败或状态无法确认（disable 非零、仍有 job/PID、或端口仍在监听），保留单元与台账；请人工检查。"
+        return 1
+    fi
+    have=$(net_relay_identity "$unit" 2>/dev/null) || have=''
+    [[ $have == "$net_relay_claim" ]] || { net_err "警告：$unit 在停止期间发生改动，保留。"; return 1; }
+    if [[ -f $ledger && ! -L $ledger && $(<"$ledger") == "$net_relay_claim" ]]; then rm -f -- "$ledger"; fi
+    rm -f -- "$unit"
     systemctl daemon-reload >/dev/null 2>&1 || true
     systemctl reset-failed "$name" >/dev/null 2>&1 || true
+    net_err '已删除本次创建的单元。'
 }
 
 _net_relay_install() {
     local proto=${1:-} lport=${2:-} host=${3:-} tport=${4:-}
-    local unit name socat state
+    local unit name socat state net_relay_claim='' net_relay_started=0
     net_require_root || return 1
     net_require_debian || return 1
     net_require_systemd || return 1
@@ -1189,12 +1219,19 @@ _net_relay_install() {
     net_confirm_twice RELAY || return 1
 
     net_lock relay || return 1
+    # 锁内复核：等待确认期间可能有另一安装完成或端口被占用；此时不写、不回滚、不触碰既有资源。
+    state=$(net_relay_unit_state "$unit" "$(net_relay_ledger "$proto" "$lport")")
+    [[ $state == absent ]] || { net_die "$name 在确认期间已被创建（$state）；未覆盖，请重新查看状态。"; return 1; }
+    if net_port_busy "$proto" "$lport"; then
+        net_die "$proto 端口 $lport 在确认期间被占用；未写入。"; return 1
+    fi
     net_relay_write_unit "$proto" "$lport" "$host" "$tport" \
         || { net_relay_rollback "$proto" "$lport"; net_die '单元写入失败。'; return 1; }
 
     if ! systemctl daemon-reload; then
         net_relay_rollback "$proto" "$lport"; return 1
     fi
+    net_relay_started=1
     if ! systemctl enable --now "$name" >/dev/null 2>&1; then
         net_err 'systemctl enable --now 失败。'
         net_relay_rollback "$proto" "$lport"; return 1
@@ -1277,9 +1314,8 @@ _net_relay_uninstall() {
         read -r proto lport < <(net_relay_parse_unit "$unit") || continue
         ledger=$(net_relay_ledger "$proto" "$lport"); name=${unit##*/}
         [[ $(net_relay_unit_state "$unit" "$ledger") == ours ]] || continue
-        systemctl disable --now "$name" >/dev/null 2>&1 || true
-        if ! net_relay_stopped "$name"; then
-            net_err "$name 停止失败或状态无法确认；保留单元与台账，请人工检查。"
+        if ! net_relay_stop_confirmed "$name" "$proto" "$lport" 1; then
+            net_err "$name 停止失败或状态无法确认（disable 非零、仍有 job/PID、或 $proto $lport 仍在监听）；保留单元与台账，请人工检查。"
             failed=1; continue
         fi
         # 停止期间单元可能被改动：删除前再核一次台账。
