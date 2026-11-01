@@ -4,7 +4,7 @@
 
 ## 本次 M3 Secure Boot 兼容修复待发布
 
-[PR #4](https://github.com/TerrySiu98/terry-toolbox/pull/4) 候选分支 `codex/m3-secureboot-compat` 处理 UEFI 固件未提供 SecureBoot/SetupMode 变量而 mokutil exit 255 的预检阻塞；仅在固定 efivarfs 及引导变量确实可读、相关变量精确缺失时通过，已开启、权限/I/O 和未知状态仍拒绝。真实宿主生产 Alpine 完整只读预检已通过，未执行 prepare 或重启。候选 SHA-256 为 `02582cdfc6dd42bb14a5710217e8623ea31fc1f93b14db1edf6888b9103d47e6`（705208 字节）。最终冻结源 7 项相关检查及 85 项重装模拟检查全通过；原始 harness 失败与限定范围见[本次修复记录](docs/m3-secureboot-fix-20261101.md)。**当前未合并、未部署；下方 PR #3 仍是线上版本。**
+[PR #4](https://github.com/TerrySiu98/terry-toolbox/pull/4) 分支 `codex/m3-secureboot-compat` 处理固件未提供 SecureBoot/SetupMode 的预检阻塞。合并复核发现的已打开变量读取 ENOENT 误放行已修正：仅文件名 open ENOENT 可判缺失，open 成功即拒绝，backend 环境覆盖清理失败即终止。修正候选 SHA-256 `2f8f180fa295cd08f4300f63184c10264210e3cd31b4280d0477b479389ffea7`（705455 字节）；冻结源码 9/9 相关检查通过，含 85 项重装模拟、49 项新安全边界和 18 项重启门禁；独立补丁复核 15/15 无新增阻塞。见[安全补丁记录](docs/m3-secureboot-safety-followup-20261101.md)。作者 Alpine 原生只读预检对应原候选，不能当作修正补丁原生复验；未执行 prepare/实际重装或重启。**当前未合并、未部署；下方 PR #3 仍是线上版本。**
 
 ## 本次 M3 旧版 lsblk 修复已发布
 

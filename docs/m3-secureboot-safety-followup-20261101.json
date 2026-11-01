@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "original_head": "dea32d41b66602f54c68134a4af396676b3d6b71",
+  "original_candidate_sha256": "02582cdfc6dd42bb14a5710217e8623ea31fc1f93b14db1edf6888b9103d47e6",
+  "fixed_candidate_sha256": "2f8f180fa295cd08f4300f63184c10264210e3cd31b4280d0477b479389ffea7",
+  "fixed_candidate_bytes": 705455,
+  "regression": {
+    "checks": 9,
+    "red_failed_assertions": 13,
+    "new_security_cases": 49,
+    "reinstall_mock_cases": 85,
+    "reboot_gate_cases": 18,
+    "full_repository_run": false,
+    "source_unchanged": true,
+    "descendant_cleanup_complete": true
+  },
+  "independent_patch_review": {
+    "sb1_closed": true,
+    "new_blockers": [],
+    "independent_cases": 15,
+    "independent_passed": 15,
+    "exit_code": 0,
+    "native_retest": false
+  },
+  "native_retest": false,
+  "published": false
+}

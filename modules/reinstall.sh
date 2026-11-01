@@ -132,7 +132,7 @@ _toolbox_reinstall_secure_boot() {
     local r=$1 mounts=$2 secure rc=0
     # libefivar accepts environment overrides for the EFI backend/path. Inspect
     # the host firmware, never an inherited alternate variable directory.
-    secure=$(unset EFIVARFS_PATH LIBEFIVAR_OPS VARS_PATH; export LC_ALL=C; mokutil --sb-state 2>&1) || rc=$?
+    secure=$(unset EFIVARFS_PATH LIBEFIVAR_OPS VARS_PATH || exit 1; export LC_ALL=C; mokutil --sb-state 2>&1) || rc=$?
     case "$rc:$secure" in
         '0:SecureBoot disabled'|$'0:SecureBoot disabled\nPlatform is in Setup Mode') printf 'disabled\n'; return;;
         "255:This system doesn't support Secure Boot"|"255:This system does't support Secure Boot") ;;
@@ -171,10 +171,14 @@ try:
  current=read('BootCurrent');order=read('BootOrder')
  if len(current)!=2 or len(order)%2 or current not in [order[i:i+2] for i in range(0,len(order),2)]:fail('EFI 引导变量格式或一致性未知')
  for name in ('SecureBoot','SetupMode'):
-  try:read(name)
+  # Only a failed name lookup/open may prove absence. Once open succeeds,
+  # the variable exists even if firmware read/fstat/close later returns ENOENT.
+  try:f=os.open(name+'-'+guid,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=fd)
   except OSError as e:
    if e.errno!=errno.ENOENT:raise
-  else:fail(name+' 变量存在，不能将 mokutil 读取失败视为不支持')
+  else:
+   os.close(f)
+   fail(name+' 变量存在，不能将 mokutil 读取失败视为不支持')
  print('unsupported')
 except OSError as e:fail('EFI 变量读取失败（errno '+str(e.errno)+'）')
 finally:os.close(fd)

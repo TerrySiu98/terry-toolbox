@@ -1,5 +1,9 @@
 # M3 Secure Boot 未提供变量兼容修复（2026-11-01）
 
+## Hermes 合并复核安全修正
+
+原候选 `02582cdfc6dd42bb14a5710217e8623ea31fc1f93b14db1edf6888b9103d47e6` 的独立复核发现：成功打开 SecureBoot/SetupMode 后的 read/fstat/close ENOENT 被误当作变量不存在，不能按原文“已存在变量继续拒绝”发布。现已限定仅文件名 open 的 ENOENT 可视为缺失，open 成功即拒绝，并在清理 backend 环境覆盖失败时终止。修正候选 `2f8f180fa295cd08f4300f63184c10264210e3cd31b4280d0477b479389ffea7`（705455 字节）与 9 项相关检查的范围见[安全补丁记录](m3-secureboot-safety-followup-20261101.md)。本页下方及原 JSON 保留作者原始候选/原生预检历史；不把原生结论外推到修正候选。目前修正候选尚未合并/部署。
+
 ## 问题与处理
 
 M3 → 重装预检 → Alpine 在 `mokutil --sb-state` 返回 `This system doesn't support Secure Boot` 后报告“Secure Boot 状态未知”。真实测试宿主的 mokutil 0.6.0 返回 255；固定 efivarfs 正常挂载，BootCurrent/BootOrder 可读，SecureBoot 和 SetupMode 均精确 ENOENT。
