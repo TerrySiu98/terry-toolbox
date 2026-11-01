@@ -2,6 +2,10 @@
 
 更新日期：2026-11-01。本文件记录 Codex 接续后的当前维护入口；原 Hermes 交接已逐字节保存为 [2026-10-31 历史快照](docs/handoff-hermes-20261031.md)。快照中的 Claude Code 称谓、旧测试限制、失败记录及授权说明只描述当时状态，不代表当前分工或新的操作授权。后续工作以 Terry 的当前指示和本文件的证据边界为准。
 
+## 本次 M3 Secure Boot 兼容修复待发布
+
+新候选分支 `codex/m3-secureboot-compat` 处理 UEFI 固件未提供 SecureBoot/SetupMode 变量而 mokutil exit 255 的预检阻塞；仅在固定 efivarfs 及引导变量确实可读、相关变量精确缺失时通过，已开启、权限/I/O 和未知状态仍拒绝。真实宿主生产 Alpine 完整只读预检已通过，未执行 prepare 或重启。候选 SHA-256 为 `02582cdfc6dd42bb14a5710217e8623ea31fc1f93b14db1edf6888b9103d47e6`（705208 字节）。最终冻结源 7 项相关检查及 85 项重装模拟检查全通过；原始 harness 失败与限定范围见[本次修复记录](docs/m3-secureboot-fix-20261101.md)。**当前未合并、未部署；下方 PR #3 仍是线上版本。**
+
 ## 本次 M3 旧版 lsblk 修复已发布
 
 [PR #3](https://github.com/TerrySiu98/terry-toolbox/pull/3) 候选分支 `codex/m3-lsblk-compat` 修复 util-linux 2.36.1 不支持 `MOUNTPOINTS` 导致 M3 准备失败的问题，改用 `MOUNTPOINT` 并递归归一，保留挂载与磁盘身份门禁。新候选 SHA-256 为 `042bffafc28c9e47c5fddf485a4c60ac7e0d14cae39ae18f677cbea293f40da4`（702279 字节）。相关 7 项检查和真实旧版只读采集/inventory 已通过；最终调用次数断言补跑的 79 项模拟检查也已通过，完整来源与边界见[本次修复记录](docs/m3-lsblk-fix-20261101.md)。**PR #3 已合并并上线。** 发布源码 `37b0ebb365ebcd8f43873238368b9a7e1cf3cd33`，新候选哈希现为当前线上哈希；Hermes 8 项重点回归和公网/配置精确回读通过，见[当前发布记录](docs/release-pr3-20261101.md)。既有 loop 子分区挂载过滤边界保留，此类布局不要执行 M3 prepare；本轮未重复真实重装。
