@@ -1,0 +1,93 @@
+{
+  "schema": 1,
+  "pr": 5,
+  "head": "05cd68332527efa7144002c04532fa710d98e82b",
+  "merge_commit": "8264d86038a2f812c096ca9cfeb5b112b493189f",
+  "merged_tree_equals_tested_head": true,
+  "source_branch_preserved": true,
+  "sha256": "8ceed7f82f0bf76cc15bbeab76ae5c599186bc1666cf117c6fb66194998b00df",
+  "bytes": 717942,
+  "worker": "terry-toolbox",
+  "url": "https://sh.uw.cx",
+  "published_utc": "2026-11-01T07:41:20.431628+00:00",
+  "ci": {
+    "checks_count": 0,
+    "statuses_count": 0,
+    "required_checks": [],
+    "green_claimed": false
+  },
+  "fixes": [
+    "Xray withdrawn v26.10.29 replaced by v26.10.31 with fixed amd64/arm64 digests",
+    "privilege re-download uses HTTPS and HTTPS-only redirects",
+    "B23 repeated DNS switching restores original state rather than first toolbox-generated drop-in",
+    "port ownership checks only requested protocol/port",
+    "apps parent creation runs as HOME owner without chown/chmod of existing objects",
+    "relay unit/ledger identity and per-attempt claim gate rollback",
+    "relay native named snapshot parsing and complete stopped-state consistency",
+    "ss nonzero is unknown and preserves relay resources",
+    "reject malformed Cloudflare token before HTTP library can echo it"
+  ],
+  "verification": {
+    "focused_checks": 12,
+    "checks": [
+      "apps-test.sh",
+      "build-test.sh",
+      "deploy-cloudflare-test.py",
+      "entry-test.sh",
+      "hy2-test.sh",
+      "menu-test.py",
+      "network-alpine-test.sh",
+      "network-test.sh",
+      "syntax",
+      "vmess-management-test.sh",
+      "vmess-test.sh",
+      "worker-test.mjs"
+    ],
+    "full_repository_run": false,
+    "parent_controls": 12,
+    "independent_controls": 16,
+    "independent_parent_rerun_passed": true,
+    "public_checks": 14,
+    "download_safe_smoke": 9,
+    "tls_system_trust": true,
+    "modules_exact": true,
+    "module_count": 4,
+    "embedded_modules_exact": 15,
+    "settings_exact": true,
+    "subdomain_exact": true,
+    "domain_binding_exact": true,
+    "dns_exact": true,
+    "descendants_cleaned": true,
+    "source_unchanged": true,
+    "package_hashes_unchanged": true,
+    "browser_retested": false,
+    "page_and_router_unchanged_byte_exact": true
+  },
+  "previous_sha256": "2f8f180fa295cd08f4300f63184c10264210e3cd31b4280d0477b479389ffea7",
+  "native_retest": {
+    "systemd_show_readonly": true,
+    "service_lifecycle_install_stop_restart": false,
+    "arm64_binary_execution": false
+  },
+  "limitations": [
+    "development preview, not a full native service or distro lifecycle acceptance",
+    "native systemd named snapshots read-only; stop/job/listener failure injection mocked",
+    "old relay installations without ledger retained and require manual verification",
+    "ss success with malformed output not claimed covered",
+    "no automatic update of already installed Xray or application containers",
+    "existing M3 loop-parent unmounted/mounted-child boundary remains; do not prepare that layout",
+    "browser UI unchanged and not re-exercised this release"
+  ],
+  "evidence_sha256": {
+    "focused-run/summary.json": "8b53021a19f2c442fbc454c835e87cac9d98dc6c54975ca8f383ee6b9ffdacd1",
+    "focused-verified.json": "1a1f94fb69542473f0fb14cc2798e678935c8d9513ef0694f2fed9f4dd30b19a",
+    "parent-controls/summary.json": "ffc5679a02f09f70e8d5ac5449f5fa4c8f0e40672f4d6f9e01d32aadf0804396",
+    "independent-review-evidence.tar.gz": "cda2444756faabba85e9937041b6baee7497d1dd5352e704c4be12c216c18cd4",
+    "candidate-integrity.json": "f5d652f76f1759d93afa16bb65c0ad22a7aa677e06a9b0b31867347d8fbfc619",
+    "embedded-modules-verified.json": "a734c01d769a9c5551c1ce555e0f015183ef1cb846535da4b73dc577f24a8200",
+    "merge-readback.json": "6f0a1e1af084fdfba1ca4aec82459eea196f020279aeafe95a4fe5dbd49247b8",
+    "provider-after-verified.json": "195390273b079796946f3e6043ba81e54ef09d1cffb6878a33fe823f0186339f",
+    "public-readback/summary.json": "bb402e8408fd4c06182ee3b428dfbb13a37b9ee69a6d28c0c62038520069a3ad",
+    "unchanged-hosting-surface.json": "0323ebc26c1b39a4e4b829f72e61705de78dacc7d1d59fb4eb2ddbe3fe75f69b"
+  }
+}

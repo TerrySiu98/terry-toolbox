@@ -14,7 +14,7 @@
 
 > **开发预览，尚非稳定版。** 源码与单文件脚本已公开。下方功能表同时列出已实测、待真机验收及计划项目，不能视为全部完成；首次使用请选测试机。
 
-> **2026-11-01 当前已发布到 `sh.uw.cx`：** PR #4 的 Secure Boot 未提供变量兼容及安全补丁已上线，包含 PR #3 lsblk 与 PR #2 依赖修复。Worker 四模块、完整配置、域名/DNS 与公网下载已精确回读。见[当前发布记录](docs/release-pr4-20261101.md)、[维护手册](HANDOFF.md)和[历史验收索引](docs/acceptance-20261031.json)。仍是开发预览。
+> **2026-11-01 当前已发布到 `sh.uw.cx`：** PR #5 的 Xray 26.10.31 pin、提权 HTTPS 重下载、B23 恢复、应用目录及 relay 归属/停止门禁修复已上线；保留 PR #4 Secure Boot、PR #3 lsblk 与 PR #2 依赖修复。12 项相关回归、父级 12 项与独立 16 项控制通过；Worker 四模块、完整配置、域名/DNS 与公网下载已精确回读。旧版无台账 relay 保留，不自动升级现有服务。见[当前发布记录](docs/release-pr5-20261101.md)、[维护手册](HANDOFF.md)和[历史验收索引](docs/acceptance-20261031.json)。仍是开发预览。
 
 > **M3 Secure Boot 兼容修复已上线：** 固件未提供相关变量时增加独立只读核对；合并复核发现的已打开变量读取 ENOENT 误放行已修正，变量打开成功即拒绝，清理 backend 覆盖失败也终止。修正候选通过 9 项相关检查（含 85 项重装模拟、49 项新增安全边界、18 项重启门禁）；作者原生预检仅对应修正前候选，非本轮原生复验。见[修复记录](docs/m3-secureboot-fix-20261101.md)和[安全补丁记录](docs/m3-secureboot-safety-followup-20261101.md)。已按精确修正 head 合并并发布；独立补丁复核 15/15 无新增阻塞，原重装确认与重启门禁保留。
 
@@ -30,6 +30,7 @@ Terry Toolbox 是一个面向 Linux 服务器的中文菜单工具箱。登录�
 
 ## 开发进度
 
+- **PR #5 当前修复验证**：父级 12/12 相关回归，父级 12 项与独立 16 项正反控制通过；原生 systemd 仅只读快照，服务停启、故障与恢复用模拟。不是本轮全仓或原生安装验收；14 项公网回读、9 项下载安全 smoke 与 TLS 通过。见[当前发布记录](docs/release-pr5-20261101.md)。
 - **当前源码**：VMess 生命周期、自启与换证；Certbot HTTP-01、续期与 VMess 同步；Docker 默认 bridge IPv6；WebSSH 个人版/Easynode；Debian 13、Ubuntu 24.04、Alpine 3.24 重装准备与取消均已接入菜单。B18 保留。
 - **首次交付原生验收**：Debian 13.7 / x86_64 / KVM 已通过 B1 安装 Docker Engine 29.9.2，以及 IPv6 应用配置、双容器 ULA nonce 传输、整机重启后同一容器再传输、恢复到原先不存在 `daemon.json` 的状态。WebSSH 个人版和 Easynode 已完成真实正反登录、SSH/SFTP、容器重启持久化与卸载保留数据。Debian 13、Ubuntu 24.04、Alpine 3.24 已分别完成全新磁盘实际重装、公钥 SSH 与旧系统清除核对。VMess 已通过两次整机重启；真实 ACME 定时续期已恢复过期证书并同步 VMess；原 Python WebSSH 已通过认证、真实 SSH、服务重启和卸载。完整范围见维护手册；这些历史记录不能代替当前依赖补装改动的复验。
 - **历史证据**：Alpine swap 模块的历史版本曾在 Alpine 3.24.2 / KVM 通过实际换页、服务重启、整机自启和卸载。部分原有应用与网络服务有真实运行记录；这些记录不能替代本次修改后的验收。
@@ -70,7 +71,7 @@ bash toolbox.sh
 curl -fsSL sh.uw.cx | sha256sum
 ```
 
-先与 `https://sh.uw.cx/sha256` 及[当前发布记录](docs/release-pr4-20261101.md)核对。当前线上脚本绑定发布源码 `7e3656c2de4661168a384e7184afa86ec82f6269` 的 `docs/index.html`；后续文档提交不改变该脚本。**当前发布版本的 SHA-256**：`2f8f180fa295cd08f4300f63184c10264210e3cd31b4280d0477b479389ffea7`（2026-11-01 PR #4 发布，705455 字节）。
+先与 `https://sh.uw.cx/sha256` 及[当前发布记录](docs/release-pr5-20261101.md)核对。当前线上脚本绑定发布源码 `8264d86038a2f812c096ca9cfeb5b112b493189f` 的 `docs/index.html`；后续文档提交不改变该脚本。**当前发布版本的 SHA-256**：`8ceed7f82f0bf76cc15bbeab76ae5c599186bc1666cf117c6fb66194998b00df`（2026-11-01 PR #5 发布，717942 字节）。
 
 服务端下载的是单文件版本，全部模块已经打包进去，不需要准备其他文件。Debian / Ubuntu 为当前主要支持环境，Alpine 仅部分功能。
 
@@ -156,7 +157,7 @@ curl -fsSL sh.uw.cx | sha256sum
 | `A5` | Xray | 开发中：VLESS Reality；VMess + WS + TLS 安装/状态/卸载、自启管理和受控换证，首次交付版本已通过 Debian 13/KVM 两次整机重启、认证传输、真实 ACME 换证同步和卸载；上游已弃用 VMess/WS，仅供兼容 |
 | `B12` | TCP Brutal | 开发中：DKMS 编译 kernel module、开机载入与默认拥塞控制；仅非容器 Debian |
 | `B23` | DNS 切换 | 开发中：仅 systemd-resolved，先查 resolv.conf 归属；验证失败回滚并列出泄漏面 |
-| `B31` | Relay 转发 | 开发中：socat 单单元转发（TCP/UDP），不依赖也不会改动 nginx |
+| `B31` | Relay 转发 | 开发中：socat 单单元转发（TCP/UDP），不改 nginx；归属台账、本次创建 claim、完整停止/任务/PID/监听核验后才删除；读取或停止失败保留。旧版无台账单元需人工核实 |
 
 ### 常用应用
 
