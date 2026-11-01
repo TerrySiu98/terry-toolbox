@@ -43,6 +43,48 @@ if [[ ${TOOLBOX_BUNDLED:-0} != 1 ]]; then
     _TOOLBOX_APPS_MODULE_DIR=$(CDPATH= builtin cd -- "$_TOOLBOX_APPS_MODULE_DIR" && builtin pwd -P) || _TOOLBOX_APPS_MODULE_DIR=''
 fi
 
+# 以 HOME 属主的身份，独占创建 HOME 之下缺失的祖先目录（不含 HOME 本身）。
+# 不做任何 chown/chmod：由本次 mkdir 建出的目录天然归执行身份；已存在的目录原样
+# 跳过，符号链接或非目录拒绝；mkdir 因竞态失败也按同样规则处理，绝不接管既有对象。
+# HOME 属主为 root（真 root 或 sudo -i）时直接由 root 创建，模式 0700；普通用户 0755。
+_toolbox_apps_make_parents() {
+    local home=${1%/} target=$2 rel acc part owner uid gid mode
+    local -a parts=()
+    [[ -n $home ]] || home=/
+    [[ $target == "$home"/* ]] || { printf '数据目录不在 HOME 之下：%s\n' "$target" >&2; return 1; }
+    [[ -d $home && ! -L $home ]] || { printf 'HOME 不是普通目录：%s\n' "$home" >&2; return 1; }
+    owner=$(stat -c '%u:%g' -- "$home") || { printf '无法读取 HOME 属主。\n' >&2; return 1; }
+    uid=${owner%%:*}; gid=${owner##*:}
+    if [[ $uid == 0 ]]; then
+        mode=0700
+    else
+        mode=0755
+        if ! command -v setpriv >/dev/null 2>&1; then
+            declare -F toolbox_require_commands >/dev/null || { [[ -n ${_TOOLBOX_APPS_MODULE_DIR:-} ]] && source "$_TOOLBOX_APPS_MODULE_DIR/dependencies.sh"; } || return 1
+            toolbox_require_commands '应用数据目录' setpriv || return 1
+        fi
+    fi
+    rel=${target#"$home"/}
+    IFS=/ read -r -a parts <<< "$rel"
+    acc=$home
+    for part in "${parts[@]}"; do
+        [[ -n $part && $part != . && $part != .. ]] || { printf '数据目录路径非法：%s\n' "$target" >&2; return 1; }
+        acc=$acc/$part
+        if [[ -L $acc ]]; then printf '%s 是符号链接，拒绝接管；请人工处理。\n' "$acc" >&2; return 1; fi
+        if [[ -d $acc ]]; then continue; fi
+        if [[ -e $acc ]]; then printf '%s 已存在且不是目录，拒绝接管。\n' "$acc" >&2; return 1; fi
+        if [[ $uid == 0 ]]; then
+            mkdir -m "$mode" -- "$acc" 2>/dev/null
+        else
+            setpriv --reuid="$uid" --regid="$gid" --clear-groups -- mkdir -m "$mode" -- "$acc" 2>/dev/null
+        fi || {
+            # 竞态：别人先放了东西。已是目录就原样保留并继续；其余一律拒绝。
+            if [[ -L $acc ]]; then printf '%s 被换成符号链接，拒绝接管。\n' "$acc" >&2; return 1; fi
+            [[ -d $acc ]] || { printf '无法创建 %s（HOME 属主 uid %s 无权限或路径被占用）。\n' "$acc" "$uid" >&2; return 1; }
+        }
+    done
+}
+
 toolbox_app() (
     local id=${1-} name image default_port target_port data_target='' note='' port answer
     local dependency root data names secret extra_ports='' environment='' context endpoint version major network_id reuse=0 canonical subdir
@@ -72,10 +114,10 @@ toolbox_app() (
         declare -F toolbox_require_docker >/dev/null || { [[ -n ${_TOOLBOX_APPS_MODULE_DIR:-} ]] && source "$_TOOLBOX_APPS_MODULE_DIR/dependencies.sh"; } || return 1
         toolbox_require_docker "B$id $name" || return 1
     fi
-    for dependency in realpath mkdir date; do
+    for dependency in realpath mkdir date stat; do
         if ! command -v "$dependency" >/dev/null 2>&1; then
             declare -F toolbox_require_commands >/dev/null || { [[ -n ${_TOOLBOX_APPS_MODULE_DIR:-} ]] && source "$_TOOLBOX_APPS_MODULE_DIR/dependencies.sh"; } || return 1
-            toolbox_require_commands "B$id $name" realpath mkdir date || return 1
+            toolbox_require_commands "B$id $name" realpath mkdir date stat || return 1
             break
         fi
     done
@@ -196,21 +238,10 @@ toolbox_app() (
     # Docker itself arbitrates ports and container names atomically. Never remove
     # anything after failure: a newly created directory may contain valuable data.
     if [[ -n $data_target ]]; then
-        # sudo -E 提权时 HOME 仍属原用户：若 ~/.local、~/.local/share 尚不存在，
-        # 不能由下方 umask 077 顺手建成 root:root 0700，否则用户会被挡在自己的
-        # ~/.local 之外。只补建缺失的祖先，归属跟随其已存在的父目录（用户家目录
-        # 下归用户、/root 下归 root），模式 0755；terry-toolbox/apps 仍为 root 0700。
-        if [[ ! -d ${root%/*/*} ]]; then
-            ( set -f; IFS=/; acc=''
-              for p in ${root%/*/*}; do
-                  [[ -n $p ]] || continue
-                  acc="$acc/$p"
-                  [[ -e $acc ]] && continue
-                  parent=${acc%/*}; parent=${parent:-/}
-                  owner=$(stat -c '%u:%g' -- "$parent") || exit 1
-                  install -d -o "${owner%%:*}" -g "${owner##*:}" -m 0755 -- "$acc" || exit 1
-              done ) || { printf '无法创建数据目录父级: %s\n' "${root%/*/*}" >&2; return 1; }
-        fi
+        # sudo -E 提权时 HOME 仍属原用户：缺失的 ~/.local、~/.local/share 由 HOME 属主
+        # 身份独占创建，绝不 chown/chmod 既有对象（见 _toolbox_apps_make_parents）；
+        # terry-toolbox/apps 仍由下方 umask 077 创建为 root 0700。
+        _toolbox_apps_make_parents "$HOME" "${root%/*/*}" || return 1
         umask 077
         if ! mkdir -p -- "$root" || { (( ! reuse )) && ! mkdir -- "$data"; }; then
             printf '无法安全创建数据目录: %s\n' "$data" >&2; return 1

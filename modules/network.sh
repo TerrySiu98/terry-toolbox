@@ -1007,6 +1007,38 @@ net_relay_unit_dir() { printf '%s\n' "${TOOLBOX_NET_UNIT_DIR:-/etc/systemd/syste
 net_relay_unit_name() { printf '%s-%s-%s.service\n' "$RELAY_PREFIX" "$1" "$2"; }
 net_relay_unit() { printf '%s/%s\n' "$(net_relay_unit_dir)" "$(net_relay_unit_name "$1" "$2")"; }
 
+# 归属台账：安装时记录单元的 dev:inode、大小、权限、属主、链接数与 sha256，存放在
+# 单元目录之外。卸载/回滚只对「台账逐字段一致」的单元动手；无台账、内容被改、
+# inode 被换、被硬链接的一律视为外来并保留。文件内的任何标记都不作为归属依据。
+net_relay_state_dir() { printf '%s\n' "${TOOLBOX_NET_RELAY_STATE:-/var/lib/terry-toolbox/relay}"; }
+net_relay_ledger() { printf '%s/%s-%s.ledger\n' "$(net_relay_state_dir)" "$1" "$2"; }
+net_relay_identity() {
+    local f=$1 st sum
+    [[ -f $f && ! -L $f ]] || return 1
+    st=$(stat -c '%d:%i %s %a %u %h' -- "$f") || return 1
+    sum=$(sha256sum -- "$f") || return 1
+    printf '%s %s\n' "$st" "${sum%% *}"
+}
+net_relay_unit_state() { # unit ledger → absent | ours | foreign
+    local unit=$1 ledger=$2 want have
+    [[ -e $unit || -L $unit ]] || { printf 'absent\n'; return 0; }
+    [[ -f $ledger && ! -L $ledger ]] || { printf 'foreign\n'; return 0; }
+    want=$(<"$ledger") || want=''
+    have=$(net_relay_identity "$unit") || { printf 'foreign\n'; return 0; }
+    if [[ -n $want && $want == "$have" ]]; then printf 'ours\n'; else printf 'foreign\n'; fi
+}
+# 停止确认：ActiveState 回读为 inactive/failed 才算停止；读不到或仍为 active /
+# activating / deactivating 都视为未确认，调用方不得删除。
+net_relay_stopped() {
+    local name=$1 i st
+    for ((i = 0; i < 20; i++)); do
+        st=$(systemctl show -p ActiveState --value "$name" 2>/dev/null) || st=''
+        case $st in inactive|failed) return 0 ;; esac
+        sleep 0.3
+    done
+    return 1
+}
+
 net_relay_socat() {
     local p=${TOOLBOX_NET_SOCAT:-}
     if [[ -n $p ]]; then printf '%s\n' "$p"; return 0; fi
@@ -1042,10 +1074,13 @@ net_relay_exec_line() {
 }
 
 net_relay_write_unit() {
-    local proto=$1 lport=$2 host=$3 tport=$4 unit exec
-    unit=$(net_relay_unit "$proto" "$lport")
+    local proto=$1 lport=$2 host=$3 tport=$4 unit exec dir tmp ledger state identity
+    unit=$(net_relay_unit "$proto" "$lport"); dir=$(net_relay_unit_dir)
+    ledger=$(net_relay_ledger "$proto" "$lport"); state=$(net_relay_state_dir)
     exec=$(net_relay_exec_line "$proto" "$lport" "$host" "$tport") || return 1
-    cat > "$unit" <<EOF || return 1
+    # 先写到临时名，完整校验后用不覆盖的硬链接原子落位，再写归属台账。
+    tmp=$(mktemp "$dir/.relay-stage.XXXXXXXX") || return 1
+    cat > "$tmp" <<EOF || { rm -f -- "$tmp"; return 1; }
 [Unit]
 Description=Terry Toolbox relay $proto $lport -> $host:$tport
 After=network-online.target
@@ -1069,18 +1104,34 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 [Install]
 WantedBy=multi-user.target
 EOF
-    chmod 0644 "$unit" && [[ -s $unit ]]
+    { chmod 0644 "$tmp" && [[ -s $tmp ]]; } || { rm -f -- "$tmp"; return 1; }
+    ln -T -- "$tmp" "$unit" || { rm -f -- "$tmp"; return 1; }
+    rm -f -- "$tmp"
+    identity=$(net_relay_identity "$unit") || return 1
+    install -d -m 0700 -- "$state" || { rm -f -- "$unit"; return 1; }
+    tmp=$(mktemp "$state/.ledger.XXXXXXXX") || { rm -f -- "$unit"; return 1; }
+    { printf '%s\n' "$identity" > "$tmp" && chmod 0600 "$tmp" && mv -f -- "$tmp" "$ledger"; } \
+        || { rm -f -- "$tmp"; [[ $(net_relay_identity "$unit" 2>/dev/null) == "$identity" ]] && rm -f -- "$unit"; return 1; }
 }
 
 net_relay_rollback() {
-    local proto=$1 lport=$2 unit
-    unit=$(net_relay_unit "$proto" "$lport")
+    local proto=$1 lport=$2 unit ledger name
+    unit=$(net_relay_unit "$proto" "$lport"); ledger=$(net_relay_ledger "$proto" "$lport")
+    name=$(net_relay_unit_name "$proto" "$lport")
     net_err '--- 开始回滚 ---'
-    systemctl disable --now "$(net_relay_unit_name "$proto" "$lport")" >/dev/null 2>&1 || true
-    rm -f -- "$unit"
+    case $(net_relay_unit_state "$unit" "$ledger") in
+        ours)
+            systemctl disable --now "$name" >/dev/null 2>&1 || true
+            if net_relay_stopped "$name" && [[ $(net_relay_unit_state "$unit" "$ledger") == ours ]]; then
+                rm -f -- "$unit" "$ledger"
+                net_err '已删除本次写入的单元。'
+            else
+                net_err "警告：$name 未能确认停止或内容已变，保留单元与台账；请人工检查。"
+            fi ;;
+        foreign) net_err "警告：$unit 与本次写入不一致，保留；请人工确认。" ;;
+    esac
     systemctl daemon-reload >/dev/null 2>&1 || true
-    systemctl reset-failed "$(net_relay_unit_name "$proto" "$lport")" >/dev/null 2>&1 || true
-    net_err '已删除本次写入的单元。'
+    systemctl reset-failed "$name" >/dev/null 2>&1 || true
 }
 
 _net_relay_install() {
@@ -1089,7 +1140,7 @@ _net_relay_install() {
     net_require_root || return 1
     net_require_debian || return 1
     net_require_systemd || return 1
-    net_require_cmds flock ss sed mktemp grep cut readlink cat chmod rm sleep || return 1
+    net_require_cmds flock ss sed mktemp grep cut readlink cat chmod rm sleep stat sha256sum ln install mv || return 1
     [[ -n ${TOOLBOX_NET_SOCAT:-} ]] || net_require_cmds socat || return 1
 
     # 菜单只传动作：缺的参数问，协议给默认 tcp；EOF 在写盘前退出。
@@ -1110,10 +1161,10 @@ _net_relay_install() {
 
     unit=$(net_relay_unit "$proto" "$lport")
     name=$(net_relay_unit_name "$proto" "$lport")
-    state=$(net_unit_state "$unit" "$socat")
+    state=$(net_relay_unit_state "$unit" "$(net_relay_ledger "$proto" "$lport")")
     case $state in
         foreign)
-            net_die "$unit 已存在但内容不是本模块生成的，未覆盖；请人工确认。"
+            net_die "$unit 已存在但不是本模块生成的（无归属台账或内容已改动），未覆盖；请人工确认。"
             return 1
             ;;
         ours)
@@ -1187,21 +1238,14 @@ net_relay_parse_unit() {
     printf '%s %s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
 }
 
-# 归属看单元自身写入的固定标记，而不是当前 socat 路径：socat 被卸载或移动后，
-# 本模块写的单元仍应识别为 ours，否则会被当成「他人单元」静默保留。
-net_relay_unit_state() {
-    [[ -e $1 ]] || { printf 'absent\n'; return 0; }
-    if grep -qF 'Description=Terry Toolbox relay ' "$1" 2>/dev/null; then printf 'ours\n'; else printf 'foreign\n'; fi
-}
-
 _net_relay_uninstall() {
-    local units=() unit proto lport name state
+    local units=() unit proto lport name state ledger failed=0 deleted=0
     net_require_root || return 1
     net_require_systemd || return 1
 
     mapfile -t units < <(net_relay_units)
     (( ${#units[@]} > 0 )) || { net_die '没有找到本模块的转发单元。'; return 1; }
-    net_require_cmds grep flock rm || return 1
+    net_require_cmds grep flock rm stat sha256sum sleep || return 1
 
     if (( $# == 0 )) || [[ ${1:-} == all ]]; then
         :
@@ -1219,23 +1263,40 @@ _net_relay_uninstall() {
 
     printf '将停止并删除：\n'
     for unit in "${units[@]}"; do
-        state=$(net_relay_unit_state "$unit")
-        printf '  %s%s\n' "$unit" "$( [[ $state == foreign ]] && printf '（他人单元，将保留）')"
+        if read -r proto lport < <(net_relay_parse_unit "$unit"); then
+            state=$(net_relay_unit_state "$unit" "$(net_relay_ledger "$proto" "$lport")")
+        else
+            state=foreign
+        fi
+        printf '  %s%s\n' "$unit" "$( [[ $state == ours ]] || printf '（无归属台账或内容已改动，将保留）')"
     done
     net_confirm_once || return 1
     net_lock relay || return 1
 
     for unit in "${units[@]}"; do
-        if [[ $(net_relay_unit_state "$unit") == foreign ]]; then
-            continue
-        fi
-        name=${unit##*/}
+        read -r proto lport < <(net_relay_parse_unit "$unit") || continue
+        ledger=$(net_relay_ledger "$proto" "$lport"); name=${unit##*/}
+        [[ $(net_relay_unit_state "$unit" "$ledger") == ours ]] || continue
         systemctl disable --now "$name" >/dev/null 2>&1 || true
-        rm -f -- "$unit"
+        if ! net_relay_stopped "$name"; then
+            net_err "$name 停止失败或状态无法确认；保留单元与台账，请人工检查。"
+            failed=1; continue
+        fi
+        # 停止期间单元可能被改动：删除前再核一次台账。
+        if [[ $(net_relay_unit_state "$unit" "$ledger") != ours ]]; then
+            net_err "$unit 在停止期间发生改动，保留。"; failed=1; continue
+        fi
+        rm -f -- "$unit" "$ledger"
         systemctl reset-failed "$name" >/dev/null 2>&1 || true
         printf '已删除 %s\n' "$name"
+        deleted=$((deleted + 1))
     done
     systemctl daemon-reload >/dev/null 2>&1 || true
+    if (( deleted == 0 )); then
+        net_die '没有删除任何单元：无归属台账或内容已改动的单元均已保留，请人工确认。'
+        return 1
+    fi
+    (( failed == 0 ))
 }
 
 net_relay_status() {

