@@ -162,7 +162,7 @@ mokutil() {
 setup() {
     # Consume case knobs from the prefix, then clear them so nothing leaks.
     local want_init=${INIT_MODE:-systemd} want_archive=${ARCHIVE_MODE:-plain}
-    unset MISSING MISSING2 DEPS_INSTALL_MODE CONTAINER_RC MOCK_FAIL RUNTIME_BAD CFG_BAD RESET_FAIL RESET_BAD BOOT_ID MBR ARCHIVE_BAD MOCK_ARCH INIT_MODE ARCHIVE_MODE VIRTWHAT MOKUTIL_TEXT MOKUTIL_RC
+    unset TOOLBOX_REINSTALL_AUTH_MODE MISSING MISSING2 DEPS_INSTALL_MODE CONTAINER_RC MOCK_FAIL RUNTIME_BAD CFG_BAD RESET_FAIL RESET_BAD BOOT_ID MBR ARCHIVE_BAD MOCK_ARCH INIT_MODE ARCHIVE_MODE VIRTWHAT MOKUTIL_TEXT MOKUTIL_RC
     fixture=$(mktemp -d "$case_root/case.XXXXXX")
     export TOOLBOX_REINSTALL_ROOT="$fixture/root" TOOLBOX_REINSTALL_STATE="$fixture/state"
     mkdir -p "$fixture/root/boot/grub" "$fixture/root/proc/sys/kernel/random" "$fixture/root/proc/1" \
@@ -213,7 +213,13 @@ _toolbox_reinstall_run_upstream() {
         return 0
     fi
     [[ ${MOCK_FAIL:-0} != 1 ]] || { printf 'actual fixture upstream failure\n' >&2; return 17; }
-    [[ $3 == --username && $4 == root && $5 == --ssh-key && $6 == "$fixture/state/active/key.pub" && $7 == --target-disk && $8 == /dev/vda ]] || return 99
+    [[ $3 == --username && $4 == root && $7 == --target-disk && $8 == /dev/vda ]] || return 99
+    local auth_file auth_config
+    case $5 in
+        --ssh-key) [[ $6 == "$fixture/state/active/key.pub" ]] || return 99; auth_file=$6;auth_config=ssh_keys;;
+        --toolbox-password-hash-file) [[ $6 == "$fixture/state/active/password.sha512" ]] || return 99;auth_file=$6;auth_config=password-linux-sha512;;
+        *) return 99;;
+    esac
     local cfg="$fixture/root/boot/grub/custom.cfg" pin=$_TOOLBOX_REINSTALL_COMMIT
     if [[ -d $fixture/root/sys/firmware/efi ]]; then
         mkdir -p "$fixture/root/boot/efi/EFI/reinstall"
@@ -234,7 +240,23 @@ _toolbox_reinstall_run_upstream() {
     [[ $1 != debian ]] || trans=expected-debian-trans.sh
     cp "$fixture/state/active/$trans" "$fixture/root/reinstall-tmp/initrd/trans.sh"
     cp "$fixture/state/active/initrd-network.sh" "$fixture/root/reinstall-tmp/initrd/initrd-network.sh"
-    cp "$fixture/state/active/key.pub" "$fixture/root/reinstall-tmp/initrd/configs/ssh_keys"
+    # Real fragment invocation, never the installer's top-level entrypoint. The
+    # PTY regression uses the actual adapter-only hash loader and config branch.
+    if [[ $auth_config == password-linux-sha512 ]]; then
+        python3 - "$fixture/state/active/reinstall.sh" "$fixture/auth-fragments.sh" <<'PY'
+from pathlib import Path
+import sys
+s=Path(sys.argv[1]).read_text()
+loader=s[s.index('toolbox_load_password_hash() {'):s.index('prompt_password() {')]
+config=s[s.index('    # 保存配置\n'):s.index('    if [ -n "$frpc_config" ]; then',s.index('    # 保存配置\n'))]
+guard=s[s.index('# Adapter mode is only reviewed'):s.index('# 强制忽略/强制添加 --ci 参数')]
+Path(sys.argv[2]).write_text('set -euo pipefail\nerror_and_exit() { exit 97; }\nsave_password() { exit 98; }\nprompt_password() { exit 96; }\nprompt_username() { exit 95; }\nis_netboot_xyz() { return 1; }\nverify_os_args() { :; }\n'+loader+'\nTHIS_SCRIPT="$1"\ntoolbox_password_hash_file="${1%/*}/password.sha512"\nssh_keys=\npassword=\nusername=root\ndistro="$3"\nreleasever="$4"\ninitrd_dir="$2"\n'+guard+config)
+PY
+        command env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            bash "$fixture/auth-fragments.sh" "$fixture/state/active/reinstall.sh" "$fixture/root/reinstall-tmp/initrd" "$1" "$2" || return
+    else
+        cp "$auth_file" "$fixture/root/reinstall-tmp/initrd/configs/$auth_config"
+    fi
     [[ ${RUNTIME_BAD:-0} != 1 ]] || printf 'tamper\n' >> "$fixture/root/reinstall-tmp/initrd/trans.sh"
     # Synthetic newc container around REAL upstream bytes. Explicitly not an OS
     # image; production's final archive parser executes unchanged.
@@ -249,9 +271,9 @@ def body(extra=()):
  if mode in ('rootdir','rootfile','duproot'):
   member(b,'.',b'',0o040755 if mode!='rootfile' else 0o100644)
   if mode=='duproot':member(b,'.',b'',0o040755)
- for n in ('trans.sh','initrd-network.sh','configs/ssh_keys'):
+ for n in ('trans.sh','initrd-network.sh')+tuple('configs/'+n for n in sorted(__import__('os').listdir(p+'/reinstall-tmp/initrd/configs'))):
   data=open(p+'/reinstall-tmp/initrd/'+n,'rb').read()
-  member(b,n,data,0o040000 if (n=='trans.sh' and mode=='dirwanted') else 0o100644,2 if (n=='trans.sh' and mode=='hardwanted') else 1)
+  member(b,n,data,0o040000 if (n=='trans.sh' and mode=='dirwanted') else (0o100600 if n=='configs/password-linux-sha512' else 0o100644),2 if (n=='trans.sh' and mode=='hardwanted') else 1)
   if n=='trans.sh' and mode=='dup':member(b,n,data)
  for kind,name in extra:member(b,name,b'x',kind)
  member(b,'TRAILER!!!',b'')
@@ -266,6 +288,8 @@ open(p+'/reinstall-initrd','wb').write(out)
 PY
     [[ ${ARCHIVE_BAD:-0} != 1 ]] || printf 'invalid archive\n' > "$fixture/root/reinstall-initrd"
 }
+# Reuse the exact isolated mock boundary from the PTY authentication regression.
+if [[ ${REINSTALL_TEST_LIBRARY:-0} == 1 ]]; then return 0; fi
 prep() { printf 'YES\nyes\n/dev/vda\n' | toolbox_reinstall prepare "${1:-debian}" "${2:-13}" > "$fixture/output" 2>&1; }
 reject() { if "$@" </dev/null > "$fixture/output" 2>&1; then fail 'unexpected success'; fi; }
 no_calls() { [[ ! -s $fixture/calls ]] || fail 'unexpected upstream mutation boundary'; }

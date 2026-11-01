@@ -2,12 +2,14 @@
 # Source-only provenance. Pin updates require human review of upstream and this diff.
 _TOOLBOX_REINSTALL_COMMIT=54fae2067557b3c0ca49e7c9ce03bca63c793f8c
 _TOOLBOX_REINSTALL_RAW_SHA=3ca358bf065ebd3ecb2f727e152a4b4fb9b154398abc1b9a5fe0b599f1027d7a
-_TOOLBOX_REINSTALL_DERIVED_SHA=fc056ad5498bd019201d20ca19d1ebfe1d9d7cb05028cd4cb5a0352e9566518d
+_TOOLBOX_REINSTALL_DERIVED_SHA=f51939ced0634c1a12f429e94a58e10c7b939b88ff4ea3ca9240f748b90be663
 # README at this commit, lines 705..719, documents pinning confhome* to commit_id.
 # Reviewed derivation: both active origins use SAME immutable GitHub commit;
 # remove upstream curl --insecure from download and URL probe (two exact
 # occurrences), use HTTPS for Alpine boot images and Debian driver packages
-# injected into the initrd. No installer rewritten.
+# injected into the initrd. Add the adapter-only fixed Linux/root SHA512-file
+# path, skip upstream plaintext prompts/fallback hashing/credential echo there.
+# Installation, bootloader and runtime auth application remain upstream-owned.
 # trans.sh + initrd-network.sh are downloaded through that origin; extra_confhome
 # propagates it into initrd/runtime. Distribution images/packages remain mutable.
 _toolbox_reinstall_derive() {
@@ -37,7 +39,74 @@ edits = [
  (b'curl -Lo $tmp/tmp.deb http://$mirror/"$deb_path"',
   b'curl -Lo $tmp/tmp.deb https://$mirror/"$deb_path"'),
  (b'is_in_china && mirror=http://mirror.nju.edu.cn/alpine || mirror=https://dl-cdn.alpinelinux.org/alpine',
-  b'is_in_china && mirror=https://mirror.nju.edu.cn/alpine || mirror=https://dl-cdn.alpinelinux.org/alpine')]
+  b'is_in_china && mirror=https://mirror.nju.edu.cn/alpine || mirror=https://dl-cdn.alpinelinux.org/alpine'),
+ # Adapter-only hashed-password interface: no plaintext argv/env, no upstream
+ # prompt/random password/hash fallback or credential echo on this path.
+ (b'set -eE\n', b'set -eE\n# Adapter secrets must never inherit tracing/debug hooks.\nset +x\nset +T\ntrap - DEBUG RETURN ERR\ntoolbox_password_hash_file=\ntoolbox_password_hash=\n'),
+ (b'    passwd: password: \\\n', b'    passwd: password: toolbox-password-hash-file: \\\n'),
+ (b'    --passwd | --password)\n', b'    --toolbox-password-hash-file)\n        toolbox_password_hash_file=$2\n        shift 2\n        ;;\n    --passwd | --password)\n'),
+ (b'prompt_password() {\n', b'''# Read only the adapter's exclusive owned0600 sibling, never arbitrary input.
+toolbox_load_password_hash() {
+    toolbox_password_hash=$(python3 - "$toolbox_password_hash_file" "$THIS_SCRIPT" <<'TOOLBOX_HASH_PY'
+import os,re,stat,sys
+p,script=sys.argv[1:]
+def fail():sys.exit('Adapter password hash file refused')
+if p!=os.path.dirname(script)+'/password.sha512':fail()
+for i in range(1,len(p.split('/'))):
+ q='/'.join(p.split('/')[:i]) or '/';s=os.lstat(q)
+ if not stat.S_ISDIR(s.st_mode) or s.st_uid!=os.geteuid() or s.st_mode&0o022:fail()
+s=os.lstat(p)
+if not stat.S_ISREG(s.st_mode) or s.st_nlink!=1 or s.st_uid!=os.geteuid() or stat.S_IMODE(s.st_mode)!=0o600:fail()
+f=os.open(p,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+try:
+ h=os.fstat(f)
+ if (h.st_dev,h.st_ino,h.st_mode,h.st_uid,h.st_nlink)!=(s.st_dev,s.st_ino,s.st_mode,s.st_uid,s.st_nlink):fail()
+ b=os.read(f,257)
+finally:os.close(f)
+if not re.fullmatch(rb'\\$6\\$[./A-Za-z0-9]{1,16}\\$[./A-Za-z0-9]{86}\\n',b):fail()
+sys.stdout.buffer.write(b)
+TOOLBOX_HASH_PY
+    ) || error_and_exit "Adapter password hash file refused"
+}
+prompt_password() {
+'''),
+ ('# 检查必须的参数\nverify_os_args\n'.encode(), '''# Adapter mode is only reviewed for these fixed Linux targets/root user.
+if [ -n "$toolbox_password_hash_file" ]; then
+    case "$distro $releasever" in
+        'debian 13'|'ubuntu 24.04'|'alpine 3.24') ;;
+        *) error_and_exit "Adapter password target refused";;
+    esac
+    [ "$username" = root ] && [ -z "$password" ] && [ -z "$ssh_keys" ] || error_and_exit "Adapter authentication conflict"
+    toolbox_load_password_hash
+fi
+# 检查必须的参数
+verify_os_args
+'''.encode()),
+ (b'if [ -z "$password" ] && [ -z "$ssh_keys" ]; then\n', b'if [ -z "$password" ] && [ -z "$ssh_keys" ] && [ -z "$toolbox_password_hash" ]; then\n'),
+ (b'        cat <<<"$ssh_keys" >$initrd_dir/configs/ssh_keys\n    else\n', b'''        cat <<<"$ssh_keys" >$initrd_dir/configs/ssh_keys
+    elif [ -n "$toolbox_password_hash_file" ]; then
+        toolbox_load_password_hash
+        (umask 077; builtin printf '%s\\n' "$toolbox_password_hash" >"$initrd_dir/configs/password-linux-sha512")
+        unset toolbox_password_hash
+    else
+'''),
+ ('''    # 普通 linux
+    echo "Username: $username"
+    if [ -n "$ssh_keys" ]; then
+        echo "Public Key: $ssh_keys"
+    else
+        echo "Password: $password"
+    fi
+'''.encode(), '''    # 普通 linux
+    echo "Username: $username"
+    if [ -n "$ssh_keys" ]; then
+        echo "Public Key: $ssh_keys"
+    elif [ -n "$toolbox_password_hash_file" ]; then
+        echo "Authentication: password (credential hidden)"
+    else
+        echo "Password: $password"
+    fi
+'''.encode())]
 for old, new in edits:
     if b.count(old) != 1: sys.exit('pin patch 前置条件不匹配；需要显式 review。')
     b = b.replace(old, new)
