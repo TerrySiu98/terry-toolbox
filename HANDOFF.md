@@ -2,6 +2,10 @@
 
 更新日期：2026-11-01。本文件记录 Codex 接续后的当前维护入口；原 Hermes 交接已逐字节保存为 [2026-10-31 历史快照](docs/handoff-hermes-20261031.md)。快照中的 Claude Code 称谓、旧测试限制、失败记录及授权说明只描述当时状态，不代表当前分工或新的操作授权。后续工作以 Terry 的当前指示和本文件的证据边界为准。
 
+## 待发布：BBR 当前内核模块检测（2026-11-10）
+
+分支 `codex/bbr-module-fix` 修正主菜单 `2` / `M1` 对未加载 BBR 的误判。源码、单文件与 Worker 候选已生成，12 项相关回归及单文件 49 场景通过，独立复核无阻塞；真实宿主加载未验，本轮未合并或上线。用户机器缺模块目录的根因仍须区分宿主/容器和匹配内核；不自动安装内核。见[修复记录](docs/bbr-module-fix-20261110.md)与[机器可读结果](docs/bbr-module-fix-20261110.json)。候选 SHA-256 `7d2f5a9439704d631948c2b027e059d330852511e85a635b6a2e5b004f024826`，733843 字节；现有 Worker 仍是下方 PR #6。
+
 ## 当前发布：M3 三系统密码或 SSH 密钥（PR #6）
 
 [PR #6](https://github.com/TerrySiu98/terry-toolbox/pull/6) 按精确 head `34f4bc87ba4d18609c2277873960299bbbb774f6` 合并为 `8e73adbfa8012539018e0e8c0a18dce42d7a5c9c` 并发布现有 Worker。当前脚本 SHA-256 `114640dc498b6861d6679ad89b5a8ca7edd4eff941ebec541197c23f25ac6abf`，728768 字节；源码分支保留，原域名/DNS 不动。见[当前发布记录](docs/release-m3-auth-20261101.md)及[机器可读记录](docs/release-m3-auth-20261101.json)。

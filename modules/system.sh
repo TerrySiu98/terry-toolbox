@@ -172,19 +172,79 @@ _toolbox_system_deps() {
         printf '基础依赖命令回读通过；未执行全量升级。\n'
     fi
 }
+_toolbox_system_bbr_kernel() { uname -r; }
+_toolbox_system_bbr_module_root() { printf '/lib/modules\n'; }
 _toolbox_system_bbr() {
-    local available current
+    local available current kernel module_root module_dir module_path resolved module_output rc=0 check
     _toolbox_system_root || return
     _toolbox_system_need_tools sysctl || return 1
     available=$(sysctl -n net.ipv4.tcp_available_congestion_control) || return
-    case " $available " in *' bbr '*) ;; *) _toolbox_system_error '内核当前未提供 BBR；未改动。'; return 1;; esac
     current=$(sysctl -n net.ipv4.tcp_congestion_control) || return
+    [[ -n $current && $current != *[!a-zA-Z0-9_-]* ]] || { _toolbox_system_error '当前拥塞控制回读格式未知；未改动。'; return 1; }
     if [[ $current == bbr ]]; then printf 'BBR 已启用。\n'; return 0; fi
-    _toolbox_system_confirm "将当前 TCP 拥塞控制从 $current 切换到 bbr（仅当前运行期，不写持久配置）；回滚: sysctl -w net.ipv4.tcp_congestion_control=$current" || return
-    sysctl -w net.ipv4.tcp_congestion_control=bbr || return
-    current=$(sysctl -n net.ipv4.tcp_congestion_control) || return
+    case " $available " in
+        *' bbr '*) ;;
+        *)
+            # A registered-only list omits unloaded kernel modules. Load only a
+            # module for this RUNNING kernel, after its own explicit consent.
+            _toolbox_system_need_tools uname readlink || return 1
+            kernel=$(_toolbox_system_bbr_kernel) || return
+            [[ -n $kernel && $kernel != *[!a-zA-Z0-9._+-]* && $kernel != . && $kernel != .. ]] || {
+                _toolbox_system_error '运行内核版本格式未知；未改动。'; return 1; }
+            module_root=$(_toolbox_system_bbr_module_root); module_dir=$module_root/$kernel
+            [[ -d $module_dir ]] || {
+                _toolbox_system_error "运行内核 $kernel 的模块目录 $module_dir 缺失；无法加载 BBR。请确认整机/容器及内核与模块是否匹配；不自动安装或更换内核，未切换拥塞控制。"
+                return 1
+            }
+            _toolbox_system_need_tools modinfo modprobe || return 1
+            # BusyBox may return success even when no module was found. Require
+            # a real filename and capture its diagnostics; kmod and BusyBox both
+            # support -F filename. Do not require only the text modules.dep:
+            # kmod can use modules.dep.bin.
+            # Keep stderr distinguishable even when a query returns exit 0.
+            # fd 3 carries stdout; prefix every diagnostic before capturing it.
+            module_output=$(
+                { modinfo -F filename tcp_bbr 2>&1 1>&3 |
+                    while IFS= read -r check || [[ -n $check ]]; do printf 'modinfo stderr: %s\n' "$check"; done
+                  exit "${PIPESTATUS[0]}"
+                } 3>&1
+            ) || rc=$?
+            if (( rc != 0 )) || [[ -z $module_output ]]; then
+                _toolbox_system_error "BBR 模块查询失败（内核 $kernel，exit $rc）；请检查当前内核模块文件/索引，未加载或切换。"
+                [[ -z $module_output ]] || _toolbox_system_error "$module_output"
+                return 1
+            fi
+            [[ $module_output != '(builtin)' && $module_output != builtin ]] || {
+                _toolbox_system_error 'tcp_bbr 标为内建但未注册；内核状态不一致，未切换。'; return 1; }
+            [[ $module_output == /* && $module_output != *$'\n'* && -f $module_output ]] || {
+                _toolbox_system_error "BBR 模块查询未返回有效文件；请检查 $module_dir 的模块索引或文件，未加载或切换。"
+                _toolbox_system_error "$module_output"; return 1; }
+            module_path=$(readlink -f -- "$module_output") || return
+            resolved=$(readlink -f -- "$module_dir") || return
+            [[ $module_path == "$resolved/"* && -f $module_path ]] || {
+                _toolbox_system_error 'BBR 模块不属于当前运行内核目录；未加载或切换。'; return 1; }
+            _toolbox_system_confirm "BBR 尚未加载。将为运行内核 $kernel 执行 modprobe tcp_bbr（模块：$module_path）；此确认只加载模块，不切换拥塞控制。随后启用 BBR 需另外确认。" || return
+            [[ $(_toolbox_system_bbr_kernel) == "$kernel" && $(readlink -f -- "$module_output") == "$module_path" && -f $module_path ]] || {
+                _toolbox_system_error '确认期间内核或模块文件路径变化；未加载。'; return 1; }
+            if ! modprobe -- tcp_bbr </dev/null; then
+                _toolbox_system_error 'tcp_bbr 加载失败；可能缺模块索引、权限或模块与内核不匹配，未切换拥塞控制。'; return 1
+            fi
+            available=$(sysctl -n net.ipv4.tcp_available_congestion_control) || return
+            case " $available " in *' bbr '*) ;; *) _toolbox_system_error '模块加载命令完成但 BBR 仍未注册；未切换。'; return 1;; esac
+            printf 'tcp_bbr 已加载；取消后模块保留，不主动卸载共享内核模块。\n'
+            ;;
+    esac
+    check=$(sysctl -n net.ipv4.tcp_congestion_control) || return
+    [[ $check == "$current" ]] || { _toolbox_system_error '检测期间拥塞控制已变化；请重新操作，未切换。'; return 1; }
+    _toolbox_system_confirm "将当前 TCP 拥塞控制从 $current 切换到 bbr（仅当前运行期，不写持久配置）；恢复原算法: sysctl -w net.ipv4.tcp_congestion_control=$current" || return
+    check=$(sysctl -n net.ipv4.tcp_congestion_control) || return
+    [[ $check == "$current" ]] || { _toolbox_system_error '确认期间拥塞控制已变化；未覆盖当前设置。'; return 1; }
+    available=$(sysctl -n net.ipv4.tcp_available_congestion_control) || return
+    case " $available " in *' bbr '*) ;; *) _toolbox_system_error '确认后 BBR 已不再可用；未切换。'; return 1;; esac
+    sysctl -w net.ipv4.tcp_congestion_control=bbr || { _toolbox_system_error 'BBR 写入失败；请检查内核/网络命名空间权限和当前设置。'; return 1; }
+    current=$(sysctl -n net.ipv4.tcp_congestion_control) || { _toolbox_system_error '已尝试启用 BBR，但当前状态回读失败；请检查系统状态。'; return 1; }
     [[ $current == bbr ]] || { _toolbox_system_error '设置后验证失败；请检查系统状态。'; return 1; }
-    printf 'BBR 已启用（重启后可能失效）。\n'
+    printf 'BBR 已启用（仅当前运行期，重启后可能失效）。\n'
 }
 readonly _TOOLBOX_DOCKER_GPG_FINGERPRINT='9DC858229FC7DD38854AE2D88D81803C0EBFCD88'
 # Fingerprint source: HTTPS key linked by https://docs.docker.com/engine/install/debian/

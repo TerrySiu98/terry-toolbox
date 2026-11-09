@@ -16,7 +16,7 @@ trap cleanup_packages EXIT
 # Physical package guards also cover child Bash and an empty environment.
 mkdir -p "$tmp/package-deny"
 : > "$tmp/package-boundary.log"
-for manager in sudo apt apt-get apt-cache aptitude apk dpkg dpkg-query dpkg-deb dnf yum rpm; do
+for manager in sudo apt apt-get apt-cache aptitude apk dpkg dpkg-query dpkg-deb dnf yum rpm curl wget mount umount chroot; do
     {
         printf '#!/bin/sh\n'
         printf 'printf "%%s\\n" "$0 $*" >> %q\n' "$tmp/package-boundary.log"
@@ -67,7 +67,18 @@ done
 out=$(printf 'B19\n0\n0\n' | HOME="$tmp" bash "$artifact" 2>&1)
 [[ $out == *'4. 安装 swap'* && $out == *'5. 卸载 swap'* && $out == *'6. swap 状态'* ]] || fail 'Alpine swap management missing from bundle'
 bash -c 'source "$1" --help >/dev/null; toolbox_alpine_swap() { printf "BUNDLED:%s\\n" "$*"; }; [[ $(run_service_action B19 6) == BUNDLED:status ]]' _ "$artifact" || fail 'bundled Alpine status dispatch'
-out=$(printf 'B2\nNO\n0\n' | HOME="$tmp" bash "$artifact" 2>&1)
+# A non-root runner must still prove the unchanged bundle denies real installs.
+if (( EUID != 0 )); then
+    out=$(printf 'B2\nNO\n0\n' | HOME="$tmp" bash "$artifact" 2>&1)
+    [[ $out == *'此操作需要 root'* && $out != *'NodeQuality：官方综合测试'* ]] || fail 'system root gate'
+fi
+# Only this fixture bypasses root, after sourcing the actual bundle. NO cancels
+# before execution; physical download/mount/chroot guards remain on PATH.
+out=$(printf 'B2\nNO\n0\n' | HOME="$tmp" bash -c '
+    source "$1" --help >/dev/null
+    _toolbox_system_root() { return 0; }
+    menu
+' _ "$artifact" 2>&1)
 [[ $out == *'NodeQuality：官方综合测试'* ]] || fail 'system dispatch'
 # App dispatch needs a Docker stub: B28 prints its image and note, then the trailing "0"
 # is an invalid port, which aborts before any data directory is created.
