@@ -1,6 +1,6 @@
 # BBR 模块检测修复候选
 
-日期：2026-11-10。分支 `codex/bbr-module-fix`，基于当前发布源码 `1a4d4481dbd9799151549e4ac38c5db7718603fa`，保留 PR #6/#5/#4/#3/#2 修复。源码、单文件及 Worker 包已完成模拟验收，尚未合并或部署。开发规范 PR #7 独立保留。
+日期：2026-11-10。[PR #8](https://github.com/TerrySiu98/terry-toolbox/pull/8)，产品与测试提交 `6812799b9a986afe5b15f9e84b64404065d4faa6`。分支 `codex/bbr-module-fix`，基于当前发布源码 `1a4d4481dbd9799151549e4ac38c5db7718603fa`，保留 PR #6/#5/#4/#3/#2 修复。源码、单文件及 Worker 包已完成模拟验收，尚未合并或部署。开发规范 PR #7 独立保留。
 
 ## 问题与修复
 
