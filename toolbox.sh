@@ -69,7 +69,7 @@ run_action() {
   esac
 }
 _tb_managed_key() {
-  case "$1" in A[1-5]|B1|B10|B12|B16|B19|B23|B31|MAIN_REINSTALL|TLS) return 0;; *) return 1;; esac
+  case "$1" in A[1-5]|B1|B10|B12|B16|B19|B23|B31|MAIN_BBR|MAIN_REINSTALL|TLS) return 0;; *) return 1;; esac
 }
 _toolbox_webssh_container() {
   declare -F toolbox_webssh_container >/dev/null || { printf 'WebSSH 容器模块未加载。\n' >&2; return 1; }
@@ -96,7 +96,7 @@ _tb_service_screen() {
     A1) title='A1 Alpine Hysteria 2';; A2) title='A2 Alpine Xray';;
     A3) title='A3 TUIC';; A4) title='A4 Hysteria 2';; A5) title='A5 Xray';;
     B1) title='B1 Docker';; B10) title='B10 WebSSH';; B12) title='B12 TCP Brutal';;
-    MAIN_REINSTALL) title='M3 系统重装';; TLS) title='TLS 证书管理';;
+    MAIN_BBR) title='M1 BBR 管理';; MAIN_REINSTALL) title='M3 系统重装';; TLS) title='TLS 证书管理';;
     B16) title='B16 网络优化';; B19) title='B19 Alpine 工具';;
     B23) title='B23 DNS 切换';; B31) title='B31 Relay 转发';;
   esac
@@ -114,6 +114,10 @@ _tb_service_screen() {
       _tb_row '📦 1. 安装 WebSSH'; _tb_row '🗑️  2. 卸载 WebSSH'; _tb_row '🩺 3. WebSSH 状态'
       _tb_row '📦 4. 安装个人版'; _tb_row '🗑️  5. 卸载个人版'; _tb_row '🩺 6. 个人版状态'
       _tb_row '📦 7. 安装 Easynode'; _tb_row '🗑️  8. 卸载 Easynode'; _tb_row '🩺 9. Easynode 状态';;
+    MAIN_BBR)
+      _tb_row '⚡ 1. 启用 BBR'; _tb_row '🩺 2. 查看 BBR 状态'
+      _tb_row '当前网络命名空间'
+      _tb_row '仅当前运行期生效';;
     MAIN_REINSTALL)
       _tb_row '🩺 1. 重装预检'; _tb_row '💽 2. 准备重装（毁损风险）'
       _tb_row '🩺 3. 重装计划状态'; _tb_row '↩️  4. 取消本工具重装计划'
@@ -140,7 +144,7 @@ _tb_service_choice_valid() {
     A5) [[ $2 =~ ^([1-9]|10)$ ]];;
     B1|MAIN_REINSTALL) [[ $2 =~ ^[1-4]$ ]];; B10) [[ $2 =~ ^[1-9]$ ]];;
     TLS) [[ $2 =~ ^[1-6]$ ]];;
-    B16) [[ $2 =~ ^[12]$ ]];; B19) [[ $2 =~ ^[1-6]$ ]];;
+    MAIN_BBR|B16) [[ $2 =~ ^[12]$ ]];; B19) [[ $2 =~ ^[1-6]$ ]];;
     B23) [[ $2 =~ ^[1-8]$ ]];; *) [[ $2 =~ ^[1-3]$ ]];;
   esac
 }
@@ -176,6 +180,8 @@ run_service_action() {
         4) _toolbox_webssh_container personal install;; 5) _toolbox_webssh_container personal uninstall;; 6) _toolbox_webssh_container personal status;;
         7) _toolbox_webssh_container easynode install;; 8) _toolbox_webssh_container easynode uninstall;; 9) _toolbox_webssh_container easynode status;;
       esac ;;
+    MAIN_BBR)
+      case "$choice" in 1) toolbox_system MAIN_BBR enable;; 2) toolbox_system MAIN_BBR status;; esac ;;
     MAIN_REINSTALL)
       local target distro version
       case "$choice" in
@@ -273,7 +279,12 @@ menu() {
     esac
     if _tb_managed_key "$key"; then
       [[ $screen == service ]] || parent=$screen
-      service=$key; screen=service; continue
+      service=$key; screen=service
+      if [[ $key == MAIN_BBR ]]; then
+        load_modules || { notice='模块加载失败，请检查项目文件。'; continue; }
+        notice=$(_toolbox_system_bbr_status 2>&1) || true
+      fi
+      continue
     fi
     if [[ "$key" != B18 ]]; then
       if ! load_modules; then continue; fi

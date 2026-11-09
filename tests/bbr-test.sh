@@ -31,7 +31,7 @@ export PATH="$R/deny:/usr/bin:/bin"
 export TOOLBOX_SYSTEM_STATE="$R/state" TOOLBOX_SYSTEM_SYSCTL_DIR="$R/sysctl.d"
 # Physical guards also cover child Bash and env -i, where function mocks vanish.
 guard_commands=(sudo doas apt apt-get apt-cache aptitude apk dpkg dpkg-query dpkg-deb
-    modprobe modinfo insmod rmmod depmod sysctl uname readlink
+    modprobe modinfo insmod rmmod depmod sysctl uname readlink systemd-detect-virt cat
     systemctl service rc-service reboot shutdown mount umount tc ip iptables ip6tables nft
     curl wget install tee)
 for command_name in "${guard_commands[@]}"; do
@@ -51,6 +51,8 @@ env -i PATH="$PATH" bash --noprofile --norc -c "$guard_probe" guard "$R/deny" "$
 # Loading the source itself must do no privileged work.
 source "${SYSTEM_MODULE_UNDER_TEST:-$ROOT/modules/system.sh}"
 [[ ! -s $guard_log ]]
+# Exercise the production detector below; ordinary enable tests use a fixed host.
+real_bbr_environment=$(declare -f _toolbox_system_bbr_environment)
 pass_count=0
 case_name=''
 case_root=''
@@ -97,6 +99,35 @@ _toolbox_system_bbr_kernel() {
     else uname -r; fi
 }
 _toolbox_system_bbr_module_root() { printf '%s\n' "$case_root/modules"; }
+_toolbox_system_bbr_status_root() { printf '%s\n' "$case_root/status"; }
+_toolbox_system_bbr_environment_root() { printf '%s\n' "$case_root/environment"; }
+_toolbox_system_bbr_environment() {
+    [[ $ENVIRONMENT_FAIL != 1 ]] || return 1
+    printf '%s\n' "$ENVIRONMENT"
+}
+_toolbox_system_has() {
+    case $1 in
+        systemd-detect-virt) [[ $DETECTOR_PRESENT == 1 ]];;
+        cat) [[ $CAT_PRESENT == 1 ]];;
+        *) boundary_error "unexpected discovery: $1";;
+    esac
+}
+cat() {
+    [[ $* == "-- $case_root/environment/proc/1/environ" ]] || boundary_error 'cat escaped the PID1 fixture'
+    printf 'read PID1 fixture\n' >> "$trace"
+    case $CAT_READ_MODE in
+        failure) return 1;;
+        partial_failure) printf 'container=lxc\0'; return 1;;
+        pass) /bin/cat "$@";;
+        *) boundary_error 'invalid cat fixture mode';;
+    esac
+}
+systemd-detect-virt() {
+    [[ $* == --container ]] || boundary_error 'unexpected virtualization arguments'
+    printf 'detect container\n' >> "$trace"
+    printf '%s\n' "$DETECTOR_OUTPUT"
+    return "$DETECTOR_RC"
+}
 readlink() {
     local path=${!#} count
     [[ $* == "-f -- $path" && $path == "$case_root/"* ]] || boundary_error 'readlink escaped fixture'
@@ -180,6 +211,12 @@ fixture() {
     ln -s "$case_root/other/tcp_bbr.ko" "$MODULE_DIR/escape.ko"
     printf 'cubic\n' > "$case_root/current"
     printf 'cubic bbr\n' > "$case_root/available"
+    mkdir -p "$case_root/status" "$case_root/environment/proc/1"
+    ln -s "$case_root/current" "$case_root/status/tcp_congestion_control"
+    ln -s "$case_root/available" "$case_root/status/tcp_available_congestion_control"
+    printf 'PATH=/fixture\0PRIVATE_BBR_SENTINEL=must-not-print\0' > "$case_root/environment/proc/1/environ"
+    ENVIRONMENT=none ENVIRONMENT_FAIL=0 DETECTOR_PRESENT=0 DETECTOR_OUTPUT=none DETECTOR_RC=1
+    CAT_PRESENT=1 CAT_READ_MODE=pass
     for counter in available_reads current_reads kernel_reads path_reads; do printf '0\n' > "$case_root/$counter"; done
     ROOT_ALLOWED=1 MISSING_TOOLS='' KERNEL_CHANGE=0 PATH_CHANGE=0 REALPATH_FAIL=0
     FAIL_AVAILABLE_AT=0 DROP_AVAILABLE_AT=0 FAIL_CURRENT_AT=0 CHANGE_CURRENT_AT=0
@@ -197,6 +234,37 @@ run_bbr() {
         [[ $rc != 0 ]] || fail 'unexpected success'
         [[ $(<"$out") != *'BBR 已启用'* ]] || fail 'failure reported enabled'
     fi
+}
+run_status() {
+    local expected=$1 before_current before_available
+    before_current=$(<"$case_root/current")
+    before_available=$(<"$case_root/available")
+    rc=0
+    (
+        # Status must not request privilege, dependencies, input, or write access.
+        _toolbox_system_root() { boundary_error 'status asked for root'; }
+        _toolbox_system_need_tools() { boundary_error 'status requested dependencies'; }
+        _toolbox_system_confirm() { boundary_error 'status requested confirmation'; }
+        sysctl() { boundary_error 'status invoked sysctl'; }
+        modinfo() { boundary_error 'status queried module metadata'; }
+        modprobe() { boundary_error 'status loaded a module'; }
+        _toolbox_system_bbr_status
+    ) </dev/null > "$out" 2>&1 || rc=$?
+    [[ ! -s $guard_log && ! -s $trace && ! -e $case_root/loaded ]] || fail 'status crossed a mutation boundary'
+    [[ $(<"$case_root/current") == "$before_current" &&
+       $(<"$case_root/available") == "$before_available" ]] || fail 'status changed kernel fixture'
+    if [[ $expected == success ]]; then [[ $rc == 0 ]] || fail "status returned $rc"
+    else
+        [[ $rc != 0 && $(<"$out") == *'BBR 状态：未知'* ]] || fail 'unreadable status was not unknown'
+    fi
+}
+run_environment() {
+    local expected=$1
+    rc=0
+    ( eval "$real_bbr_environment"; _toolbox_system_bbr_environment ) > "$out" 2>&1 || rc=$?
+    [[ $rc == 0 && $(<"$out") == "$expected" ]] || fail "expected environment $expected"
+    [[ ! -s $guard_log ]] || fail 'environment detector reached a host boundary'
+    absent modinfo; untouched
 }
 seen() { grep -qxF -- "$1" "$trace" || fail "missing trace: $1"; }
 absent() { if grep -qxF -- "$1" "$trace"; then fail "unexpected trace: $1"; fi; }
@@ -354,6 +422,200 @@ run_bbr failure "$two_yes"; seen 'write bbr'; pass
 fixture 'stderr alone cannot masquerade as a valid module filename' module
 MODINFO_MODE=stderr_filename
 run_bbr failure "$four_yes"; untouched; pass
+
+# Status reads the fixture's proc files without root, sysctl, or dependency work.
+fixture 'status identifies enabled BBR without privilege or dependencies'
+ROOT_ALLOWED=0 MISSING_TOOLS='sysctl uname readlink modinfo modprobe'
+printf 'bbr\n' > "$case_root/current"
+run_status success
+[[ $(<"$out") == *"运行内核：$KERNEL"* &&
+   $(<"$out") == *'当前拥塞控制：bbr'* &&
+   $(<"$out") == *'已注册算法：cubic bbr'* &&
+   $(<"$out") == *'BBR 状态：已启用'* ]] || fail 'enabled status omitted kernel fields'
+pass
+
+fixture 'status distinguishes registered BBR from the current default'
+run_status success
+[[ $(<"$out") == *'当前拥塞控制：cubic'* && $(<"$out") == *'BBR 状态：可启用'* &&
+   $(<"$out") == *'后续新连接'* && $(<"$out") == *'重启后可能失效'* ]] || fail 'available status or scope missing'
+pass
+
+fixture 'status defers native module loading to explicit enable' module
+run_status success
+[[ $(<"$out") == *'BBR 状态：尚未注册'* && $(<"$out") == *'选择启用时检查'* ]] || fail 'native status implies loaded support'
+pass
+
+fixture 'status can identify a module-less LXC without querying modules' module
+ENVIRONMENT=lxc
+rm -rf -- "$case_root/modules"
+run_status success
+[[ $(<"$out") == *'容器（lxc）'* && $(<"$out") == *'宿主尚未提供'* ]] || fail 'LXC host guidance missing'
+pass
+
+fixture 'status remains conservative for an unknown environment' module
+ENVIRONMENT=unknown
+run_status success
+[[ $(<"$out") == *'环境识别未知'* ]] || fail 'unknown environment became a native host'
+pass
+
+fixture 'status treats detector errors as unknown' module
+ENVIRONMENT_FAIL=1
+run_status success
+[[ $(<"$out") == *'环境识别未知'* ]] || fail 'detector failure became a native host'
+pass
+
+fixture 'status shows already enabled BBR inside LXC'
+ENVIRONMENT=lxc
+printf 'bbr\n' > "$case_root/current"
+run_status success
+[[ $(<"$out") == *'容器（lxc）'* && $(<"$out") == *'BBR 状态：已启用'* &&
+   $(<"$out") == *'当前网络命名空间'* ]] || fail 'container enabled status missing'
+pass
+
+for broken_file in tcp_congestion_control tcp_available_congestion_control; do
+    fixture 'missing proc interface reports unknown without repairing it'
+    rm -- "$case_root/status/$broken_file"
+    run_status failure; pass
+done
+
+for broken_value in '' 'cubic/invalid'; do
+    fixture 'invalid current status is unknown'
+    printf '%s\n' "$broken_value" > "$case_root/current"
+    run_status failure; pass
+done
+
+for broken_value in '' 'cubic;bbr'; do
+    fixture 'invalid available status is unknown'
+    printf '%s\n' "$broken_value" > "$case_root/available"
+    run_status failure; pass
+done
+
+for container_kind in lxc docker unknown; do
+    fixture 'unregistered container or uncertain host cannot load visible modules' module
+    ENVIRONMENT=$container_kind
+    run_bbr failure "$four_yes"; untouched; absent modinfo
+    absent 'need uname readlink'; absent 'need modinfo modprobe'
+    [[ $(<"$out") != *'输入 YES'* ]] || fail 'blocked container asked for module consent'
+    pass
+done
+
+fixture 'environment detection failure cannot load a host module' module
+ENVIRONMENT_FAIL=1
+run_bbr failure "$four_yes"; untouched; absent modinfo; pass
+
+fixture 'registered LXC can switch its own default without module loading'
+ENVIRONMENT=lxc
+rm -rf -- "$case_root/modules"
+run_bbr success "$two_yes"; seen 'write bbr'; absent modinfo; absent modprobe
+[[ $(<"$out") == *'当前网络命名空间'* ]] || fail 'namespace scope missing'
+pass
+
+fixture 'registered LXC respects sysctl permission refusal'
+ENVIRONMENT=lxc WRITE_FAIL=1
+run_bbr failure "$two_yes"; seen 'write bbr'; absent modinfo; absent modprobe
+[[ $(<"$out") == *'权限'* && $(<"$case_root/current") == cubic ]] || fail 'permission error masked'
+pass
+
+# Restore the production detector only inside these subshells. All files are
+# scratch paths, and the external detector remains a function plus PATH guard.
+fixture 'production detector recognizes systemd LXC'
+DETECTOR_PRESENT=1 DETECTOR_OUTPUT=lxc DETECTOR_RC=0
+run_environment lxc; seen 'detect container'; pass
+
+fixture 'production detector accepts an explicit no-container result'
+DETECTOR_PRESENT=1 DETECTOR_OUTPUT=none DETECTOR_RC=1
+rm -- "$case_root/environment/proc/1/environ"
+run_environment none; pass
+
+fixture 'production detector reads only the PID1 container field'
+printf 'PRIVATE_BBR_SENTINEL=must-not-print\0container=lxc\0TOKEN=never-print\0' > "$case_root/environment/proc/1/environ"
+run_environment lxc; pass
+
+for marker in run/host/container-manager run/systemd/container; do
+    fixture 'production detector recognizes runtime container markers'
+    mkdir -p "$case_root/environment/${marker%/*}"
+    printf 'lxc\n' > "$case_root/environment/$marker"
+    run_environment lxc; pass
+done
+
+fixture 'invalid runtime container marker stays classified as a container'
+mkdir -p "$case_root/environment/run/host"
+printf 'not valid\n' > "$case_root/environment/run/host/container-manager"
+run_environment container; pass
+
+fixture 'production detector recognizes Docker marker'
+: > "$case_root/environment/.dockerenv"
+run_environment docker; pass
+
+fixture 'production detector recognizes Podman marker'
+mkdir -p "$case_root/environment/run"
+: > "$case_root/environment/run/.containerenv"
+run_environment podman; pass
+
+fixture 'production detector recognizes OpenVZ without host bc'
+mkdir -p "$case_root/environment/proc/vz"
+run_environment openvz; pass
+
+fixture 'OpenVZ host bc prevents the guest heuristic'
+mkdir -p "$case_root/environment/proc/vz" "$case_root/environment/proc/bc"
+run_environment none; pass
+
+fixture 'no container evidence with readable PID1 returns none'
+run_environment none; pass
+
+fixture 'unreadable PID1 without detector is unknown'
+rm -- "$case_root/environment/proc/1/environ"
+run_environment unknown; pass
+
+fixture 'failed external detector is unknown without positive fallback'
+DETECTOR_PRESENT=1 DETECTOR_OUTPUT='' DETECTOR_RC=2
+run_environment unknown; pass
+
+fixture 'malformed external detector cannot prove native hosting'
+DETECTOR_PRESENT=1 DETECTOR_OUTPUT='lxc unexpected' DETECTOR_RC=0
+run_environment unknown; pass
+
+fixture 'PID1 fallback can identify LXC after detector failure'
+DETECTOR_PRESENT=1 DETECTOR_OUTPUT='' DETECTOR_RC=2
+printf 'container=lxc\0PRIVATE_BBR_SENTINEL=must-not-print\0' > "$case_root/environment/proc/1/environ"
+run_environment lxc; pass
+
+fixture 'positive marker overrides a contradictory no-container result'
+DETECTOR_PRESENT=1 DETECTOR_OUTPUT=none DETECTOR_RC=1
+: > "$case_root/environment/.dockerenv"
+run_environment docker; pass
+
+
+for reserved_value in none unknown; do
+    fixture 'reserved runtime marker value cannot mean native hosting'
+    mkdir -p "$case_root/environment/run/host"
+    printf '%s\n' "$reserved_value" > "$case_root/environment/run/host/container-manager"
+    run_environment container; pass
+
+    fixture 'reserved PID1 container value remains a positive container marker'
+    printf 'container=%s\0' "$reserved_value" > "$case_root/environment/proc/1/environ"
+    run_environment container; pass
+done
+
+fixture 'directory in place of PID1 environment yields unknown'
+rm -- "$case_root/environment/proc/1/environ"
+mkdir -- "$case_root/environment/proc/1/environ"
+run_environment unknown; pass
+
+for read_failure in failure partial_failure; do
+    fixture 'PID1 I/O failure cannot establish host identity'
+    CAT_READ_MODE=$read_failure
+    run_environment unknown; pass
+done
+
+fixture 'missing cat reports unknown without installing it'
+CAT_PRESENT=0
+run_environment unknown; absent 'read PID1 fixture'; pass
+
+fixture 'empty PID1 container value continues positive marker fallback'
+printf 'container=\0PRIVATE_BBR_SENTINEL=must-not-print\0' > "$case_root/environment/proc/1/environ"
+: > "$case_root/environment/.dockerenv"
+run_environment docker; pass
 
 # These entries must stay temporary: no persistence file may be created.
 [[ -z $(find "$R/state" "$R/sysctl.d" -type f -print -quit) ]] || fail 'BBR wrote persistent configuration'
