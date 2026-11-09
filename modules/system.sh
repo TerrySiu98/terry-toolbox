@@ -172,19 +172,168 @@ _toolbox_system_deps() {
         printf '基础依赖命令回读通过；未执行全量升级。\n'
     fi
 }
+_toolbox_system_bbr_kernel() { uname -r; }
+_toolbox_system_bbr_module_root() { printf '/lib/modules\n'; }
+# Read-only environment detection; never install an init system for this check.
+_toolbox_system_bbr_environment_root() { printf '/\n'; }
+_toolbox_system_bbr_environment() {
+    local root item value detected='' rc=0 uncertain=0 known_none=0
+    root=$(_toolbox_system_bbr_environment_root) || { printf 'unknown\n'; return; }
+    root=${root%/}
+    if _toolbox_system_has systemd-detect-virt; then
+        detected=$(systemd-detect-virt --container 2>/dev/null) || rc=$?
+        if (( rc == 0 )) && [[ -n $detected && $detected != none && $detected != *[!a-zA-Z0-9_-]* ]]; then
+            printf '%s\n' "$detected"; return
+        fi
+        if (( rc == 1 )) && [[ $detected == none ]]; then known_none=1
+        else uncertain=1; fi
+    fi
+    for item in /run/host/container-manager /run/systemd/container; do
+        if [[ -e $root$item ]]; then
+            value=''; IFS= read -r value 2>/dev/null < "$root$item" || true
+            [[ -n $value && $value != none && $value != unknown && $value != *[!a-zA-Z0-9_-]* ]] || value=container
+            printf '%s\n' "$value"; return
+        fi
+    done
+    # LXC sets container=lxc in PID 1's environment. Do not dump that environment.
+    if _toolbox_system_has cat; then
+        # Drain the pipe and preserve cat's status: a failed read is not proof
+        # that no container marker exists. Raw environment stays in the pipe.
+        if detected=$(
+            cat -- "$root/proc/1/environ" 2>/dev/null |
+                { value=''
+                  while IFS= read -r -d '' item; do
+                    case $item in container=*) value=${item#container=};; esac
+                  done
+                  if [[ -n $value ]]; then
+                    [[ $value != none && $value != unknown && $value != *[!a-zA-Z0-9_-]* ]] || value=container
+                    printf '%s\n' "$value"
+                  fi
+                }
+            exit "${PIPESTATUS[0]}"
+        ); then
+            if [[ -n $detected ]]; then printf '%s\n' "$detected"; return; fi
+        else uncertain=1; fi
+    else uncertain=1; fi
+    if [[ -e $root/.dockerenv ]]; then printf 'docker\n'; return; fi
+    if [[ -e $root/run/.containerenv ]]; then printf 'podman\n'; return; fi
+    if [[ -d $root/proc/vz && ! -d $root/proc/bc ]]; then printf 'openvz\n'; return; fi
+    if (( uncertain && ! known_none )); then printf 'unknown\n'
+    else printf 'none\n'; fi
+}
+_toolbox_system_bbr_environment_text() {
+    case $1 in
+        none) printf '未检测到容器\n';;
+        unknown) printf '无法确定是否为容器\n';;
+        *) printf '容器（%s），共用宿主内核\n' "$1";;
+    esac
+}
+# Status may run without root or sysctl; /proc is the read-only kernel interface.
+_toolbox_system_bbr_status_root() { printf '/proc/sys/net/ipv4\n'; }
+_toolbox_system_bbr_status() {
+    local kernel environment root current='' available='' rc=0
+    kernel=$(_toolbox_system_bbr_kernel) || kernel=unknown
+    environment=$(_toolbox_system_bbr_environment) || environment=unknown
+    root=$(_toolbox_system_bbr_status_root) || return 1
+    IFS= read -r current 2>/dev/null < "$root/tcp_congestion_control" || current=''
+    IFS= read -r available 2>/dev/null < "$root/tcp_available_congestion_control" || available=''
+    printf '运行内核：%s\n环境：' "$kernel"
+    _toolbox_system_bbr_environment_text "$environment"
+    if [[ -n $current && $current != *[!a-zA-Z0-9_-]* ]]; then printf '当前拥塞控制：%s\n' "$current"
+    else printf '当前拥塞控制：未知（无法回读）\n'; rc=1; fi
+    if [[ -n $available && $available != *[!a-zA-Z0-9_[:space:]-]* ]]; then printf '已注册算法：%s\n' "$available"
+    else printf '已注册算法：未知（无法回读）\n'; available=''; rc=1; fi
+    if (( rc )); then printf 'BBR 状态：未知。\n请检查内核接口与读取权限。\n'; return "$rc"; fi
+    if [[ $current == bbr ]]; then
+        printf 'BBR 状态：已启用。\n作用：当前网络命名空间的默认算法。\n'
+    elif [[ " $available " == *' bbr '* ]]; then
+        printf 'BBR 状态：可启用，尚未设为默认。\n能否写入以权限及切换后回读为准。\n'
+    elif [[ $environment != none && $environment != unknown ]]; then
+        printf 'BBR 状态：宿主尚未提供。\n请宿主管理员或服务商加载 BBR。\n容器内不安装或加载内核模块。\n'
+    elif [[ $environment == unknown ]]; then
+        printf 'BBR 状态：尚未注册，环境识别未知。\n需先确认宿主/容器身份。\n'
+    else
+        printf 'BBR 状态：尚未注册。\n选择启用时检查当前内核模块。\n经确认加载后，再确认切换算法。\n'
+    fi
+    printf '默认算法主要用于后续新连接。\n不代表所有已有连接。\n重启后可能失效。\n'
+}
 _toolbox_system_bbr() {
-    local available current
+    local available current kernel module_root module_dir module_path resolved module_output rc=0 check environment
     _toolbox_system_root || return
     _toolbox_system_need_tools sysctl || return 1
     available=$(sysctl -n net.ipv4.tcp_available_congestion_control) || return
-    case " $available " in *' bbr '*) ;; *) _toolbox_system_error '内核当前未提供 BBR；未改动。'; return 1;; esac
     current=$(sysctl -n net.ipv4.tcp_congestion_control) || return
-    if [[ $current == bbr ]]; then printf 'BBR 已启用。\n'; return 0; fi
-    _toolbox_system_confirm "将当前 TCP 拥塞控制从 $current 切换到 bbr（仅当前运行期，不写持久配置）；回滚: sysctl -w net.ipv4.tcp_congestion_control=$current" || return
-    sysctl -w net.ipv4.tcp_congestion_control=bbr || return
-    current=$(sysctl -n net.ipv4.tcp_congestion_control) || return
+    [[ -n $current && $current != *[!a-zA-Z0-9_-]* ]] || { _toolbox_system_error '当前拥塞控制回读格式未知；未改动。'; return 1; }
+    if [[ $current == bbr ]]; then printf 'BBR 已启用（当前网络命名空间的默认算法）。\n'; return 0; fi
+    case " $available " in
+        *' bbr '*) ;;
+        *)
+            environment=$(_toolbox_system_bbr_environment) || environment=unknown
+            case $environment in
+                none) ;;
+                unknown) _toolbox_system_error 'BBR 尚未注册，无法确定是否为容器；请先核对宿主/容器身份，未加载模块或切换。'; return 1;;
+                *) _toolbox_system_error "检测到容器（$environment）：宿主尚未提供 BBR。请宿主管理员或服务商加载 tcp_bbr；容器内不安装或加载内核模块，未切换。"; return 1;;
+            esac
+            # A registered-only list omits unloaded kernel modules. Load only a
+            # module for this RUNNING kernel, after its own explicit consent.
+            _toolbox_system_need_tools uname readlink || return 1
+            kernel=$(_toolbox_system_bbr_kernel) || return
+            [[ -n $kernel && $kernel != *[!a-zA-Z0-9._+-]* && $kernel != . && $kernel != .. ]] || {
+                _toolbox_system_error '运行内核版本格式未知；未改动。'; return 1; }
+            module_root=$(_toolbox_system_bbr_module_root); module_dir=$module_root/$kernel
+            [[ -d $module_dir ]] || {
+                _toolbox_system_error "运行内核 $kernel 的模块目录 $module_dir 缺失；无法加载 BBR。请确认整机/容器及内核与模块是否匹配；不自动安装或更换内核，未切换拥塞控制。"
+                return 1
+            }
+            _toolbox_system_need_tools modinfo modprobe || return 1
+            # BusyBox may return success even when no module was found. Require
+            # a real filename and capture its diagnostics; kmod and BusyBox both
+            # support -F filename. Do not require only the text modules.dep:
+            # kmod can use modules.dep.bin.
+            # Keep stderr distinguishable even when a query returns exit 0.
+            # fd 3 carries stdout; prefix every diagnostic before capturing it.
+            module_output=$(
+                { modinfo -F filename tcp_bbr 2>&1 1>&3 |
+                    while IFS= read -r check || [[ -n $check ]]; do printf 'modinfo stderr: %s\n' "$check"; done
+                  exit "${PIPESTATUS[0]}"
+                } 3>&1
+            ) || rc=$?
+            if (( rc != 0 )) || [[ -z $module_output ]]; then
+                _toolbox_system_error "BBR 模块查询失败（内核 $kernel，exit $rc）；请检查当前内核模块文件/索引，未加载或切换。"
+                [[ -z $module_output ]] || _toolbox_system_error "$module_output"
+                return 1
+            fi
+            [[ $module_output != '(builtin)' && $module_output != builtin ]] || {
+                _toolbox_system_error 'tcp_bbr 标为内建但未注册；内核状态不一致，未切换。'; return 1; }
+            [[ $module_output == /* && $module_output != *$'\n'* && -f $module_output ]] || {
+                _toolbox_system_error "BBR 模块查询未返回有效文件；请检查 $module_dir 的模块索引或文件，未加载或切换。"
+                _toolbox_system_error "$module_output"; return 1; }
+            module_path=$(readlink -f -- "$module_output") || return
+            resolved=$(readlink -f -- "$module_dir") || return
+            [[ $module_path == "$resolved/"* && -f $module_path ]] || {
+                _toolbox_system_error 'BBR 模块不属于当前运行内核目录；未加载或切换。'; return 1; }
+            _toolbox_system_confirm "BBR 尚未加载。将为运行内核 $kernel 执行 modprobe tcp_bbr（模块：$module_path）；此确认只加载模块，不切换拥塞控制。随后启用 BBR 需另外确认。" || return
+            [[ $(_toolbox_system_bbr_kernel) == "$kernel" && $(readlink -f -- "$module_output") == "$module_path" && -f $module_path ]] || {
+                _toolbox_system_error '确认期间内核或模块文件路径变化；未加载。'; return 1; }
+            if ! modprobe -- tcp_bbr </dev/null; then
+                _toolbox_system_error 'tcp_bbr 加载失败；可能缺模块索引、权限或模块与内核不匹配，未切换拥塞控制。'; return 1
+            fi
+            available=$(sysctl -n net.ipv4.tcp_available_congestion_control) || return
+            case " $available " in *' bbr '*) ;; *) _toolbox_system_error '模块加载命令完成但 BBR 仍未注册；未切换。'; return 1;; esac
+            printf 'tcp_bbr 已加载；取消后模块保留，不主动卸载共享内核模块。\n'
+            ;;
+    esac
+    check=$(sysctl -n net.ipv4.tcp_congestion_control) || return
+    [[ $check == "$current" ]] || { _toolbox_system_error '检测期间拥塞控制已变化；请重新操作，未切换。'; return 1; }
+    _toolbox_system_confirm "将当前 TCP 拥塞控制从 $current 切换到 bbr（当前网络命名空间，仅当前运行期，不写持久配置；主要作用于后续新连接）；恢复原算法: sysctl -w net.ipv4.tcp_congestion_control=$current" || return
+    check=$(sysctl -n net.ipv4.tcp_congestion_control) || return
+    [[ $check == "$current" ]] || { _toolbox_system_error '确认期间拥塞控制已变化；未覆盖当前设置。'; return 1; }
+    available=$(sysctl -n net.ipv4.tcp_available_congestion_control) || return
+    case " $available " in *' bbr '*) ;; *) _toolbox_system_error '确认后 BBR 已不再可用；未切换。'; return 1;; esac
+    sysctl -w net.ipv4.tcp_congestion_control=bbr || { _toolbox_system_error 'BBR 写入失败；请检查内核/网络命名空间权限和当前设置。'; return 1; }
+    current=$(sysctl -n net.ipv4.tcp_congestion_control) || { _toolbox_system_error '已尝试启用 BBR，但当前状态回读失败；请检查系统状态。'; return 1; }
     [[ $current == bbr ]] || { _toolbox_system_error '设置后验证失败；请检查系统状态。'; return 1; }
-    printf 'BBR 已启用（重启后可能失效）。\n'
+    printf 'BBR 已启用（当前网络命名空间，仅当前运行期，重启后可能失效）。\n'
 }
 readonly _TOOLBOX_DOCKER_GPG_FINGERPRINT='9DC858229FC7DD38854AE2D88D81803C0EBFCD88'
 # Fingerprint source: HTTPS key linked by https://docs.docker.com/engine/install/debian/
@@ -2055,7 +2204,11 @@ _toolbox_system_reinstall() {
 # B<number> and bare <number> both select toolbox-menu entries.
 toolbox_system() {
     case "${1-}" in
-        MAIN_BBR) _toolbox_system_bbr;;
+        MAIN_BBR)
+            case "${2:-enable}" in
+                enable) _toolbox_system_bbr;; status) _toolbox_system_bbr_status;;
+                *) _toolbox_system_error "未知 BBR 操作: $2"; return 2;;
+            esac;;
         MAIN_DEPS) _toolbox_system_deps;;
         MAIN_REINSTALL) _toolbox_system_reinstall "${2:-preflight}" "${@:3}";;
         MAIN_REBOOT) _toolbox_system_reboot;;

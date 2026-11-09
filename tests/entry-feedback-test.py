@@ -29,10 +29,23 @@ for _env in (dict(os.environ), {'PATH': os.environ['PATH']}):
 assert len(_package_log.read_text().splitlines()) == 2
 _package_log.unlink()
 
-def probe(manager):
+def probe(manager, fixture_root=True):
     installed = 'iproute2-ss' if manager == 'apk' else 'iproute2'
+    # Bootstrap has an inline EUID gate, so patch only its exact in-memory
+    # definition for the success fixture. Never alter product source or elevate.
+    root_fixture = r'''
+bootstrap_impl=$(declare -f _tb_bootstrap)
+root_check='(( EUID == 0 ))'
+[[ $bootstrap_impl == *"$root_check"* ]] || exit 93
+remainder=${bootstrap_impl#*"$root_check"}
+[[ $remainder != *"$root_check"* ]] || exit 94
+_tb_fixture_root() { return 0; }
+bootstrap_impl=${bootstrap_impl/"$root_check"/_tb_fixture_root}
+eval "$bootstrap_impl"
+''' if fixture_root else ''
     harness = f'''
 source {shlex.quote(str(ROOT / 'toolbox.sh'))} --help >/dev/null
+{root_fixture}
 _tb_ui_init
 TB_OS_ID={'alpine' if manager == 'apk' else 'debian'}
 TB_OS='fixture Linux'
@@ -71,6 +84,11 @@ _tb_bootstrap || exit $?
             chunks.append(part)
         proc.wait(timeout=2)
         output = b''.join(chunks).decode(errors='replace')
+        if not fixture_root:
+            assert proc.returncode == 1, (manager, proc.returncode, output)
+            assert '安装依赖需要 root' in output, output
+            assert 'MOCK_EXEC:' not in output and '依赖检查通过' not in output, output
+            return
         assert proc.returncode == 0, (manager, proc.returncode, output)
         assert '缺少' in output and 'ss' in output, output
         assert '基础依赖已齐全' not in output, 'startup falsely declared complete without ss'
@@ -83,6 +101,9 @@ _tb_bootstrap || exit $?
         os.close(master)
 
 for manager in ('apk', 'apt-get'):
+    if os.geteuid() != 0:
+        probe(manager, fixture_root=False)
+        print('PASS real PTY non-root package refusal:', manager)
     probe(manager)
     print('PASS real PTY startup ss detection and package mapping:', manager)
 

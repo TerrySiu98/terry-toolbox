@@ -67,7 +67,7 @@ assert out.count('Alpine 版 HY2') == 2, 'return skipped the network level'
 out, err = run('5\n10\n0\n0\n0\n')
 assert 'B10 WebSSH' in out, 'WebSSH has no management/return page'
 assert '操作未完成或已取消' not in out, 'WebSSH Return ran an installation'
-for key in ('A1', 'A2', 'A3', 'A4', 'A5', 'B1', 'B10', 'B12', 'B16', 'B19', 'B23', 'B31', 'M3', 'TLS'):
+for key in ('M1', 'A1', 'A2', 'A3', 'A4', 'A5', 'B1', 'B10', 'B12', 'B16', 'B19', 'B23', 'B31', 'M3', 'TLS'):
     out, err = run(f'{key}\n0\n0\n', 40)
     assert '返回上一层' in out and '操作未完成或已取消' not in out, f'{key} cannot return cleanly'
     assert not err, (key, err)
@@ -133,6 +133,8 @@ toolbox_tls_acme() {{ printf 'MOCK_TLS:%s\\n' "$*"; }}
 _toolbox_system_docker() {{ printf 'MOCK_DOCKER:install\\n'; }}
 _toolbox_system_docker_ipv6() {{ printf 'MOCK_DOCKER_IPV6:%s\\n' "$1"; }}
 _toolbox_system_reinstall() {{ printf 'MOCK_REINSTALL:%s\\n' "$*"; }}
+_toolbox_system_bbr_status() {{ printf 'MOCK_BBR_STATUS\\n'; }}
+toolbox_system() {{ printf 'MOCK_SYSTEM:%s\\n' "$*"; }}
 _toolbox_system_netopt_apply() {{ printf 'MOCK_NETOPT:apply\\n'; }}
 _toolbox_system_netopt_rollback() {{ printf 'MOCK_NETOPT:rollback\\n'; }}
 _toolbox_system_alpine_webtop() {{ printf 'MOCK_ALPINE:webtop\\n'; }}
@@ -169,6 +171,15 @@ menu
             proc.wait()
         os.close(master)
 
+
+for key in ('2', 'M1'):
+    bbr_out = run_tty(f'{key}\n2\n\n1\n\n0\n0\n')
+    assert 'M1 BBR 管理' in bbr_out and '1. 启用 BBR' in bbr_out and '2. 查看 BBR 状态' in bbr_out, bbr_out
+    assert bbr_out.count('MOCK_BBR_STATUS') == 1, 'BBR entry should read once without enabling'
+    assert 'MOCK_SYSTEM:MAIN_BBR status' in bbr_out and 'MOCK_SYSTEM:MAIN_BBR enable' in bbr_out, bbr_out
+    assert bbr_out.count('操作结束') == 2 and '操作未完成或已取消' not in bbr_out, bbr_out
+bbr_return = run_tty('2\n0\n0\n')
+assert 'MOCK_BBR_STATUS' in bbr_return and 'MOCK_SYSTEM:' not in bbr_return and '操作结束' not in bbr_return, bbr_return
 
 tty_out = run_tty('1\n4\n3\n\n0\n0\n0\n')
 assert 'MOCK_NETWORK:A4 status' in tty_out, tty_out
