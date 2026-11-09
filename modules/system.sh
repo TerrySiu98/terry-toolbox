@@ -245,17 +245,65 @@ _toolbox_system_bbr_status() {
     else printf '已注册算法：未知（无法回读）\n'; available=''; rc=1; fi
     if (( rc )); then printf 'BBR 状态：未知。\n请检查内核接口与读取权限。\n'; return "$rc"; fi
     if [[ $current == bbr ]]; then
-        printf 'BBR 状态：已启用。\n作用：当前网络命名空间的默认算法。\n'
+        printf 'BBR 状态：已启用。\n当前默认算法为 BBR。\n'
     elif [[ " $available " == *' bbr '* ]]; then
         printf 'BBR 状态：可启用，尚未设为默认。\n能否写入以权限及切换后回读为准。\n'
     elif [[ $environment != none && $environment != unknown ]]; then
-        printf 'BBR 状态：宿主尚未提供。\n请宿主管理员或服务商加载 BBR。\n容器内不安装或加载内核模块。\n'
+        printf 'BBR 状态：尚未注册。\n经确认可尝试切换；\n内核可能请求宿主加载模块。\n是否成功取决于宿主支持与权限。\n'
     elif [[ $environment == unknown ]]; then
-        printf 'BBR 状态：尚未注册，环境识别未知。\n需先确认宿主/容器身份。\n'
+        printf 'BBR 状态：尚未注册，环境识别未知。\n经确认可尝试切换；\n可能请求宿主加载模块。\n是否成功取决于宿主支持与权限。\n'
     else
         printf 'BBR 状态：尚未注册。\n选择启用时检查当前内核模块。\n经确认加载后，再确认切换算法。\n'
     fi
-    printf '默认算法主要用于后续新连接。\n不代表所有已有连接。\n重启后可能失效。\n'
+    printf '作用范围依内核支持：\nLinux 主线 4.15+：\n按当前网络命名空间隔离。\n更旧内核或共用命名空间，\n可能影响宿主。\n默认算法主要用于后续新连接。\n不代表所有已有连接。\n重启后可能失效。\n'
+}
+# An unregistered algorithm may still be autoloaded by the host kernel.
+# Keep this combined module-request/switch consent separate from the ordinary
+# registered-algorithm and verified local-module paths.
+_toolbox_system_bbr_try_unregistered() {
+    local available=$1 current=$2 environment=$3 kernel check checked_available checked_environment
+    local write_rc=0 readback_rc=0 final_current='' final_available=''
+    [[ -n $available && $available != *[!a-zA-Z0-9_[:space:]-]* ]] || {
+        _toolbox_system_error '已注册算法回读格式未知；未改动。'; return 1; }
+    kernel=$(_toolbox_system_bbr_kernel) || { _toolbox_system_error '运行内核回读失败；未改动。'; return 1; }
+    [[ -n $kernel && $kernel != *[!a-zA-Z0-9._+-]* && $kernel != . && $kernel != .. ]] || {
+        _toolbox_system_error '运行内核版本格式未知；未改动。'; return 1; }
+    check=$(sysctl -n net.ipv4.tcp_congestion_control) || return
+    [[ $check == "$current" ]] || { _toolbox_system_error '检测期间拥塞控制已变化；请重新操作，未切换。'; return 1; }
+    checked_available=$(sysctl -n net.ipv4.tcp_available_congestion_control) || return
+    [[ $checked_available == "$available" ]] || { _toolbox_system_error '检测期间已注册算法已变化；请重新操作，未切换。'; return 1; }
+    checked_environment=$(_toolbox_system_bbr_environment) || checked_environment=unknown
+    [[ $checked_environment == "$environment" ]] || { _toolbox_system_error '检测期间运行环境已变化；请重新操作，未切换。'; return 1; }
+    _toolbox_system_confirm "运行内核 $kernel，环境：$environment。BBR 尚未注册；将尝试一次 sysctl -w net.ipv4.tcp_congestion_control=bbr。内核可能请求宿主加载 tcp_bbr；共享模块一旦加载就可能保留，即使切换失败也不主动卸载。同时尝试将当前 TCP 拥塞控制从 $current 切换到 bbr（作用范围依内核支持：Linux 主线 4.15+ 按当前网络命名空间隔离；更旧内核或共用命名空间可能影响宿主；仅当前运行期，不写持久配置，主要作用于后续新连接）。是否成功取决于宿主支持与权限。恢复原算法: sysctl -w net.ipv4.tcp_congestion_control=$current" || return
+    check=$(_toolbox_system_bbr_kernel) || { _toolbox_system_error '确认后运行内核回读失败；未切换。'; return 1; }
+    [[ $check == "$kernel" ]] || { _toolbox_system_error '确认期间运行内核已变化；未切换。'; return 1; }
+    checked_environment=$(_toolbox_system_bbr_environment) || checked_environment=unknown
+    [[ $checked_environment == "$environment" ]] || { _toolbox_system_error '确认期间运行环境已变化；未切换。'; return 1; }
+    check=$(sysctl -n net.ipv4.tcp_congestion_control) || return
+    [[ $check == "$current" ]] || { _toolbox_system_error '确认期间拥塞控制已变化；未覆盖当前设置。'; return 1; }
+    checked_available=$(sysctl -n net.ipv4.tcp_available_congestion_control) || return
+    [[ $checked_available == "$available" ]] || { _toolbox_system_error '确认期间已注册算法已变化；请重新操作，未切换。'; return 1; }
+    # Preserve the original write error. Even a failed write may have requested
+    # a shared module, so always attempt both readbacks and never retry the write.
+    sysctl -w net.ipv4.tcp_congestion_control=bbr </dev/null || write_rc=$?
+    final_current=$(sysctl -n net.ipv4.tcp_congestion_control) || { final_current=''; readback_rc=1; }
+    final_available=$(sysctl -n net.ipv4.tcp_available_congestion_control) || { final_available=''; readback_rc=1; }
+    if [[ -n $final_current && $final_current != *[!a-zA-Z0-9_-]* ]]; then
+        printf '尝试后当前拥塞控制：%s\n' "$final_current"
+    else readback_rc=1; fi
+    if [[ -n $final_available && $final_available != *[!a-zA-Z0-9_[:space:]-]* ]]; then
+        printf '尝试后已注册算法：%s\n' "$final_available"
+    else readback_rc=1; fi
+    if (( write_rc )); then
+        _toolbox_system_error "BBR 写入失败（exit $write_rc）；本次尝试仍可能触发宿主加载模块，请按回读结果核对当前设置。"
+    fi
+    if (( readback_rc )); then
+        _toolbox_system_error '已尝试启用 BBR，但当前状态回读失败；请检查系统状态。'; return 1
+    fi
+    (( write_rc == 0 )) || return "$write_rc"
+    [[ $final_current == bbr && " $final_available " == *' bbr '* ]] || {
+        _toolbox_system_error '设置后验证失败；请检查宿主 BBR 支持、权限与当前系统状态。'; return 1; }
+    printf 'BBR 已启用（仅当前运行期）。\n重启后可能失效。\n作用范围依内核支持：\nLinux 主线 4.15+：\n按当前网络命名空间隔离。\n更旧内核或共用命名空间，\n可能影响宿主。\n'
 }
 _toolbox_system_bbr() {
     local available current kernel module_root module_dir module_path resolved module_output rc=0 check environment
@@ -264,16 +312,15 @@ _toolbox_system_bbr() {
     available=$(sysctl -n net.ipv4.tcp_available_congestion_control) || return
     current=$(sysctl -n net.ipv4.tcp_congestion_control) || return
     [[ -n $current && $current != *[!a-zA-Z0-9_-]* ]] || { _toolbox_system_error '当前拥塞控制回读格式未知；未改动。'; return 1; }
-    if [[ $current == bbr ]]; then printf 'BBR 已启用（当前网络命名空间的默认算法）。\n'; return 0; fi
+    if [[ $current == bbr ]]; then printf 'BBR 已启用（当前默认算法）。\n作用范围依内核支持：\nLinux 主线 4.15+：\n按当前网络命名空间隔离。\n更旧内核或共用命名空间，\n可能影响宿主。\n'; return 0; fi
     case " $available " in
         *' bbr '*) ;;
         *)
             environment=$(_toolbox_system_bbr_environment) || environment=unknown
-            case $environment in
-                none) ;;
-                unknown) _toolbox_system_error 'BBR 尚未注册，无法确定是否为容器；请先核对宿主/容器身份，未加载模块或切换。'; return 1;;
-                *) _toolbox_system_error "检测到容器（$environment）：宿主尚未提供 BBR。请宿主管理员或服务商加载 tcp_bbr；容器内不安装或加载内核模块，未切换。"; return 1;;
-            esac
+            if [[ $environment != none ]]; then
+                _toolbox_system_bbr_try_unregistered "$available" "$current" "$environment"
+                return $?
+            fi
             # A registered-only list omits unloaded kernel modules. Load only a
             # module for this RUNNING kernel, after its own explicit consent.
             _toolbox_system_need_tools uname readlink || return 1
@@ -282,7 +329,7 @@ _toolbox_system_bbr() {
                 _toolbox_system_error '运行内核版本格式未知；未改动。'; return 1; }
             module_root=$(_toolbox_system_bbr_module_root); module_dir=$module_root/$kernel
             [[ -d $module_dir ]] || {
-                _toolbox_system_error "运行内核 $kernel 的模块目录 $module_dir 缺失；无法加载 BBR。请确认整机/容器及内核与模块是否匹配；不自动安装或更换内核，未切换拥塞控制。"
+                _toolbox_system_error "运行内核 $kernel 的模块目录 $module_dir 缺失；本工具无法核验直接加载所需的模块文件。请确认整机/容器及内核与模块是否匹配；不自动安装或更换内核，未加载或切换拥塞控制。"
                 return 1
             }
             _toolbox_system_need_tools modinfo modprobe || return 1
@@ -325,7 +372,7 @@ _toolbox_system_bbr() {
     esac
     check=$(sysctl -n net.ipv4.tcp_congestion_control) || return
     [[ $check == "$current" ]] || { _toolbox_system_error '检测期间拥塞控制已变化；请重新操作，未切换。'; return 1; }
-    _toolbox_system_confirm "将当前 TCP 拥塞控制从 $current 切换到 bbr（当前网络命名空间，仅当前运行期，不写持久配置；主要作用于后续新连接）；恢复原算法: sysctl -w net.ipv4.tcp_congestion_control=$current" || return
+    _toolbox_system_confirm "将当前 TCP 拥塞控制从 $current 切换到 bbr（作用范围依内核支持：Linux 主线 4.15+ 按当前网络命名空间隔离；更旧内核或共用命名空间可能影响宿主；仅当前运行期，不写持久配置；主要作用于后续新连接）；恢复原算法: sysctl -w net.ipv4.tcp_congestion_control=$current" || return
     check=$(sysctl -n net.ipv4.tcp_congestion_control) || return
     [[ $check == "$current" ]] || { _toolbox_system_error '确认期间拥塞控制已变化；未覆盖当前设置。'; return 1; }
     available=$(sysctl -n net.ipv4.tcp_available_congestion_control) || return
@@ -333,7 +380,7 @@ _toolbox_system_bbr() {
     sysctl -w net.ipv4.tcp_congestion_control=bbr || { _toolbox_system_error 'BBR 写入失败；请检查内核/网络命名空间权限和当前设置。'; return 1; }
     current=$(sysctl -n net.ipv4.tcp_congestion_control) || { _toolbox_system_error '已尝试启用 BBR，但当前状态回读失败；请检查系统状态。'; return 1; }
     [[ $current == bbr ]] || { _toolbox_system_error '设置后验证失败；请检查系统状态。'; return 1; }
-    printf 'BBR 已启用（当前网络命名空间，仅当前运行期，重启后可能失效）。\n'
+    printf 'BBR 已启用（仅当前运行期）。\n重启后可能失效。\n作用范围依内核支持：\nLinux 主线 4.15+：\n按当前网络命名空间隔离。\n更旧内核或共用命名空间，\n可能影响宿主。\n'
 }
 readonly _TOOLBOX_DOCKER_GPG_FINGERPRINT='9DC858229FC7DD38854AE2D88D81803C0EBFCD88'
 # Fingerprint source: HTTPS key linked by https://docs.docker.com/engine/install/debian/

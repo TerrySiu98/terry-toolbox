@@ -95,6 +95,7 @@ uname() {
 _toolbox_system_bbr_kernel() {
     local count
     count=$(bump kernel_reads)
+    [[ $count != "$FAIL_KERNEL_AT" ]] || return 1
     if [[ $KERNEL_CHANGE == 1 && $count -gt 1 ]]; then printf 'other-kernel\n'
     else uname -r; fi
 }
@@ -102,8 +103,11 @@ _toolbox_system_bbr_module_root() { printf '%s\n' "$case_root/modules"; }
 _toolbox_system_bbr_status_root() { printf '%s\n' "$case_root/status"; }
 _toolbox_system_bbr_environment_root() { printf '%s\n' "$case_root/environment"; }
 _toolbox_system_bbr_environment() {
-    [[ $ENVIRONMENT_FAIL != 1 ]] || return 1
-    printf '%s\n' "$ENVIRONMENT"
+    local count
+    count=$(bump environment_reads)
+    [[ $ENVIRONMENT_FAIL != 1 && $count != "$FAIL_ENVIRONMENT_AT" ]] || return 1
+    if [[ $count == "$CHANGE_ENVIRONMENT_AT" ]]; then printf '%s\n' "$CHANGED_ENVIRONMENT"
+    else printf '%s\n' "$ENVIRONMENT"; fi
 }
 _toolbox_system_has() {
     case $1 in
@@ -142,25 +146,44 @@ readlink() {
     /usr/bin/readlink "$@"
 }
 sysctl() {
-    local count
+    local count unexpected
     case "$*" in
         '-n net.ipv4.tcp_available_congestion_control')
             count=$(bump available_reads)
             printf 'read available %s\n' "$count" >> "$trace"
-            [[ $count != "$FAIL_AVAILABLE_AT" ]] || return 1
+            if [[ $count == "$FAIL_AVAILABLE_AT" ]]; then
+                [[ $FAIL_READ_STDOUT != 1 ]] || printf 'bbr cubic\n'
+                return 1
+            fi
             if [[ $count == "$DROP_AVAILABLE_AT" ]]; then printf 'cubic\n' > "$case_root/available"; fi
+            if [[ $count == "$REGISTER_AVAILABLE_AT" ]]; then printf 'cubic bbr\n' > "$case_root/available"; fi
             /bin/cat "$case_root/available";;
         '-n net.ipv4.tcp_congestion_control')
             count=$(bump current_reads)
             printf 'read current %s\n' "$count" >> "$trace"
-            [[ $count != "$FAIL_CURRENT_AT" ]] || return 1
-            if [[ $count == "$CHANGE_CURRENT_AT" ]]; then printf 'reno\n' > "$case_root/current"; fi
+            if [[ $count == "$FAIL_CURRENT_AT" ]]; then
+                [[ $FAIL_READ_STDOUT != 1 ]] || printf 'bbr\n'
+                return 1
+            fi
+            if [[ $count == "$CHANGE_CURRENT_AT" ]]; then printf '%s\n' "$CHANGED_CURRENT" > "$case_root/current"; fi
             /bin/cat "$case_root/current";;
         '-w net.ipv4.tcp_congestion_control=bbr')
             printf 'write bbr\n' >> "$trace"
-            [[ $WRITE_FAIL != 1 ]] || { printf 'fixture: permission denied\n' >&2; return 1; }
+            if [[ $WRITE_STDIN_PROBE == 1 ]] && IFS= read -r unexpected; then
+                boundary_error 'sysctl attempt inherited later menu input'
+            fi
+            if [[ $WRITE_FAIL == 1 ]]; then
+                if [[ $WRITE_FAIL_AFTER_APPLY == 1 ]]; then
+                    printf 'bbr\n' > "$case_root/current"
+                    printf 'cubic bbr\n' > "$case_root/available"
+                fi
+                printf '%s\n' "$WRITE_ERROR" >&2
+                return "$WRITE_RC"
+            fi
             [[ $WRITE_LIES != 1 ]] || return 0
-            printf 'bbr\n' > "$case_root/current";;
+            printf 'bbr\n' > "$case_root/current"
+            [[ $WRITE_REGISTER != 1 ]] || printf 'cubic bbr\n' > "$case_root/available"
+            return 0;;
         *) boundary_error "unexpected sysctl arguments: $*";;
     esac
 }
@@ -217,10 +240,13 @@ fixture() {
     printf 'PATH=/fixture\0PRIVATE_BBR_SENTINEL=must-not-print\0' > "$case_root/environment/proc/1/environ"
     ENVIRONMENT=none ENVIRONMENT_FAIL=0 DETECTOR_PRESENT=0 DETECTOR_OUTPUT=none DETECTOR_RC=1
     CAT_PRESENT=1 CAT_READ_MODE=pass
-    for counter in available_reads current_reads kernel_reads path_reads; do printf '0\n' > "$case_root/$counter"; done
-    ROOT_ALLOWED=1 MISSING_TOOLS='' KERNEL_CHANGE=0 PATH_CHANGE=0 REALPATH_FAIL=0
-    FAIL_AVAILABLE_AT=0 DROP_AVAILABLE_AT=0 FAIL_CURRENT_AT=0 CHANGE_CURRENT_AT=0
-    WRITE_FAIL=0 WRITE_LIES=0 MODINFO_MODE=valid MODPROBE_FAIL=0 MODPROBE_UNREGISTERED=0
+    for counter in available_reads current_reads kernel_reads path_reads environment_reads; do printf '0\n' > "$case_root/$counter"; done
+    ROOT_ALLOWED=1 MISSING_TOOLS='' KERNEL_CHANGE=0 PATH_CHANGE=0 REALPATH_FAIL=0 FAIL_KERNEL_AT=0
+    FAIL_ENVIRONMENT_AT=0 CHANGE_ENVIRONMENT_AT=0 CHANGED_ENVIRONMENT=none
+    FAIL_AVAILABLE_AT=0 DROP_AVAILABLE_AT=0 REGISTER_AVAILABLE_AT=0 FAIL_CURRENT_AT=0 CHANGE_CURRENT_AT=0 CHANGED_CURRENT=reno FAIL_READ_STDOUT=0
+    WRITE_FAIL=0 WRITE_LIES=0 WRITE_FAIL_AFTER_APPLY=0 WRITE_REGISTER=0 WRITE_RC=1 WRITE_STDIN_PROBE=0
+    WRITE_ERROR='fixture: permission denied'
+    MODINFO_MODE=valid MODPROBE_FAIL=0 MODPROBE_UNREGISTERED=0
     [[ ${2:-registered} != module ]] || printf 'cubic\n' > "$case_root/available"
 }
 run_bbr() {
@@ -449,7 +475,8 @@ fixture 'status can identify a module-less LXC without querying modules' module
 ENVIRONMENT=lxc
 rm -rf -- "$case_root/modules"
 run_status success
-[[ $(<"$out") == *'容器（lxc）'* && $(<"$out") == *'宿主尚未提供'* ]] || fail 'LXC host guidance missing'
+[[ $(<"$out") == *'容器（lxc）'* && $(<"$out") == *'尚未注册'* &&
+   $(<"$out") != *'宿主尚未提供'* ]] || fail 'LXC status inferred unsupported host capability'
 pass
 
 fixture 'status remains conservative for an unknown environment' module
@@ -490,18 +517,149 @@ for broken_value in '' 'cubic;bbr'; do
     run_status failure; pass
 done
 
+# Unregistered container/unknown paths use one separately disclosed sysctl
+# attempt. A successful mock simulates request_module registering BBR, without
+# ever running modprobe or installing a package in the container.
+unregistered_fixture() {
+    fixture "$1" module
+    ENVIRONMENT=lxc WRITE_REGISTER=1
+}
+no_explicit_loader() {
+    absent modinfo; absent modprobe; absent 'need modinfo modprobe'
+    [[ ! -e $case_root/loaded ]] || fail 'sysctl attempt ran a module loader'
+}
+one_sysctl_attempt() {
+    no_explicit_loader
+    [[ $(grep -cxF 'write bbr' "$trace") == 1 ]] || fail 'sysctl attempt was missing or retried'
+}
+
 for container_kind in lxc docker unknown; do
-    fixture 'unregistered container or uncertain host cannot load visible modules' module
+    unregistered_fixture 'unregistered container or unknown environment permits one authorized sysctl attempt'
     ENVIRONMENT=$container_kind
-    run_bbr failure "$four_yes"; untouched; absent modinfo
-    absent 'need uname readlink'; absent 'need modinfo modprobe'
-    [[ $(<"$out") != *'输入 YES'* ]] || fail 'blocked container asked for module consent'
+    run_bbr success "$two_yes"; one_sysctl_attempt
+    [[ $(<"$case_root/current") == bbr && $(<"$case_root/available") == *bbr* ]] || fail 'attempt skipped successful readback'
+    [[ $(grep -o '输入 YES 确认' "$out" | wc -l) == 2 ]] || fail 'attempt needs its own double confirmation'
+    [[ $(<"$out") == *'宿主'* && $(<"$out") == *'tcp_bbr'* && $(<"$out") == *'sysctl'* ]] || fail 'host auto-load effect was not disclosed'
     pass
 done
 
-fixture 'environment detection failure cannot load a host module' module
+unregistered_fixture 'sysctl attempt cannot consume the next menu input'
+WRITE_STDIN_PROBE=1
+run_bbr success "$two_yes"$'NEXT_MENU_INPUT\n'; one_sysctl_attempt; pass
+
+unregistered_fixture 'unknown environment after failed detection permits explicit consent'
 ENVIRONMENT_FAIL=1
-run_bbr failure "$four_yes"; untouched; absent modinfo; pass
+run_bbr success "$two_yes"; one_sysctl_attempt
+[[ $(<"$out") == *unknown* && $(<"$out") == *'宿主'* ]] || fail 'unknown environment authorization omitted its uncertainty'
+pass
+
+unregistered_fixture 'unregistered LXC attempt does not require a local module tree'
+rm -rf -- "$case_root/modules"
+run_bbr success "$two_yes"; one_sysctl_attempt; pass
+
+for answer in NO '' $'YES\n' $'YES\nNO\n'; do
+    unregistered_fixture 'unregistered attempt refusal or EOF makes no kernel change'
+    run_bbr failure "$answer"; untouched; no_explicit_loader; pass
+done
+
+unregistered_fixture 'failed environment discovery cannot silently authorize a sysctl attempt'
+ENVIRONMENT_FAIL=1
+run_bbr failure NO; untouched; no_explicit_loader; pass
+
+unregistered_fixture 'unregistered sysctl failure preserves its diagnostic and reads actual state'
+WRITE_FAIL=1 WRITE_RC=7 WRITE_ERROR=$'sysctl: Operation not permitted\nfixture-original-kernel-diagnostic'
+run_bbr failure "$two_yes"; one_sysctl_attempt
+[[ $(<"$out") == *"$WRITE_ERROR"* && $(<"$out") == *cubic* ]] || fail 'write failure lost its original diagnostic or readback'
+[[ $(<"$trace") == *$'write bbr\nread current 4\nread available 4'* ]] || fail 'failed write skipped readback'
+pass
+
+unregistered_fixture 'write failure remains failure even if readback reports BBR'
+WRITE_FAIL=1 WRITE_FAIL_AFTER_APPLY=1 WRITE_ERROR='sysctl: synthetic failure after state changed'
+run_bbr failure "$two_yes"; one_sysctl_attempt
+[[ $(<"$out") == *"$WRITE_ERROR"* && $(<"$out") == *bbr* &&
+   $(<"$case_root/current") == bbr ]] || fail 'failure masked a changed kernel state'
+pass
+
+unregistered_fixture 'unregistered sysctl exit zero with unchanged current is rejected'
+WRITE_LIES=1
+run_bbr failure "$two_yes"; one_sysctl_attempt; pass
+
+unregistered_fixture 'unregistered write must read back BBR in the registered list'
+WRITE_REGISTER=0
+run_bbr failure "$two_yes"; one_sysctl_attempt; pass
+
+for read_kind in current available; do
+    unregistered_fixture 'unregistered attempt cannot claim success when final readback fails'
+    if [[ $read_kind == current ]]; then FAIL_CURRENT_AT=4; else FAIL_AVAILABLE_AT=4; fi
+    run_bbr failure "$two_yes"; one_sysctl_attempt; pass
+done
+
+for read_kind in current available; do
+    unregistered_fixture 'failed final read cannot present partial stdout as trusted state'
+    FAIL_READ_STDOUT=1
+    if [[ $read_kind == current ]]; then FAIL_CURRENT_AT=4; else FAIL_AVAILABLE_AT=4; fi
+    run_bbr failure "$two_yes"; one_sysctl_attempt
+    if [[ $read_kind == current ]]; then
+        [[ $(<"$out") != *'尝试后当前拥塞控制：bbr'* ]] || fail 'failed current read presented partial stdout as valid'
+    else
+        [[ $(<"$out") != *'尝试后已注册算法：bbr cubic'* ]] || fail 'failed available read presented partial stdout as valid'
+    fi
+    pass
+done
+
+for changed_at in 2 3; do
+    unregistered_fixture 'unregistered attempt preserves concurrent algorithm changes'
+    CHANGE_CURRENT_AT=$changed_at
+    run_bbr failure "$two_yes"; absent 'write bbr'; no_explicit_loader
+    [[ $(<"$case_root/current") == reno ]] || fail 'concurrent algorithm was overwritten'
+    pass
+
+    unregistered_fixture 'concurrent enabling of BBR does not trigger another write'
+    CHANGE_CURRENT_AT=$changed_at CHANGED_CURRENT=bbr
+    run_bbr failure "$two_yes"; absent 'write bbr'; no_explicit_loader
+    [[ $(<"$case_root/current") == bbr ]] || fail 'already changed algorithm was overwritten'
+    pass
+
+    unregistered_fixture 'new BBR registration requires renewed confirmation'
+    REGISTER_AVAILABLE_AT=$changed_at
+    run_bbr failure "$two_yes"; untouched; no_explicit_loader; pass
+
+    unregistered_fixture 'environment changes invalidate the sysctl attempt'
+    CHANGE_ENVIRONMENT_AT=$changed_at CHANGED_ENVIRONMENT=none
+    run_bbr failure "$two_yes"; untouched; no_explicit_loader; pass
+done
+
+for failed_at in 2 3; do
+    unregistered_fixture 'environment read failure invalidates a known-container snapshot'
+    FAIL_ENVIRONMENT_AT=$failed_at
+    run_bbr failure "$two_yes"; untouched; no_explicit_loader; pass
+done
+
+unregistered_fixture 'kernel changes during confirmation invalidate the attempt'
+KERNEL_CHANGE=1
+run_bbr failure "$two_yes"; untouched; no_explicit_loader; pass
+
+for failed_at in 1 2; do
+    unregistered_fixture 'kernel read failure cannot authorize an unregistered attempt'
+    FAIL_KERNEL_AT=$failed_at
+    run_bbr failure "$two_yes"; untouched; no_explicit_loader; pass
+done
+
+for read_kind in current available; do
+    for failed_at in 2 3; do
+        unregistered_fixture 'snapshot read failure prevents the unregistered attempt'
+        if [[ $read_kind == current ]]; then FAIL_CURRENT_AT=$failed_at; else FAIL_AVAILABLE_AT=$failed_at; fi
+        run_bbr failure "$two_yes"; untouched; no_explicit_loader; pass
+    done
+done
+
+for changed_at in 2 3; do
+    fixture 'registered BBR already enabled concurrently is not overwritten'
+    ENVIRONMENT=lxc CHANGE_CURRENT_AT=$changed_at CHANGED_CURRENT=bbr
+    run_bbr failure "$two_yes"; absent 'write bbr'; no_explicit_loader
+    [[ $(<"$case_root/current") == bbr ]] || fail 'concurrent registered BBR setting lost'
+    pass
+done
 
 fixture 'registered LXC can switch its own default without module loading'
 ENVIRONMENT=lxc

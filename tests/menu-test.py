@@ -217,7 +217,172 @@ assert any('A4 Hysteria 2' in frame and 'Alpine 版 HY2' not in frame for frame 
 assert any('Alpine 版 HY2' in frame and '请选择要执行的操作' not in frame for frame in frames), 'network screen appended below home'
 assert '\x1b[3J' not in tty_out, 'must not erase terminal scrollback'
 assert 'command not found' not in tty_out, tty_out
-assert '\x1b' not in run_tty('0\n', no_clear=True), 'TOOLBOX_NO_CLEAR ignored'
+preserved = run_tty('0\n', no_clear=True)
+assert '\x1b[H' not in preserved and '\x1b[2J' not in preserved and '\x1b[3J' not in preserved, 'TOOLBOX_NO_CLEAR ignored'
+assert not __import__('re').search(r'\x1b\[[0-9;]*m', preserved), 'NO_COLOR should suppress colors only'
 print('menu regression tests passed: hierarchy, service management, PTY redraw/pause, direct keys, repeat action, 40-column layout')
 
 assert not _package_log.exists(), _package_log.read_text()
+
+# Check actual cell positions with an independent terminal model. The two emoji
+# models cover modern two-cell rendering and older one-cell terminal rendering.
+import re
+
+
+def terminal_rows(output, legacy_emoji=False):
+    rows = []
+    cells = {}
+    column = 0
+    sequence = re.compile(r'\x1b\[([0-9;]*)([A-Za-z])')
+    i = 0
+    while i < len(output):
+        char = output[i]
+        if char == '\x1b':
+            match = sequence.match(output, i)
+            assert match, repr(output[i:i+20])
+            args, command = match.groups()
+            if command == 'G':
+                column = int(args or '1') - 1
+            else:
+                assert command == 'm', (command, args)
+            i = match.end()
+            continue
+        if char == '\r':
+            column = 0
+            i += 1
+            continue
+        if char == '\n':
+            rows.append(cells)
+            cells = {}
+            column = 0
+            i += 1
+            continue
+        has_vs = i+1 < len(output) and output[i+1] == '\ufe0f'
+        if char in ('\ufe0f', '\ufe0e') or unicodedata.combining(char):
+            i += 1
+            continue
+        emoji = ord(char) >= 0x1F000 or char in '⚡✅⏰' or has_vs
+        width = 1 if legacy_emoji and emoji else (
+            2 if emoji or unicodedata.east_asian_width(char) in ('W', 'F') else 1)
+        cells[column] = char
+        for continuation in range(1, width):
+            cells[column+continuation] = ''
+        column += width
+        i += 2 if has_vs else 1
+    if cells:
+        rows.append(cells)
+    return rows
+
+
+def render_pages(columns, tty, locale='C.UTF-8', resized=False):
+    pages = ['main', 'network', 'apps', 'bye', 'MAIN_BBR', 'MAIN_REINSTALL',
+             'TLS', 'A1', 'A2', 'A3', 'A4', 'A5', 'B1', 'B10', 'B12',
+             'B16', 'B19', 'B23', 'B31']
+    lines = [
+        'source ' + shlex.quote(str(SCRIPT)) + ' --help >/dev/null',
+        '_tb_ui_init',
+        # Long metadata must wrap, including the centered banner line.
+        "TB_OS='Very Long Linux Distribution Name With Extra Build Metadata 1234567890'",
+        'TB_ARCH=x86_64',
+    ]
+    if resized:
+        # Init at 80 cells, then resize before the next redraw.
+        lines += ['stty cols ' + str(columns), 'COLUMNS=80', '_tb_redraw']
+    for page in pages:
+        lines += ["printf '@@PAGE:" + page + "\n'"]
+        lines += [{'main': '_tb_main_screen', 'network': '_tb_network_screen',
+                   'apps': '_tb_apps_screen', 'bye': '_tb_bye'}.get(
+                       page, '_tb_service_screen ' + page)]
+    env = dict(os.environ, NO_COLOR='1', TERM='xterm' if tty else 'dumb',
+               COLUMNS=str(80 if resized else columns), LC_ALL=locale,
+               TOOLBOX_NO_CLEAR='1')
+    command = ['bash', '--noprofile', '--norc', '-c', '\n'.join(lines)]
+    if not tty:
+        result = subprocess.run(command, env=env, capture_output=True,
+                                text=True, timeout=15)
+        assert result.returncode == 0 and not result.stderr, result
+        assert '\x1b' not in result.stdout, 'redirected output has cursor controls'
+        return result.stdout
+    master, slave = pty.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ,
+                struct.pack('HHHH', 100, 80 if resized else columns, 0, 0))
+    proc = subprocess.Popen(command, stdin=slave, stdout=slave, stderr=slave, env=env)
+    os.close(slave)
+    chunks = []
+    deadline = time.monotonic()+15
+    try:
+        while True:
+            assert time.monotonic() < deadline, 'page render hung'
+            if not select.select([master], [], [], 0.2)[0]:
+                continue
+            try:
+                chunk = os.read(master, 65536)
+            except OSError as exc:
+                if exc.errno == errno.EIO:
+                    break
+                raise
+            if not chunk:
+                break
+            chunks.append(chunk)
+        proc.wait(timeout=2)
+        output = b''.join(chunks).decode('utf-8', errors='strict')
+        assert proc.returncode == 0, output
+        return output
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        os.close(master)
+
+
+alignment_checks = 0
+for columns in (19, 32, 40, 67, 80):
+    for tty in (False, True):
+        for locale in ('C', 'C.UTF-8'):
+            output = render_pages(columns, tty, locale)
+            for legacy in ((False, True) if tty else (False,)):
+                rendered = terminal_rows(output, legacy)
+                border_lines = 0
+                for cells in rendered:
+                    visible = ''.join(cells.get(c, '') for c in sorted(cells))
+                    if any(char in visible for char in '╔╠╚║'):
+                        border_lines += 1
+                        right = min(columns, 78)-2
+                        assert cells.get(1) in '╔╠╚║', (columns, tty, locale, visible)
+                        assert cells.get(right) in '╗╣╝║', (
+                            'misaligned right border', columns, tty, locale, legacy, cells)
+                        assert max(cells) <= right, (
+                            'content outside box', columns, tty, locale, legacy, cells)
+                    elif not visible.startswith('@@PAGE:'):
+                        assert not cells or max(cells) < columns, (
+                            'wide unboxed line', columns, tty, locale, visible)
+                assert bool(border_lines) == (columns >= 20), (columns, border_lines)
+                # Joining wrapped content proves text and choice numbers remain.
+                joined = ''.join(''.join(cells.get(c, '') for c in sorted(cells)
+                                        if cells.get(c, '') not in '╔╠╚║╗╣╝═ ')
+                                 for cells in rendered)
+                for label in ('4.重装系统', '1.启用BBR', '2.查看BBR状态',
+                              '2.准备重装（毁损风险）', '4.取消本工具重装计划',
+                              '不自动重启，不用于业务机试验', '6.同步至VMess',
+                              '31.Relay转发'):
+                    assert label in joined, (columns, tty, locale, label)
+                alignment_checks += 1
+    # Window resizing must take effect without restarting the script.
+    resized_output = render_pages(columns, True, resized=True)
+    if columns >= 20:
+        assert '\x1b[' + str(min(columns, 78)-1) + 'G' in resized_output, 'resize lost terminal cursor positioning'
+    for cells in terminal_rows(resized_output):
+        if cells.get(1) in ('╔', '╠', '╚', '║'):
+            assert cells.get(min(columns, 78)-2) in ('╗', '╣', '╝', '║'), (
+                'stale terminal width after resize', columns, cells)
+    alignment_checks += 1
+
+# Right-column icons share a fixed origin even if glyph widths differ.
+wide_output = render_pages(80, True)
+for legacy in (False, True):
+    rows = terminal_rows(wide_output, legacy)
+    expected_right_icons = set('💽🛠🔄🚪🧰🔐🧱⚙🌍🛰📨🚀🏔🔀🌐🖥📄🧬🔁↩')
+    # Four main pairs and sixteen application pairs are rendered at column 38.
+    pairs = [r for r in rows if r.get(37) in expected_right_icons]
+    assert len(pairs) >= 20, ('right column origin drift', legacy, len(pairs))
+print(f'menu alignment passed: {alignment_checks} all-page terminal/locale/resize checks, both emoji cell models')
