@@ -237,5 +237,7 @@
     "First focused menu check found overlong new BBR scope message; split static state lines and rechecked.",
     "Resize fixture initially redirected redraw output and bypassed TTY measurement; corrected redraw and stale COLUMNS fixture, final runner and bundled menus passed.",
     "Live readback used curl with system HTTPS trust; Python requests unavailable and urllib root request returned HTTP403, neither was used as successful evidence."
-  ]
+  ],
+  "pr": 9,
+  "implementation_commit": "ebcafe7a3bb36360f3b6d2f1e48700ee4e5cad73"
 }

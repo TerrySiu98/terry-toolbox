@@ -1,6 +1,6 @@
 # LXC BBR 与菜单对齐补丁
 
-日期：2026-11-10。分支 `codex/bbr-lxc-menu-alignment`，基于已发布 PR #8 后的 `main`（`2a80b39`）。本候选尚未合并或部署；保留 Hermes 的 PR #8 生产发布记录与全部既有功能。
+日期：2026-11-10。[PR #9](https://github.com/TerrySiu98/terry-toolbox/pull/9)，产品与测试提交 `ebcafe7a3bb36360f3b6d2f1e48700ee4e5cad73`。分支 `codex/bbr-lxc-menu-alignment`，基于已发布 PR #8 后的 `main`（`2a80b39`）。本候选尚未合并或部署；保留 Hermes 的 PR #8 生产发布记录与全部既有功能。
 
 ## 修复行为
 
