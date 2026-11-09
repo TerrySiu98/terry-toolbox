@@ -1,0 +1,316 @@
+{
+  "schema_version": 1,
+  "repository": "TerrySiu98/terry-toolbox",
+  "pr": 9,
+  "reviewed_head": "443ac134e78e69815530d2a77a9cf79f82588e05",
+  "merge_commit": "4aa1369421d7b75e20fe576d7d8dee600cbc1029",
+  "deployed_utc": "2026-11-09T21:03:00.636436+00:00",
+  "deployed_beijing": "2026-11-10T05:03:00.636436+08:00",
+  "host": "https://sh.uw.cx",
+  "worker": "terry-toolbox",
+  "artifact": {
+    "path": "docs/index.html",
+    "bytes": 747887,
+    "sha256": "ac70ac697df7543f2935b625a1f0b6f7de4fd524dad9bd03d42f26a2042e7bab"
+  },
+  "included_documentation_pr": {
+    "pr": 7,
+    "merged": true,
+    "reviewed_head": "5d24440428c5b415aae8a5487ac4e86331fda800",
+    "merge_commit": "71f7fb40d789a79be40b12b2fa998d7db5d899ad",
+    "changed_files": [
+      "AGENTS.md"
+    ],
+    "agents_readback_exact": true,
+    "runtime_and_artifact_unchanged": true
+  },
+  "source_sha256": {
+    "docs/index.html": "ac70ac697df7543f2935b625a1f0b6f7de4fd524dad9bd03d42f26a2042e7bab",
+    "modules/alpine-swap.sh": "61fce9867109345d5ee956a64f2365a2f2f3f649a0ee46ef060da8078a16d538",
+    "modules/apps.sh": "6d98f108cab9e69f52a982658206c1db8fdafb0dc3bee417cf4718de689e5153",
+    "modules/dependencies.sh": "62953cc610fa68b46a349cf322b2aad66858da0f667cf1a958d69dabd1d88d8d",
+    "modules/diagnostics.sh": "5f7b3360cc344733c09c424c356332db4148caac1279668a8171e97e88ab5cc2",
+    "modules/docker-ipv6.sh": "c09ce1828c99a0ff72a41c4780bf6f3f3a1a1d91f267867c8f2e51cdcb6b131f",
+    "modules/entry.sh": "fb0f1241bd35f5a2a31ff7d9844ca24f87aee944d1720af857272d540a4e8590",
+    "modules/hy2.sh": "543257755a3696ca9514545d72526d101017b12eb5469d75af686c6d5c995edb",
+    "modules/network.sh": "fe4d77bca3c0618cfb706606a797a4cd9a027bd8c558a30551f97ed74264e1c3",
+    "modules/reinstall-provenance.sh": "957b383df03c3ec8f48101e1c98fed486ba9abdd26e6fa2d16dbe05ae2179848",
+    "modules/reinstall.sh": "78f474f50a3fb4703b6254c5d1dfc530d8d18acff1a5809205350a98e597087e",
+    "modules/system.sh": "6fa493b9a3bda7690691d510cefe00e16d7deb30bb9cb59d2b9e2ccaf9d3103e",
+    "modules/tls-acme.sh": "a7fa3a73d25d8f424436f87f1733c21d80aabba360e0452ed1de42df102d581c",
+    "modules/vmess.sh": "36432981f53d2daabc8d8b3d848a7e6340361715a4f74b5186562776329f124c",
+    "modules/webssh-containers.sh": "2455acdd11b4e9e55329cdf1b99ceec9c7a1a61f86283f3575df4d288ea62ae0",
+    "modules/webssh.sh": "b5a186d668f3113463f692016d365fe3e64070560c1f8443e4d544873f8f97bf",
+    "scripts/build-worker.py": "3109dcb181ad101c208ea18c3be36fa07e1fafb51bb555690a38db3e10d0cc6e",
+    "scripts/build.sh": "3cb2ae62657e0bcfc413d226d8c738d103bdc33be07b847095c3e6fbd5b213b9",
+    "scripts/deploy-cloudflare.py": "cddc86d3caea82f9fb9988c09247683d4edf198b94b9b667cec4623344d99c26",
+    "scripts/release.sh": "0a939d3a369cd4d9f921b09dea68855c39a509c0670b3410ab2241488db0dde8",
+    "scripts/test.sh": "f86e3a7e74ae80551f0cc542f75c2a2bf4f6a7966a50a71e6cfb4ffd5a429b22",
+    "tests/alpine-swap-dispatch-test.sh": "ca589adffd7eadb9c86fff81280c15c9a0d8f1b55680d2373aba7c3fb77da316",
+    "tests/alpine-swap-test.sh": "2b9b3eea1474608cc8a4310044e48172f2d5711de3526cbca25a13bf6a32e3c6",
+    "tests/apps-test.sh": "dc9cda9470680168956fad1a61565394d58a9e507764e575025b671956f2f9da",
+    "tests/b2-real.sh": "887a3a9f90378969559117dd09f2d35b3cc6325612255c91900e96210e8bad99",
+    "tests/bbr-test.sh": "b53975d422acd20563edd10693ec2c5868ab007a1bd8cc88159e4e39dcd46e51",
+    "tests/build-test.sh": "69e31b1d49c6eb21ce61ae40cc56190ecd797fd73a295afe2eb9419172b1c39d",
+    "tests/certificate-fixture.py": "28e13dada1ecad750e2868ca835896ebb9c0b2a602e85f85b0007847f78ab85f",
+    "tests/certificate-recovery-test.py": "89bac8a183ee112ebdf876df2747e4b5c437e75edeb76b45e8a11a020b92abbc",
+    "tests/dependencies-test.sh": "772f60f18157961700c118bd449180ea0f78761a0b7956f7bce69f73c139b87d",
+    "tests/dependency-entrypoints-test.sh": "38fda807ac49758ca9aab183b86ffa686326bebe91dbec20c4f84ea50e127b96",
+    "tests/deploy-cloudflare-test.py": "504a0fda22f28305d6ddb583854d9d25fcc66cf07f8409175375bf935eb0b2c7",
+    "tests/diagnostics-test.sh": "16340c03b76f39a0470523c15065520082879f394b2ad4b3c8b2c1f59e8e0874",
+    "tests/docker-ipv6-integration.py": "ebe3eecc3d7949077b29b8931bd5a8ae73ab708c99dbd73cd069f8a4683b77d1",
+    "tests/docker-ipv6-test.sh": "4eec7ede202e7233154ebe80d255ed292cb789b1ba2abc7aa50ca249163c852f",
+    "tests/docker-origin-test.py": "d0580d6e13b5074a035217c2f42799ac77a857862cf968228296aa93e702ac1a",
+    "tests/entry-feedback-test.py": "d7987e719756a1824c0277089ba382ceb22743ff3d54b38299cabbb65f652782",
+    "tests/entry-test.sh": "e3303057c72778f5b53ae0ac651cdc23ed36d4f2d8ea29139f860522e86f1c96",
+    "tests/hy2-test.sh": "ed2bce1a914f371452935c8056d502526162932f8e98d0fdaa2078618b40ac29",
+    "tests/menu-test.py": "fc99525fa648bd9f2ca6a46c59b752e37f8e79611cb476ea4c9e08d1ffb73ab2",
+    "tests/network-alpine-feedback-test.sh": "a82d689147f279d34cbd8d036becf99c5ea0bce2b4867b3782dfccb3d4da8914",
+    "tests/network-alpine-test.sh": "79e4052552784f4f3a757b072e23ebcb272428ac624ca2c47c5f1c67dd2d71c0",
+    "tests/network-test.sh": "267abe277629ee2d7d869c76769059ce3e3f3e2a1ea1cbc629476e87595396f0",
+    "tests/regression-runner-test.py": "e9cd0cd30caa8517b43ee61d815d1af39881cab0ce0d7bbad1fd9afd03de0ea3",
+    "tests/regression-runner.py": "ecc2053f10b3da20d649cd7f00ddd89aaae9aacf987fd3d313d3f1d9119481a7",
+    "tests/reinstall-auth-test.py": "c249f52d3c983e0ae47509de21e09fcd00d8810096840ca3da943e289a4694df",
+    "tests/reinstall-native-readback.py": "040ab7e66bcf6ab3bb693f7c1e14c7d84c8ef419b5b1b9aa9ee81d0372a21db0",
+    "tests/reinstall-native.sh": "5c13ef0534e5e687eb668eba6de43f964a279e8e862ea146ec1583ae6529c435",
+    "tests/reinstall-test.sh": "7be62b5007d94cee120af64d5fa1a0926ba4e2b6876875e03a4a263ea0cdc0eb",
+    "tests/remaining-dispatch-test.sh": "f8f77c75946f8ec7cb9a5513c43f3621187068211c2e4e0a5fed130632ea6477",
+    "tests/scratch-root.sh": "83a8ed75b9a4af3434321be76964ea920ea622f040dfe15d105bebe511c97ace",
+    "tests/secureboot-error-boundary-test.sh": "8fe056a3710a84f1b84c5de2dfcceef18e30fc26687e646824fe065138ffaa03",
+    "tests/system-alpine-feedback-test.sh": "afe90dd00afac8794dcfb753f6d0186ee6a1e276d809431234749b42420d75e7",
+    "tests/system-reboot-plan-test.sh": "542dc98a5520cb613490dd1916a0603bd527dabb70355626f5f39b1f993f6855",
+    "tests/system-review-test.sh": "3edf4a7fd9011c99d4667023342b13908cad8a55e311476144abb85eda9e3385",
+    "tests/system-test.sh": "3fbb7348b2d400e0805788d638415251bf111234b08f1f5dc710bfd9e300e845",
+    "tests/tls-acme-integration.sh": "a8ecd807a265a2f156b14e03bc9a78701fd2d5d57bb494fb52b1056920a4de95",
+    "tests/tls-acme-native.sh": "927e4a3db1bb6b730c3c39836c6ae20b674b6947c6017179e9b59fa15e203ecf",
+    "tests/tls-acme-test.sh": "bb4679d5f3babb46bcf93a49d84aa0a90620941c936979075ad6d80102a56e1f",
+    "tests/vmess-dispatch-test.sh": "38d50b4010f008989a291a1b23f8d200a1b0735875b0c6d5d970ee8bfc2eb412",
+    "tests/vmess-management-test.sh": "9342afaede2e6b789e054275d26a0d30474c48b2843c53a3be4c4d3f8603b395",
+    "tests/vmess-native-probe.py": "3dd9907c04d41bcfd9aa41d30b08730d4d99a2471dcf1a048a3bae488ffd330e",
+    "tests/vmess-native.sh": "70b63b31c0d5b6e389de83ecf1a7e8ade9af762e06127b7a74e7a7d094831abb",
+    "tests/vmess-protocol-test.py": "a9f8257c99f277b17baf15d10ca71ee5b048585085d12583a5c1afdae12dce9e",
+    "tests/vmess-test.sh": "3b0564eac213ae4b00710170166e6fed2c5b87d5ae6eef1c25cf0ed3d855df9b",
+    "tests/webssh-containers-mock.py": "1b474dbad2405b55e933a05c8d385b11845d4a4bb1f92c7ebe828ff83bcb6eb4",
+    "tests/webssh-containers-real.py": "29af592c7635acec25e59a8554fe2add7c8bd07eb1c3b431f67fe023f26a264c",
+    "tests/webssh-containers-test.sh": "063a406ce99909c030b4e1899b4ce3d161179f5df196162dc2648534c81e01c6",
+    "tests/webssh-native.py": "5365541a06dc360d1f266f46197bb8c77b4492560fbf2ac80d1332053e51759b",
+    "tests/webssh-test.sh": "876b209058145b31408e8f62a7022f5b20f78024a52bcf6d6ccca0e7fdb3053f",
+    "tests/worker-test.mjs": "66f5c6bdfae08f86619d823cbda84d95d2a4a27f73c7fc61ca5b8bb84d9a0073",
+    "toolbox.sh": "1ac056034e2124183b53e8ad246a57aba9a1f34996e51e3e44f78563a289e0a3",
+    "web/index.html": "b48dadad5a1fbac8d007efeaf615a3a08468a3b0b47383a898a8c1c99b93b8f4",
+    "web/router.mjs": "5e85f8a064d135407308c5ec6df774ebc0002996b9b37959424d5da0a5aed2b9"
+  },
+  "validation": {
+    "scope": "Focused regression; not a single full repository or native BBR acceptance run",
+    "parent": {
+      "head": "443ac134e78e69815530d2a77a9cf79f82588e05",
+      "focused_tests": 12,
+      "all_passed": true,
+      "source_drift": false,
+      "cleanup_complete": true,
+      "author_hash_map_exact": true,
+      "embedded_modules": 15,
+      "bundled_bbr_cases": 127,
+      "artifact_sha256": "ac70ac697df7543f2935b625a1f0b6f7de4fd524dad9bd03d42f26a2042e7bab",
+      "artifact_bytes": 747887
+    },
+    "bundled_menu_matrices": 35,
+    "independent_verdict": "no_actual_blocker_in_reviewed_changes",
+    "independent_blocking_findings": [],
+    "independent_extra_controls": 3,
+    "parent_repeated_independent_controls_passed": true,
+    "github_checks_and_statuses_empty": true,
+    "public": {
+      "sha256": "ac70ac697df7543f2935b625a1f0b6f7de4fd524dad9bd03d42f26a2042e7bab",
+      "bytes": 747887,
+      "public_checks": [
+        {
+          "name": "cli",
+          "status": 200,
+          "sha256": "ac70ac697df7543f2935b625a1f0b6f7de4fd524dad9bd03d42f26a2042e7bab",
+          "exact": true
+        },
+        {
+          "name": "wget",
+          "status": 200,
+          "sha256": "ac70ac697df7543f2935b625a1f0b6f7de4fd524dad9bd03d42f26a2042e7bab",
+          "exact": true
+        },
+        {
+          "name": "browser",
+          "status": 200,
+          "sha256": "b48dadad5a1fbac8d007efeaf615a3a08468a3b0b47383a898a8c1c99b93b8f4",
+          "exact": true
+        },
+        {
+          "name": "download",
+          "status": 200,
+          "sha256": "ac70ac697df7543f2935b625a1f0b6f7de4fd524dad9bd03d42f26a2042e7bab",
+          "exact": true
+        },
+        {
+          "name": "hash",
+          "status": 200,
+          "sha256": "e3842e909f6ca2ce2f24bad2f5149adfb97608245f85e1499a1e44f8f5c37345",
+          "exact": true
+        },
+        {
+          "name": "cli-fresh",
+          "status": 200,
+          "sha256": "ac70ac697df7543f2935b625a1f0b6f7de4fd524dad9bd03d42f26a2042e7bab",
+          "exact": true
+        },
+        {
+          "name": "wget-fresh",
+          "status": 200,
+          "sha256": "ac70ac697df7543f2935b625a1f0b6f7de4fd524dad9bd03d42f26a2042e7bab",
+          "exact": true
+        },
+        {
+          "name": "browser-fresh",
+          "status": 200,
+          "sha256": "b48dadad5a1fbac8d007efeaf615a3a08468a3b0b47383a898a8c1c99b93b8f4",
+          "exact": true
+        },
+        {
+          "name": "download-fresh",
+          "status": 200,
+          "sha256": "ac70ac697df7543f2935b625a1f0b6f7de4fd524dad9bd03d42f26a2042e7bab",
+          "exact": true
+        },
+        {
+          "name": "hash-fresh",
+          "status": 200,
+          "sha256": "e3842e909f6ca2ce2f24bad2f5149adfb97608245f85e1499a1e44f8f5c37345",
+          "exact": true
+        },
+        {
+          "name": "head",
+          "status": 200,
+          "exact": true
+        },
+        {
+          "name": "not-found",
+          "status": 404,
+          "exact": true
+        },
+        {
+          "name": "method",
+          "status": 405,
+          "exact": true
+        },
+        {
+          "name": "http-redirect",
+          "status": 301,
+          "exact": true
+        }
+      ],
+      "public_check_count": 14,
+      "smoke": [
+        {
+          "name": "syntax",
+          "exit_code": 0,
+          "stderr_empty": true,
+          "elapsed_seconds": 0.06
+        },
+        {
+          "name": "help",
+          "exit_code": 0,
+          "stderr_empty": true,
+          "elapsed_seconds": 0.1
+        },
+        {
+          "name": "list",
+          "exit_code": 0,
+          "stderr_empty": true,
+          "elapsed_seconds": 0.11
+        },
+        {
+          "name": "exit",
+          "exit_code": 0,
+          "stderr_empty": true,
+          "elapsed_seconds": 0.23
+        },
+        {
+          "name": "bbr-navigation",
+          "exit_code": 0,
+          "stderr_empty": true,
+          "elapsed_seconds": 0.43
+        },
+        {
+          "name": "m3-navigation",
+          "exit_code": 0,
+          "stderr_empty": true,
+          "elapsed_seconds": 0.38
+        },
+        {
+          "name": "reserved",
+          "exit_code": 0,
+          "stderr_empty": true,
+          "elapsed_seconds": 0.65
+        },
+        {
+          "name": "relay-menu",
+          "exit_code": 0,
+          "stderr_empty": true,
+          "elapsed_seconds": 0.36
+        },
+        {
+          "name": "diag",
+          "exit_code": 0,
+          "stderr_empty": true,
+          "elapsed_seconds": 0.45
+        },
+        {
+          "name": "stdin-exit",
+          "exit_code": 0,
+          "stderr_empty": true,
+          "elapsed_seconds": 1.91
+        }
+      ],
+      "smoke_count": 10,
+      "tls": {
+        "system_trust": true,
+        "version": "TLSv1.3",
+        "san": [
+          [
+            "DNS",
+            "uw.cx"
+          ],
+          [
+            "DNS",
+            "sh.uw.cx"
+          ],
+          [
+            "DNS",
+            "*.sh.uw.cx"
+          ]
+        ],
+        "notAfter": "Jan 28 05:00:51 2027 GMT"
+      }
+    },
+    "worker_preservation": {
+      "settings_exact": true,
+      "subdomain_exact": true,
+      "domains_exact": true,
+      "dns_exact": true,
+      "upload_count": 1,
+      "sha256": "ac70ac697df7543f2935b625a1f0b6f7de4fd524dad9bd03d42f26a2042e7bab"
+    },
+    "worker_modules_exact": true,
+    "welcome_and_router_unchanged": true
+  },
+  "limitations": [
+    "No native sysctl write, module loading, kernel replacement or user/business-host BBR trial was performed or authorized here.",
+    "Success on any particular provider/LXC still depends on its kernel, capabilities, module policy, namespace and mounts.",
+    "Terminal evidence is PTY byte output plus two cell models, not universal emulator visual acceptance; double-width box drawing and one-column CJK limitations are disclosed in PR docs.",
+    "Read-then-write sysctl snapshots are not an atomic compare-and-swap; observed confirmation-period changes are rejected, but no exclusion of arbitrary concurrent administrators is claimed.",
+    "Merge/deploy/live Worker readback are outside this subagent's authority and were not performed."
+  ],
+  "rollback": {
+    "previous_artifact_sha256": "5a4630c91450d279889ddf83534af6b5cf34b091af13aefbf419655b50bee5cf",
+    "previous_release": "docs/release-pr8-20261110.md",
+    "snapshot_retained": true,
+    "no_automatic_rollback_or_rebind": true
+  }
+}

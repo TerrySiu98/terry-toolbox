@@ -2,13 +2,19 @@
 
 更新日期：2026-11-10。本文件记录 Codex 接续后的当前维护入口；原 Hermes 交接已逐字节保存为 [2026-10-31 历史快照](docs/handoff-hermes-20261031.md)。快照中的 Claude Code 称谓、旧测试限制、失败记录及授权说明只描述当时状态，不代表当前分工或新的操作授权。后续工作以 Terry 的当前指示和本文件的证据边界为准。
 
-## 待发布：LXC BBR 尝试与菜单对齐补丁（2026-11-10）
+## 当前发布：LXC BBR 尝试与菜单对齐（PR #9，2026-11-10）
 
-[PR #9](https://github.com/TerrySiu98/terry-toolbox/pull/9)，产品与测试提交 `ebcafe7a3bb36360f3b6d2f1e48700ee4e5cad73`。分支 `codex/bbr-lxc-menu-alignment` 基于 PR #8 发布后的 `main`（`2a80b39`），保留当前发布记录。LXC 的宿主默认算法不必为 BBR；未注册 BBR 时独立双确认后尝试一次 sysctl，明确可能请求宿主加载共享模块，以权限及双回读结果为准。已注册及普通服务器的核验加载流程保留；不安装容器内独立内核、提升能力、重试或卸载共享模块。作用范围注明 Linux 主线 4.15+ 网络命名空间边界。
+[PR #9](https://github.com/TerrySiu98/terry-toolbox/pull/9) 按已审 head `443ac134e78e69815530d2a77a9cf79f82588e05` 合并为 `4aa1369421d7b75e20fe576d7d8dee600cbc1029`，已发布现有 Worker；合并树仅比候选多出 PR #7 的 `AGENTS.md`，运行代码和产物一致。源码分支保留。LXC 宿主默认不必为 BBR；未注册时独立双确认后单次 sysctl 请求，披露可能宿主加载共享模块及失败后仍保留模块，以权限和双回读为准。不直接在容器/未知环境运行 modprobe、提升能力、重试、写持久配置或换内核。Linux 主线 4.15+ 默认按网络命名空间保存，旧内核/共享宿主网络可能影响宿主，厂商内核另验。
 
-所有带框菜单固定右框和双列起点，每页刷新真实 TTY 宽度，长文本完整折行；小于 20 列使用无框单列。完整 12/12 相关检查、单文件 127 个 BBR 模拟场景和 35 组全页菜单/locale/窗口缩放矩阵通过，15 个内嵌模块及四个 Worker 模块逐字节核对。没有真实模块/sysctl 或用户 LXC 验收。候选 SHA-256 `ac70ac697df7543f2935b625a1f0b6f7de4fd524dad9bd03d42f26a2042e7bab`，747887 字节；本次未合并、未部署，线上仍为下方 PR #8。见[补丁记录](docs/bbr-lxc-menu-fix-20261110.md)与[机器可读结果](docs/bbr-lxc-menu-fix-20261110.json)。
+菜单固定右框与双列起点，每页刷新真实 TTY 宽度，长文本完整折行，小于 20 列无框单列。父级冻结 12/12 相关回归、单文件 127 个 BBR 模拟场景和 35 组菜单矩阵通过；独立 changes-only 复核无阻塞，额外 3 项 guarded 控制及父原样复跑通过。15 个内嵌模块、重建产物、四个线上 Worker 模块逐字节一致。公网 14 项和下载 10 项安全 smoke/TLS 通过；完整 settings/annotations、workers.dev、域名/DNS 未变。欢迎页/router 未改，本轮未重复浏览器 UI。GitHub checks/status 为空，不称 CI 通过。
 
-## 当前发布：BBR 管理与当前内核模块检测（PR #8，2026-11-10）
+当前线上 SHA-256 `ac70ac697df7543f2935b625a1f0b6f7de4fd524dad9bd03d42f26a2042e7bab`，747887 字节，北京时间 2026-11-10 05:03 发布。真实模块加载、sysctl 写入及用户 LXC 未验，终端矩阵不是全部模拟器视觉验收。见[发布记录](docs/release-pr9-20261110.md)与[JSON](docs/release-pr9-20261110.json)。[作者补丁记录](docs/bbr-lxc-menu-fix-20261110.md)与[原结果](docs/bbr-lxc-menu-fix-20261110.json)保留为候选阶段历史。
+
+[PR #7](https://github.com/TerrySiu98/terry-toolbox/pull/7) head `5d24440428c5b415aae8a5487ac4e86331fda800` 合并为 `71f7fb40d789a79be40b12b2fa998d7db5d899ad`，仅新增 [AGENTS.md](AGENTS.md) 开发规范；远端内容精确回读，运行脚本未变，无额外部署。开发、隔离测试、真实宿主测试机申请与清理边界按该文件执行。
+
+私有证据/回滚根 `/root/.hermes/state/terry-toolbox-cf/pr9-443ac13-20261110/`；`preflight/` 与 `deployment/` 保存旧 PR #8 完整 multipart/Content-Type、设置、域名/DNS、公网脚本和候选。受限 adapter 只上传一次，禁止盲目重跑、重绑定或自动回滚；无包安装/真实宿主操作，未批删历史 scratch。
+
+## 上一版发布：BBR 管理与当前内核模块检测（PR #8，2026-11-10，历史）
 
 [PR #8](https://github.com/TerrySiu98/terry-toolbox/pull/8) 按精确 head `c3ea14efc3535c7627e78d3e1ebc73ef058bbe17` 合并为 `6d856f47c0774c7abd45ec04e93adf2a7f552360` 并发布现有 Worker，分支 `codex/bbr-module-fix` 保留。主菜单 `2` / `M1` 自动只读显示状态，提供启用及刷新；未注册的普通服务器核对当前内核模块并单独双确认加载，再双确认启用。LXC 缺宿主 BBR 或身份未知时拒绝模块操作，已注册时确认尝试当前网络命名空间切换。仅运行期，不换内核或写持久配置，B16 与 PR #6/#5/#4/#3/#2 保留。
 
