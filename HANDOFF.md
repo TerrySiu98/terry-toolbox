@@ -1,12 +1,16 @@
 # Terry Toolbox — Hermes 后续维护手册
 
-更新日期：2026-11-01。本文件记录 Codex 接续后的当前维护入口；原 Hermes 交接已逐字节保存为 [2026-10-31 历史快照](docs/handoff-hermes-20261031.md)。快照中的 Claude Code 称谓、旧测试限制、失败记录及授权说明只描述当时状态，不代表当前分工或新的操作授权。后续工作以 Terry 的当前指示和本文件的证据边界为准。
+更新日期：2026-11-10。本文件记录 Codex 接续后的当前维护入口；原 Hermes 交接已逐字节保存为 [2026-10-31 历史快照](docs/handoff-hermes-20261031.md)。快照中的 Claude Code 称谓、旧测试限制、失败记录及授权说明只描述当时状态，不代表当前分工或新的操作授权。后续工作以 Terry 的当前指示和本文件的证据边界为准。
 
-## 待发布：BBR 管理与当前内核模块检测（2026-11-10）
+## 当前发布：BBR 管理与当前内核模块检测（PR #8，2026-11-10）
 
-[PR #8](https://github.com/TerrySiu98/terry-toolbox/pull/8)，分支 `codex/bbr-module-fix`。主菜单 `2` / `M1` 进入自动只读状态，提供启用及刷新；普通服务器确认加载当前内核模块，LXC 未获宿主 BBR 时提示宿主处理，已注册时允许确认尝试切换当前网络命名空间。用户已确认报错机器为 LXC，不应在容器内补装内核。最终 12 项相关回归及单文件 93 场景通过、独立复核无阻塞；真实宿主加载和 LXC 切换未验，本轮未合并或上线。见[修复记录](docs/bbr-module-fix-20261110.md)与[机器可读结果](docs/bbr-module-fix-20261110.json)。最终候选 SHA-256 `5a4630c91450d279889ddf83534af6b5cf34b091af13aefbf419655b50bee5cf`，740059 字节；现有 Worker 仍是下方 PR #6。
+[PR #8](https://github.com/TerrySiu98/terry-toolbox/pull/8) 按精确 head `c3ea14efc3535c7627e78d3e1ebc73ef058bbe17` 合并为 `6d856f47c0774c7abd45ec04e93adf2a7f552360` 并发布现有 Worker，分支 `codex/bbr-module-fix` 保留。主菜单 `2` / `M1` 自动只读显示状态，提供启用及刷新；未注册的普通服务器核对当前内核模块并单独双确认加载，再双确认启用。LXC 缺宿主 BBR 或身份未知时拒绝模块操作，已注册时确认尝试当前网络命名空间切换。仅运行期，不换内核或写持久配置，B16 与 PR #6/#5/#4/#3/#2 保留。
 
-## 当前发布：M3 三系统密码或 SSH 密钥（PR #6）
+当前脚本 SHA-256 `5a4630c91450d279889ddf83534af6b5cf34b091af13aefbf419655b50bee5cf`，740059 字节。父级冻结 12/12 相关检查与单文件 93 模拟场景通过；独立复核无阻塞。完整四模块、settings/annotations、workers.dev、域名/DNS、公网 14 项与下载 10 项安全 smoke/TLS 已核对。真实宿主加载与 LXC 切换未验，欢迎页/router 未改，不重复浏览器 UI。见[当前发布记录](docs/release-pr8-20261110.md)与[JSON](docs/release-pr8-20261110.json)。作者[修复候选记录](docs/bbr-module-fix-20261110.md)保留为发布前历史，不代表现在仍未上线。
+
+私有证据与回滚根 `/root/.hermes/state/terry-toolbox-cf/pr8-c3ea14e-20261110/`；`deployment/` 完整旧 multipart/Content-Type 与设置、公网快照，`preflight/` 补 DNS。adapter 只允许一次已冻结候选上传，禁止盲目重跑、重新绑定或自动回滚。原托管/DNS 未改。
+
+## 上一版发布：M3 三系统密码或 SSH 密钥（PR #6，历史）
 
 [PR #6](https://github.com/TerrySiu98/terry-toolbox/pull/6) 按精确 head `34f4bc87ba4d18609c2277873960299bbbb774f6` 合并为 `8e73adbfa8012539018e0e8c0a18dce42d7a5c9c` 并发布现有 Worker。当前脚本 SHA-256 `114640dc498b6861d6679ad89b5a8ca7edd4eff941ebec541197c23f25ac6abf`，728768 字节；源码分支保留，原域名/DNS 不动。见[当前发布记录](docs/release-m3-auth-20261101.md)及[机器可读记录](docs/release-m3-auth-20261101.json)。
 
@@ -49,7 +53,7 @@ git log -3 --oneline
 sha256sum docs/index.html
 ```
 
-脚本哈希应与本文顶部 PR #6 当前发布版本一致。PR 合并与 Worker 发布各自独立，本次二者均已完成；后续文档提交不改变已验脚本字节。后续更新先看回归及当前发布记录，再按下方 Workers 流程备份、发布和回读。
+脚本哈希应与本文顶部 PR #8 当前发布版本一致。PR 合并与 Worker 发布各自独立，本次二者均已完成；后续文档提交不改变已验脚本字节。后续更新先看回归及当前发布记录，再按下方 Workers 流程备份、发布和回读。
 
 ## 首次交付与上一版生产记录
 

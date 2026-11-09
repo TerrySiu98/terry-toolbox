@@ -1,0 +1,322 @@
+{
+  "date": "2026-11-10",
+  "status": "merged_and_deployed",
+  "repository": "TerrySiu98/terry-toolbox",
+  "pr": 8,
+  "merge": {
+    "pr_url": "https://github.com/TerrySiu98/terry-toolbox/pull/8",
+    "merged": true,
+    "reviewed_head": "c3ea14efc3535c7627e78d3e1ebc73ef058bbe17",
+    "merge_commit": "6d856f47c0774c7abd45ec04e93adf2a7f552360",
+    "merged_at": "2026-11-09T20:09:46Z",
+    "tree_exact": true,
+    "branch_preserved": true
+  },
+  "artifact": {
+    "sha256": "5a4630c91450d279889ddf83534af6b5cf34b091af13aefbf419655b50bee5cf",
+    "bytes": 740059,
+    "embedded_modules": 15
+  },
+  "deployed_at_utc": "2026-11-09T20:10:16.993001+00:00",
+  "hosting": {
+    "worker": "terry-toolbox",
+    "hostname": "sh.uw.cx",
+    "dns_changed": false,
+    "binding_changed": false,
+    "upload_count": 1,
+    "preservation": {
+      "settings_exact": true,
+      "subdomain_exact": true,
+      "domains_exact": true,
+      "dns_exact": true,
+      "upload_count": 1,
+      "sha256": "5a4630c91450d279889ddf83534af6b5cf34b091af13aefbf419655b50bee5cf"
+    }
+  },
+  "parent_regression": {
+    "scope": "focused_not_full_repository",
+    "planned_tests": 12,
+    "passed": 12,
+    "skipped": 0,
+    "timeouts": 0,
+    "changed_sources": [],
+    "cleanup_complete": true,
+    "results": [
+      {
+        "test": "syntax",
+        "exit_code": 0,
+        "elapsed_seconds": 0.39,
+        "status": "passed"
+      },
+      {
+        "test": "bbr-test.sh",
+        "exit_code": 0,
+        "elapsed_seconds": 4.39,
+        "status": "passed"
+      },
+      {
+        "test": "build-test.sh",
+        "exit_code": 0,
+        "elapsed_seconds": 4.13,
+        "status": "passed"
+      },
+      {
+        "test": "dependencies-test.sh",
+        "exit_code": 0,
+        "elapsed_seconds": 2.27,
+        "status": "passed"
+      },
+      {
+        "test": "dependency-entrypoints-test.sh",
+        "exit_code": 0,
+        "elapsed_seconds": 8.37,
+        "status": "passed"
+      },
+      {
+        "test": "entry-test.sh",
+        "exit_code": 0,
+        "elapsed_seconds": 0.65,
+        "status": "passed"
+      },
+      {
+        "test": "system-review-test.sh",
+        "exit_code": 0,
+        "elapsed_seconds": 1.49,
+        "status": "passed"
+      },
+      {
+        "test": "system-test.sh",
+        "exit_code": 0,
+        "elapsed_seconds": 15.09,
+        "status": "passed"
+      },
+      {
+        "test": "menu-test.py",
+        "exit_code": 0,
+        "elapsed_seconds": 5.67,
+        "status": "passed"
+      },
+      {
+        "test": "entry-feedback-test.py",
+        "exit_code": 0,
+        "elapsed_seconds": 0.26,
+        "status": "passed"
+      },
+      {
+        "test": "deploy-cloudflare-test.py",
+        "exit_code": 0,
+        "elapsed_seconds": 5.46,
+        "status": "passed"
+      },
+      {
+        "test": "worker-test.mjs",
+        "exit_code": 0,
+        "elapsed_seconds": 0.74,
+        "status": "passed"
+      }
+    ]
+  },
+  "bundled_bbr": {
+    "cases": 93,
+    "passed": 93,
+    "real_privileged_operations": false
+  },
+  "independent_review": {
+    "head": "c3ea14efc3535c7627e78d3e1ebc73ef058bbe17",
+    "verdict": "no_blocking_issue_found_in_changed_surface",
+    "blocking_findings": [],
+    "bbr_cases": 93,
+    "supplemental_module_controls": 11,
+    "supplemental_menu_controls": 4,
+    "not_native_acceptance": true
+  },
+  "public": {
+    "sha256": "5a4630c91450d279889ddf83534af6b5cf34b091af13aefbf419655b50bee5cf",
+    "bytes": 740059,
+    "public_checks": [
+      {
+        "name": "cli",
+        "status": 200,
+        "sha256": "5a4630c91450d279889ddf83534af6b5cf34b091af13aefbf419655b50bee5cf",
+        "exact": true
+      },
+      {
+        "name": "wget",
+        "status": 200,
+        "sha256": "5a4630c91450d279889ddf83534af6b5cf34b091af13aefbf419655b50bee5cf",
+        "exact": true
+      },
+      {
+        "name": "browser",
+        "status": 200,
+        "sha256": "b48dadad5a1fbac8d007efeaf615a3a08468a3b0b47383a898a8c1c99b93b8f4",
+        "exact": true
+      },
+      {
+        "name": "download",
+        "status": 200,
+        "sha256": "5a4630c91450d279889ddf83534af6b5cf34b091af13aefbf419655b50bee5cf",
+        "exact": true
+      },
+      {
+        "name": "hash",
+        "status": 200,
+        "sha256": "f19ba11531255ddf8075ca09b91319ce0fe848ceefcbe9e0c622c73e1a3cef68",
+        "exact": true
+      },
+      {
+        "name": "cli-fresh",
+        "status": 200,
+        "sha256": "5a4630c91450d279889ddf83534af6b5cf34b091af13aefbf419655b50bee5cf",
+        "exact": true
+      },
+      {
+        "name": "wget-fresh",
+        "status": 200,
+        "sha256": "5a4630c91450d279889ddf83534af6b5cf34b091af13aefbf419655b50bee5cf",
+        "exact": true
+      },
+      {
+        "name": "browser-fresh",
+        "status": 200,
+        "sha256": "b48dadad5a1fbac8d007efeaf615a3a08468a3b0b47383a898a8c1c99b93b8f4",
+        "exact": true
+      },
+      {
+        "name": "download-fresh",
+        "status": 200,
+        "sha256": "5a4630c91450d279889ddf83534af6b5cf34b091af13aefbf419655b50bee5cf",
+        "exact": true
+      },
+      {
+        "name": "hash-fresh",
+        "status": 200,
+        "sha256": "f19ba11531255ddf8075ca09b91319ce0fe848ceefcbe9e0c622c73e1a3cef68",
+        "exact": true
+      },
+      {
+        "name": "head",
+        "status": 200,
+        "exact": true
+      },
+      {
+        "name": "not-found",
+        "status": 404,
+        "exact": true
+      },
+      {
+        "name": "method",
+        "status": 405,
+        "exact": true
+      },
+      {
+        "name": "http-redirect",
+        "status": 301,
+        "exact": true
+      }
+    ],
+    "public_check_count": 14,
+    "smoke": [
+      {
+        "name": "syntax",
+        "exit_code": 0,
+        "stderr_empty": true,
+        "elapsed_seconds": 0.1
+      },
+      {
+        "name": "help",
+        "exit_code": 0,
+        "stderr_empty": true,
+        "elapsed_seconds": 0.12
+      },
+      {
+        "name": "list",
+        "exit_code": 0,
+        "stderr_empty": true,
+        "elapsed_seconds": 0.11
+      },
+      {
+        "name": "exit",
+        "exit_code": 0,
+        "stderr_empty": true,
+        "elapsed_seconds": 0.17
+      },
+      {
+        "name": "bbr-navigation",
+        "exit_code": 0,
+        "stderr_empty": true,
+        "elapsed_seconds": 0.22
+      },
+      {
+        "name": "m3-navigation",
+        "exit_code": 0,
+        "stderr_empty": true,
+        "elapsed_seconds": 0.19
+      },
+      {
+        "name": "reserved",
+        "exit_code": 0,
+        "stderr_empty": true,
+        "elapsed_seconds": 0.25
+      },
+      {
+        "name": "relay-menu",
+        "exit_code": 0,
+        "stderr_empty": true,
+        "elapsed_seconds": 0.25
+      },
+      {
+        "name": "diag",
+        "exit_code": 0,
+        "stderr_empty": true,
+        "elapsed_seconds": 0.33
+      },
+      {
+        "name": "stdin-exit",
+        "exit_code": 0,
+        "stderr_empty": true,
+        "elapsed_seconds": 1.78
+      }
+    ],
+    "smoke_count": 10,
+    "tls": {
+      "system_trust": true,
+      "version": "TLSv1.3",
+      "san": [
+        [
+          "DNS",
+          "uw.cx"
+        ],
+        [
+          "DNS",
+          "sh.uw.cx"
+        ],
+        [
+          "DNS",
+          "*.sh.uw.cx"
+        ]
+      ],
+      "notAfter": "Jan 28 05:00:51 2027 GMT"
+    }
+  },
+  "github_ci": {
+    "required_gates": false,
+    "check_runs": 0,
+    "statuses": 0,
+    "claimed_ci_pass": false
+  },
+  "previous_artifact_sha256": "114640dc498b6861d6679ad89b5a8ca7edd4eff941ebec541197c23f25ac6abf",
+  "private_evidence_root": "/root/.hermes/state/terry-toolbox-cf/pr8-c3ea14e-20261110",
+  "boundaries": [
+    "Development preview, not stable release",
+    "No exact-candidate real modprobe load or sysctl write",
+    "No native Debian/kmod, Alpine/BusyBox or LXC switch acceptance",
+    "Welcome page/router unchanged; no repeated browser UI/clipboard/mobile acceptance",
+    "No user or business-machine changes, real service install, kernel replacement or reboot",
+    "Preserved historical candidate evidence; no bulk scratch deletion"
+  ],
+  "validation_harness_corrections": [
+    "Parent module regex initially excluded digit in hy2; fixed regex only",
+    "Parent bundled fixture initially omitted --help; physical uname guard rejected menu; corrected invocation only"
+  ]
+}
