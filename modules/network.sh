@@ -2377,6 +2377,70 @@ net_a5_unit()   { printf '%s/%s\n' "${TOOLBOX_NET_UNIT_DIR:-/etc/systemd/system}
 net_a5_client() { printf '%s/terry-toolbox-xray-verify\n' "$(net_rundir)"; }
 net_a5_cfg()    { printf '%s/config.json\n' "$(net_a5_etc)"; }
 net_a5_meta()   { printf '%s/meta\n' "$(net_a5_etc)"; }
+net_a5_link_file() { printf '%s/vless.txt\n' "$(net_a5_etc)"; }
+
+# 客户端地址由用户提供，不从回落目标/SNI 推断，也不请求公网 IP 查询服务。
+net_a5_valid_ipv4() {
+    local octet rest=$1
+    [[ $rest =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || return 1
+    while :; do
+        octet=${rest%%.*}
+        [[ $octet == 0 || $octet != 0* ]] || return 1
+        (( 10#$octet <= 255 )) || return 1
+        [[ $rest == *.* ]] || break
+        rest=${rest#*.}
+    done
+}
+
+# 返回可放在 URI 中的主机部分：IPv6 恰好一对方括号，其余原样小写。
+# IPv6 支持压缩、完整八组及 IPv4 尾部；不接受 zone ID 或混入端口/URL。
+net_a5_endpoint() {
+    local host=${1,,} ipv6 left right rest segment tail groups=0 compressed=0
+    [[ -n $host && ${#host} -le 253 ]] || return 1
+    if [[ $host == \[*\] ]]; then
+        host=${host:1:${#host}-2}
+        [[ $host == *:* ]] || return 1
+    fi
+    if [[ $host == *:* ]]; then
+        ipv6=$host
+        if [[ $ipv6 == *.* ]]; then
+            tail=${ipv6##*:}
+            net_a5_valid_ipv4 "$tail" || return 1
+            ipv6=${ipv6%:*}:0:0
+        fi
+        [[ $ipv6 =~ ^[0-9a-f:]+$ ]] || return 1
+        if [[ $ipv6 == *::* ]]; then
+            compressed=1
+            left=${ipv6%%::*}; right=${ipv6#*::}
+            [[ $right != *::* && $left != *: && $right != :* ]] || return 1
+            rest=$left
+            [[ -z $right ]] || rest=${rest:+$rest:}$right
+        else
+            [[ $ipv6 != :* && $ipv6 != *: ]] || return 1
+            rest=$ipv6
+        fi
+        while [[ -n $rest ]]; do
+            segment=${rest%%:*}
+            [[ $segment =~ ^[0-9a-f]{1,4}$ ]] || return 1
+            groups=$(( groups + 1 ))
+            [[ $rest == *:* ]] || break
+            rest=${rest#*:}
+            [[ -n $rest ]] || return 1
+        done
+        if (( compressed )); then (( groups < 8 )) || return 1
+        else (( groups == 8 )) || return 1; fi
+        printf '[%s]\n' "$host"
+    else
+        net_a5_valid_ipv4 "$host" || net_valid_hostname "$host" || return 1
+        printf '%s\n' "$host"
+    fi
+}
+
+net_a5_link() { # URI host (empty for legacy CLI template), port, sni, uuid, public key, short ID
+    local endpoint=${1:-SERVER_ADDRESS}
+    printf 'vless://%s@%s:%s?type=tcp&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&flow=xtls-rprx-vision#terry\n' \
+        "$4" "$endpoint" "$2" "$3" "$5" "$6"
+}
 
 # 校验值只维护一份（A2/A5 同一版本同一产物），测试可用 A5 专用变量覆盖。
 net_a5_sha256() {
@@ -2407,10 +2471,10 @@ net_a5_check_target() { # host port sni
     : > "$cert"; : > "$chain"
 
     timeout 20 openssl s_client -connect "$host:$port" -servername "$sni" \
-        -tls1_3 -alpn h2 -showcerts </dev/null >"$raw" 2>&1 || rc=1
+        -tls1_3 -alpn h2 -showcerts </dev/null >"$raw" 2>&1 || rc=$?
 
-    if (( rc != 0 )) && ! grep -q 'BEGIN CERTIFICATE' "$raw"; then
-        net_err "回落目标 $host:$port 握手失败（DNS 解析、网络或端口不通）。"
+    if (( rc != 0 )); then
+        net_err "回落目标 $host:$port 握手未正常完成（退出码 $rc；可能超时、连接或 TLS 错误）；未通过检查。"
         sed -n '1,6p' "$raw" >&2
         rm -f -- "$raw" "$cert" "$chain"
         return 1
@@ -2435,8 +2499,12 @@ net_a5_check_target() { # host port sni
         return 1
     fi
 
-    if ! grep -qE '^[[:space:]]*(New, )?Protocol[[:space:]]*:[[:space:]]*TLSv1\.3' "$raw"; then
-        net_err "回落目标 $host:$port 不支持 TLS 1.3（REALITY 必需；中间盒降级也会落到这里）。"
+    # OpenSSL 1.1.1/3.0 may only print the New/Reused summary for TLS 1.3;
+    # the indented session Protocol line depends on receiving a session ticket.
+    # OpenSSL 3.5 also prints a standalone Protocol: line. Match complete
+    # negotiated-version records, never arbitrary occurrences of TLSv1.3.
+    if ! grep -qE '^[[:space:]]*((New|Reused), TLSv1\.3, Cipher is TLS_[A-Z0-9_]+|Protocol[[:space:]]*:[[:space:]]*TLSv1\.3)[[:space:]]*$' "$raw"; then
+        net_err "回落目标 $host:$port 未能确认协商到 TLS 1.3（可能是握手结果或 OpenSSL 输出格式问题）；未通过检查。"
         rm -f -- "$raw" "$cert" "$chain"
         return 1
     fi
@@ -2635,7 +2703,7 @@ net_a5_wait_listen() { # logfile
 # ---------------------------------------------------------------- 安装
 
 _net_a5_install() {
-    local target=${1:-} sni=${2:-} port=${3:-} answer
+    local target=${1:-} sni=${2:-} port=${3:-} endpoint=${4:-} answer
     local thost='' tport='' arch tmp etc bin unit uuid priv pub shortid
     local cfg log smcfg accepted rejected after_accepted after_rejected
     local A5_AFTER='' A5_DOWN_BPS='' A5_DOWN_BURST='' A5_UP_BPS='' A5_UP_BURST=''
@@ -2650,9 +2718,9 @@ _net_a5_install() {
     arch=$(net_alpine_arch) || return 1
 
     # 菜单只传动作：缺的项逐一问；EOF 在写盘前就退出。
-    [[ -n $target ]] || net_prompt '回落目标（主机名[:端口]，默认 443）：' target \
+    [[ -n $target ]] || net_prompt '回落目标网站（主机名[:端口]，默认 443；例如 www.cloudflare.com:443）：' target \
         || { net_die '缺少回落目标（显式给出 主机名[:端口]，默认端口 443）。'; return 1; }
-    [[ -n $sni ]] || net_prompt 'SNI 主机名（须被回落目标证书覆盖）：' sni \
+    [[ -n $sni ]] || net_prompt 'SNI（回落网站证书中的域名，通常与上面主机名相同；请填写）：' sni \
         || { net_die '缺少 SNI 主机名（必须是回落目标证书覆盖的名字，需显式给出）。'; return 1; }
     sni=${sni,,}
 
@@ -2670,6 +2738,14 @@ _net_a5_install() {
         fi
         port=${port:-$NET_A5_DEFAULT_PORT}
         net_valid_port "$port" || { net_die "监听端口不正确：$port（1-65535，无前导零）"; return 1; }
+    fi
+    if (( interactive )) && [[ -z $endpoint ]]; then
+        net_prompt '本服务器公网 IP 或域名（客户端连接用；只填地址，不带端口或 https://）：' endpoint || return 1
+        [[ -n $endpoint ]] || { net_die '缺少本服务器公网 IP 或域名。'; return 1; }
+    fi
+    if [[ -n $endpoint ]]; then
+        endpoint=$(net_a5_endpoint "$endpoint") \
+            || { net_die '服务器地址格式不正确：请填 IPv4、IPv6 或域名；不要附带端口、URL、空格或 IPv6 区域标识。'; return 1; }
     fi
 
     etc=$(net_a5_etc); bin=$(net_a5_bin); unit=$(net_a5_unit)
@@ -2695,6 +2771,11 @@ _net_a5_install() {
     printf '即将安装 Xray 服务端（VLESS + TCP + REALITY，systemd）：\n'
     printf '  版本    : v%s（官方发布，安装前校验 SHA-256）\n' "$NET_A5_VERSION"
     printf '  监听    : :%s/tcp（所有地址，IPv4+IPv6）\n' "$port"
+    if [[ -n $endpoint ]]; then
+        printf '  客户端  : %s:%s（你提供的服务器地址）\n' "$endpoint" "$port"
+    else
+        printf '  客户端  : 未提供服务器地址，将生成含 SERVER_ADDRESS 的链接模板\n'
+    fi
     printf '  回落    : %s:%s（已验 TLS 1.3 / h2 / 证书覆盖 %s）\n' "$thost" "$tport" "$sni"
     printf '  回退限速: 未认证流量 %s MiB 后限 %s KiB/s（下行）/ %s KiB/s（上行），认证连接不限\n' \
         "$(( A5_AFTER / 1048576 ))" "$(( A5_DOWN_BPS / 1024 ))" "$(( A5_UP_BPS / 1024 ))"
@@ -2893,17 +2974,25 @@ EOF
     printf '%s|%s|%s|%s|%s|%s|%s|%s\n' "$thost" "$tport" "$sni" "$port" "$uuid" "$pub" \
         "$shortid" "$NET_A5_VERSION" > "$tmp/meta" || { rm -rf -- "$tmp"; net_a5_rollback; net_die 'meta 写入失败'; return 1; }
     net_a5_place 0600 "$tmp/meta" "$(net_a5_meta)" || { rm -rf -- "$tmp"; net_a5_rollback; return 1; }
+    net_a5_link "$endpoint" "$port" "$sni" "$uuid" "$pub" "$shortid" > "$tmp/vless.txt" \
+        || { rm -rf -- "$tmp"; net_a5_rollback; net_die '客户端链接写入失败'; return 1; }
+    net_a5_place 0600 "$tmp/vless.txt" "$(net_a5_link_file)" || { rm -rf -- "$tmp"; net_a5_rollback; return 1; }
     rm -rf -- "$tmp"
-    net_a5_report "$thost" "$tport" "$sni" "$port" "$uuid" "$pub" "$shortid" \
-        "$A5_AFTER" "$A5_DOWN_BPS" "$A5_UP_BPS"
+    net_a5_report "$thost" "$tport" "$sni" "$port" "$endpoint" "$A5_AFTER" "$A5_DOWN_BPS" "$A5_UP_BPS"
 }
 
 net_a5_report() {
-    local thost=$1 tport=$2 sni=$3 port=$4 uuid=$5 pub=$6 sid=$7 after=$8 dbps=$9 ubps=${10}
+    local thost=$1 tport=$2 sni=$3 port=$4 endpoint=$5 after=$6 dbps=$7 ubps=$8
     printf '\n安装完成，服务 %s 已设为开机自启。\n' "$NET_A5_UNIT_NAME"
-    printf '客户端连接信息（只显示这一次，也写入 %s）：\n' "$(net_a5_meta)"
-    printf '  vless://%s@%s:%s?type=tcp&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&flow=xtls-rprx-vision#terry\n' \
-        "$uuid" "$sni" "$port" "$sni" "$pub" "$sid"
+    if [[ -n $endpoint ]]; then
+        printf '客户端导入链接（已保存到 %s，权限 0600）：\n' "$(net_a5_link_file)"
+    else
+        printf '客户端链接模板（已保存到 %s，权限 0600）：\n' "$(net_a5_link_file)"
+        printf '导入前请将 SERVER_ADDRESS 替换成本服务器公网 IP 或域名；IPv6 地址需用 [方括号] 包住。\n'
+    fi
+    if ! cat -- "$(net_a5_link_file)"; then
+        printf '服务已安装并启动，仅客户端链接显示失败；可从 %s 读取。\n' "$(net_a5_link_file)" >&2
+    fi
     printf '\n验证情况：\n'
     printf '  [已验证] 回落目标 %s:%s 支持 TLS 1.3、ALPN h2，证书覆盖 %s\n' "$thost" "$tport" "$sni"
     printf '  [已验证] 单元 active、TCP %s 由 %s 监听\n' "$port" "$NET_A5_BIN_NAME"
@@ -2911,9 +3000,11 @@ net_a5_report() {
     printf '  [已限制] 未认证回退流量：%s MiB 后限 %s KiB/s 下行、%s KiB/s 上行\n' \
         "$(( after / 1048576 ))" "$(( dbps / 1024 ))" "$(( ubps / 1024 ))"
     printf '\n仍需人工处理：\n'
+    printf '  - 使用客户端检查服务器地址与公网连接；上面的认证探测在本机完成\n'
     printf '  - 防火墙/安全组放行 TCP %s（本模块不改防火墙）\n' "$port"
     printf '  - 目标证书更新无需改动；目标站点关停/换证书后需重装换目标\n'
     printf '  - 卸载：A5 → 2\n'
+    return 0
 }
 
 # ---------------------------------------------------------------- 卸载与状态
@@ -3362,7 +3453,7 @@ toolbox_network() {
         printf '     toolbox_network A1  [install <证书> <私钥> <主机名> [端口] | uninstall | status]\n' >&2
         printf '     toolbox_network A2  [install [端口] [回落目标] | uninstall | status]\n' >&2
         printf '     toolbox_network A3  [install|uninstall|status] [证书] [私钥] [主机名] [端口]\n' >&2
-        printf '     toolbox_network A5  [install <回落目标> <SNI主机名> [端口] | uninstall | status]\n' >&2
+        printf '     toolbox_network A5  [install <回落目标> <SNI主机名> [端口] [服务器公网IP或域名] | uninstall | status]\n' >&2
         printf '     toolbox_network A5  [install-ws <证书> <私钥> <主机名> [端口] [WS路径] | uninstall-ws | status-ws]\n' >&2
         printf '     toolbox_network B12 [install|uninstall|status]\n' >&2
         printf '     toolbox_network B23 [install <DNS...> | restore | status]\n' >&2
@@ -3436,7 +3527,7 @@ toolbox_network() {
                 install-ws|uninstall-ws|status-ws|enable-boot-ws|disable-boot-ws|boot-status-ws|update-cert-ws)
                     declare -F toolbox_vmess >/dev/null || { net_die 'VMess 模块未加载；未修改系统。'; return 1; }
                     toolbox_vmess "${action%-ws}" "$@" ;;
-                *) net_die '用法: toolbox_network A5 [install <回落目标> <SNI主机名> [端口] | uninstall | status | install-ws <证书> <私钥> <主机名> [端口] [WS路径] | uninstall-ws | status-ws]' ;;
+                *) net_die '用法: toolbox_network A5 [install <回落目标> <SNI主机名> [端口] [服务器公网IP或域名] | uninstall | status | install-ws <证书> <私钥> <主机名> [端口] [WS路径] | uninstall-ws | status-ws]' ;;
             esac
             return $?
             ;;
