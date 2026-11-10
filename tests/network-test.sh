@@ -101,6 +101,8 @@ for choice in A1 A2; do
 done
 # B23：安装前置不满足时必须 fail-closed，且不改任何文件。
 (
+    # 此场景验证 resolver 能力；UID 只在夹具里模拟，不要求测试进程为 root。
+    export TOOLBOX_NET_UID=0
     command() {
         if [[ ${1:-} == -v && ${2:-} == resolvectl ]]; then return 1; fi
         builtin command "$@"
@@ -314,6 +316,8 @@ done
 
 # ================================================================ 打桩环境
 # 真实命令在子 shell 里覆盖为「只记录 + 改状态文件」的函数，绝不碰本机。
+# 默认通过产品 UID 门禁；非 root 拒绝场景仍逐次显式覆盖为 1000。
+export TOOLBOX_NET_UID=0
 unset TOOLBOX_NET_BRUTAL_URL TOOLBOX_NET_BRUTAL_SHA256 TOOLBOX_NET_TUIC_URL
 unset TOOLBOX_NET_TUIC_SHA256 TOOLBOX_NET_TUIC_SHA256_ARM64 TOOLBOX_NET_UUID
 
@@ -953,6 +957,43 @@ net_a5_probe() { # bin port uuid pub shortid sni label
 
 inst_a5() { printf 'YES\nXRAY\n' | toolbox_network A5 install "$@"; }
 
+# ---------- 客户端地址：独立于回落目标/SNI，IPv6 只加一对方括号 ----------
+while IFS='|' read -r endpoint expected; do
+    actual=$(net_a5_endpoint "$endpoint") || fail "A5 误拒客户端地址：$endpoint"
+    [[ $actual == "$expected" ]] || fail "A5 客户端地址格式不对：$endpoint -> $actual"
+done <<'ENDPOINTS'
+203.0.113.9|203.0.113.9
+0.0.0.0|0.0.0.0
+255.255.255.255|255.255.255.255
+Server.Example.Test|server.example.test
+2001:DB8::1|[2001:db8::1]
+[2001:db8::1]|[2001:db8::1]
+2001:db8:0:1:2:3:4:5|[2001:db8:0:1:2:3:4:5]
+2001:db8:0:1:2:3:4::|[2001:db8:0:1:2:3:4::]
+::1|[::1]
+::|[::]
+::ffff:192.0.2.1|[::ffff:192.0.2.1]
+[::ffff:192.0.2.1]|[::ffff:192.0.2.1]
+1:2:3:4:5:6:192.0.2.1|[1:2:3:4:5:6:192.0.2.1]
+ENDPOINTS
+for endpoint in '' 'bad host' 'server.example.test:443' 'https://server.example.test' \
+    'server.example.test/path' 'user@server.example.test' 'server.example.test?x=y' \
+    'server.example.test#name' 'server.example.test|x' $'server.example.test\nother.test' \
+    '256.1.2.3' '1.2.3' '01.2.3.4' '1.08.3.4' '[203.0.113.9]' \
+    'bad_host.test' '-bad.example.test' 'server..test' 'server.example.test.' 'localhost' \
+    '[2001:db8::1]:443' '[2001:db8::1' '2001:db8::1]' '[[2001:db8::1]]' \
+    '1::2::3' ':::' '1:2:3' '1:2:3:4:5:6:7:8:9' '1:2:3:4:5:6:7::8' \
+    ':1:2:3:4:5:6:7' '1:2:3:4:5:6:7:' '2001:db8::12345' 'fe80::1%eth0' \
+    '::ffff:256.1.2.3' '::ffff:192.00.2.1' '1:2:3:4:5:6:7:192.0.2.1'; do
+    net_a5_endpoint "$endpoint" >"$work/endpoint.out" 2>&1 && fail "A5 接受非法客户端地址：$endpoint"
+done
+expected='vless://test-uuid@[2001:db8::1]:18443?type=tcp&security=reality&sni=dest.example.test&fp=chrome&pbk=test-public-key&sid=0123456789abcdef&flow=xtls-rprx-vision#terry'
+[[ $(net_a5_link '[2001:db8::1]' 18443 dest.example.test test-uuid test-public-key 0123456789abcdef) == "$expected" ]] \
+    || fail 'A5 IPv6 导入链接错用了 SNI、端口或双重方括号'
+expected='vless://test-uuid@SERVER_ADDRESS:18443?type=tcp&security=reality&sni=dest.example.test&fp=chrome&pbk=test-public-key&sid=0123456789abcdef&flow=xtls-rprx-vision#terry'
+[[ $(net_a5_link '' 18443 dest.example.test test-uuid test-public-key 0123456789abcdef) == "$expected" ]] \
+    || fail 'A5 旧 CLI 缺地址时没有生成明确模板'
+
 # ---------- 目标能力：TLS 1.3 / h2 / 证书覆盖，缺一即拒 ----------
 openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 30 \
     -keyout "$work/a5t.key" -out "$work/a5t.crt" -subj '/CN=dest.example.test' \
@@ -1016,6 +1057,8 @@ inst_a5 'dest.example.test:0' dest.example.test >"$work/o" 2>&1 && fail 'A5 目�
 inst_a5 'bad host' dest.example.test >"$work/o" 2>&1 && fail 'A5 目标主机非法被接受'
 inst_a5 dest.example.test 'Bad_SNI' >"$work/o" 2>&1 && fail 'A5 SNI 非法被接受'
 inst_a5 dest.example.test dest.example.test 0080 >"$work/o" 2>&1 && fail 'A5 监听端口非法被接受'
+inst_a5 dest.example.test dest.example.test 8443 'server.example.test:443' >"$work/o" 2>&1 && fail 'A5 服务器地址夹带端口仍安装'
+grep -q '服务器地址格式不正确' "$work/o" || fail 'A5 非法服务器地址未说明'
 TOOLBOX_A5_LIMITS=1:2:3 inst_a5 dest.example.test dest.example.test >"$work/o" 2>&1 && { cat "$work/o" >&2; fail 'A5 限速参数残缺被接受'; }
 grep -q 'TOOLBOX_A5_LIMITS' "$work/o" || { cat "$work/o" >&2; fail 'A5 限速参数残缺未说明'; }
 assert_clean 'A5 参数'
@@ -1116,19 +1159,45 @@ assert_clean 'A5 端口不归属'
 reset
 printf '4242\n' > "$SD/mainpid"
 
+# ---------- 客户端链接落盘失败：不能留下启用的半套安装 ----------
+(
+    net_a5_link() { printf 'partial-link\n'; return 73; }
+    inst_a5 dest.example.test dest.example.test 18445 203.0.113.9 >"$work/o" 2>&1 \
+        && fail 'A5 客户端链接写入非空后报错仍报告成功'
+    grep -q '客户端链接写入失败' "$work/o" || fail 'A5 客户端链接写入失败未说明'
+)
+assert_clean 'A5 客户端链接写入失败'
+reset
+(
+    install() {
+        local argument
+        for argument in "$@"; do
+            [[ $argument != "$A5_ETC/vless.txt.a5tmp" ]] || return 73
+        done
+        command install "$@"
+    }
+    inst_a5 dest.example.test dest.example.test 18445 203.0.113.9 >"$work/o" 2>&1 \
+        && fail 'A5 客户端链接保存失败仍报告成功'
+    grep -q 'vless.txt' "$work/o" || fail 'A5 客户端链接保存失败未说明'
+)
+assert_clean 'A5 客户端链接保存失败'
+reset
+
 # ---------- 清单回滚：只删登记过且未改动的路径，外来单元不动 ----------
 mkdir -p "$A5_ETC"
 printf 'keep-original\n' > "$A5_ETC/config.json"
 printf 'bin\n' > "$A5_BIN"
+printf 'test-link\n' > "$A5_ETC/vless.txt"
 printf '[Service]\nExecStart=/usr/bin/other\n' > "$A5_UNIT"
 # 这两个全局量由模块的 net_a5_rollback 读取，测试里只需预设。
 # shellcheck disable=SC2034
 net_a5_manifest=(); net_a5_etc_created=0
-net_a5_record "$A5_ETC/config.json"; net_a5_record "$A5_BIN"
+net_a5_record "$A5_ETC/config.json"; net_a5_record "$A5_BIN"; net_a5_record "$A5_ETC/vless.txt"
 printf 'touched\n' >> "$A5_ETC/config.json"
 net_a5_rollback >/dev/null 2>&1
 [[ -e $A5_ETC/config.json ]] || fail 'A5 回滚删了被改动的文件'
 [[ ! -e $A5_BIN ]] || fail 'A5 回滚没删登记过的文件'
+[[ ! -e $A5_ETC/vless.txt ]] || fail 'A5 回滚遗留登记过的客户端链接'
 [[ -e $A5_UNIT ]] || fail 'A5 回滚删了外来单元'
 rm -rf "$A5_ETC" "$A5_BIN" "$A5_UNIT"
 # shellcheck disable=SC2034
@@ -1146,8 +1215,8 @@ kill "$lockpid" 2>/dev/null || true
 wait "$lockpid" 2>/dev/null || true
 reset
 
-# ---------- 成功路径 ----------
-inst_a5 dest.example.test dest.example.test 18445 >"$work/o" 2>&1 || { cat "$work/o" >&2; fail 'A5 正常安装失败'; }
+# ---------- 成功路径：CLI 可选地址与 SNI 分开，落盘链接和输出一致 ----------
+inst_a5 dest.example.test dest.example.test 18445 203.0.113.9 >"$work/o" 2>&1 || { cat "$work/o" >&2; fail 'A5 正常安装失败'; }
 conf=$A5_ETC/config.json
 [[ -x $A5_BIN && -s $conf && -e $A5_UNIT ]] || fail 'A5 产物不全'
 [[ $(stat -c %a "$conf") == 600 ]] || fail 'A5 配置权限不是 600'
@@ -1180,7 +1249,17 @@ done
 grep -q 'WantedBy=multi-user.target' "$A5_UNIT" || fail 'A5 未设开机自启'
 called 'enable --now terry-toolbox-xray.service' systemctl.log
 [[ $(stat -c %a "$A5_ETC/meta") == 600 ]] || fail 'A5 meta 权限不对'
-grep -q 'vless://3f2a0f2e-1111-4222-8333-444455556666' <<< "$(<"$work/o")" || fail 'A5 未输出客户端链接'
+meta_separators=$(<"$A5_ETC/meta"); meta_separators=${meta_separators//[^|]/}
+[[ ${#meta_separators} == 7 ]] || fail 'A5 meta 不再是八字段'
+IFS='|' read -r meta_thost meta_tport meta_sni meta_port meta_uuid meta_pub meta_sid meta_version meta_extra < "$A5_ETC/meta"
+[[ $meta_thost == dest.example.test && $meta_tport == 443 && $meta_sni == dest.example.test \
+    && $meta_port == 18445 && $meta_version == "$NET_A5_VERSION" && -z $meta_extra ]] || fail 'A5 改变了旧 meta 八字段格式'
+expected=$(net_a5_link 203.0.113.9 "$meta_port" "$meta_sni" "$meta_uuid" "$meta_pub" "$meta_sid")
+[[ $(stat -c %a "$A5_ETC/vless.txt") == 600 ]] || fail 'A5 客户端链接权限不是 600'
+[[ $(<"$A5_ETC/vless.txt") == "$expected" ]] || fail 'A5 未保存正确服务器地址的完整链接'
+grep -qxF "$expected" "$work/o" || fail 'A5 输出链接与保存文件不一致'
+[[ $expected == 'vless://3f2a0f2e-1111-4222-8333-444455556666@203.0.113.9:18445?'* \
+    && $expected == *'&sni=dest.example.test&'* ]] || fail 'A5 导入链接错用了 SNI 作为服务器地址'
 grep -q '\[已验证\] 正确 UUID' <<< "$(<"$work/o")" || fail 'A5 未标注认证已验证'
 grep -q '\[已限制\]' <<< "$(<"$work/o")" || fail 'A5 未报告回退限速'
 ! grep -q '\[未验证\]' <<< "$(<"$work/o")" || fail 'A5 仍留未验证项'
@@ -1197,17 +1276,62 @@ toolbox_network A5 uninstall <<< 'YES' >"$work/o" 2>&1 || { cat "$work/o" >&2; f
 assert_clean 'A5 卸载'
 reset
 
+# 链接已落盘，单独的终端显示失败不能把已启动的安装误报为失败。
+(
+    cat() {
+        if [[ $# == 2 && $1 == -- && $2 == "$A5_ETC/vless.txt" ]]; then
+            printf 'link-display-failed\n' >> "$work/a5-display.trace"
+            return 73
+        fi
+        command cat "$@"
+    }
+    inst_a5 dest.example.test dest.example.test 18445 203.0.113.9 >"$work/o" 2>&1 \
+        || { command cat "$work/o" >&2; fail 'A5 链接显示失败误报安装失败'; }
+)
+[[ $(<"$work/a5-display.trace") == link-display-failed ]] || fail 'A5 未执行链接显示失败控制'
+[[ -x $A5_BIN && -s $A5_ETC/config.json && -s $A5_ETC/meta && -s $A5_ETC/vless.txt \
+    && -f $A5_UNIT && -e $SD/active ]] || fail 'A5 链接显示失败后未保留已安装服务和文件'
+[[ $(stat -c %a "$A5_ETC/vless.txt") == 600 ]] || fail 'A5 链接显示失败后文件权限改变'
+grep -qF '@203.0.113.9:18445?' "$A5_ETC/vless.txt" || fail 'A5 链接显示失败后未保存正确链接'
+grep -qF "服务已安装并启动，仅客户端链接显示失败；可从 $A5_ETC/vless.txt 读取。" "$work/o" \
+    || fail 'A5 链接显示失败未给出已安装状态和取用路径'
+grep -q '\[已验证\] 正确 UUID' "$work/o" || fail 'A5 链接显示失败后中断成功报告'
+! grep -q 'disable --now terry-toolbox-xray.service' "$SD/systemctl.log" || fail 'A5 链接显示失败触发了回滚'
+toolbox_network A5 uninstall <<< 'YES' >"$work/o" 2>&1 || fail 'A5 链接显示失败后卸载失败'
+assert_clean 'A5 链接显示失败后卸载'
+reset
+
+# 原 CLI 不提供服务器地址时，仍只读两次确认，输出明确待填写模板。
+MOCK_PORT=443 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
+inst_a5 dest.example.test dest.example.test >"$work/o" 2>&1 || { cat "$work/o" >&2; fail 'A5 旧 CLI 被新增地址提示吞掉确认输入'; }
+grep -q '"port": 443' "$A5_ETC/config.json" || fail 'A5 旧 CLI 默认端口改变'
+grep -q '链接模板' "$work/o" || fail 'A5 旧 CLI 模板未标明'
+grep -q '导入前请将 SERVER_ADDRESS 替换成本服务器公网 IP 或域名' "$work/o" || fail 'A5 旧 CLI 未说明地址替换'
+grep -q '@SERVER_ADDRESS:443?' "$A5_ETC/vless.txt" || fail 'A5 旧 CLI 链接没有显式地址占位'
+toolbox_network A5 uninstall <<< 'YES' >"$work/o" 2>&1 || fail 'A5 旧 CLI 安装后卸载失败'
+assert_clean 'A5 旧 CLI 卸载'
+reset
+
 # ---------- 菜单不带参数：缺的回落目标/SNI 要逐项补问 ----------
 MOCK_PORT=443 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
-out=$(printf '1\ndest.example.test\ndest.example.test\n\nYES\nXRAY\n' | toolbox_network A5 2>&1) \
+out=$(printf '1\ndest.example.test\ndest.example.test\n\nServer.Example.Test\nYES\nXRAY\n' | toolbox_network A5 2>&1) \
     || { printf '%s\n' "$out" >&2; fail 'A5 交互式补全参数后安装失败'; }
 [[ $(sed -n 's/.*"port": \([0-9]*\),/\1/p' "$A5_ETC/config.json" | head -n1) == 443 ]] || fail 'A5 交互式安装端口不是默认 443'
 grep -q '"target": "dest.example.test:443"' "$A5_ETC/config.json" || fail 'A5 交互式安装目标不对'
+grep -q '@server.example.test:443?' "$A5_ETC/vless.txt" || fail 'A5 交互式服务器域名未写入客户端链接'
+[[ $out == *'本服务器公网 IP 或域名'* && $out == *'客户端连接用'* ]] || fail 'A5 未说明服务器地址用途'
 toolbox_network A5 uninstall <<< 'YES' >"$work/o" 2>&1 || fail 'A5 交互式安装后卸载失败'
 reset
 # 问到一半就 EOF 也要在写盘前退出
 printf 'dest.example.test\n' | toolbox_network A5 install >/dev/null 2>&1 && fail 'A5 EOF 被当成安装'
 assert_clean 'A5 交互式 EOF'
+printf 'dest.example.test\ndest.example.test\n\n\nYES\nXRAY\n' | toolbox_network A5 install >"$work/o" 2>&1 && fail 'A5 菜单空服务器地址仍安装'
+grep -q '缺少本服务器公网 IP 或域名' "$work/o" || fail 'A5 菜单空服务器地址未说明'
+assert_clean 'A5 服务器地址为空'
+printf 'dest.example.test\ndest.example.test\n\n' | toolbox_network A5 install >/dev/null 2>&1 && fail 'A5 服务器地址 EOF 仍安装'
+assert_clean 'A5 服务器地址 EOF'
+printf 'dest.example.test\ndest.example.test\n\n203.0.113.9' | toolbox_network A5 install >/dev/null 2>&1 && fail 'A5 未完成服务器地址输入仍安装'
+assert_clean 'A5 服务器地址未完成输入'
 
 # ---------- A3/A5 菜单自定义端口，不能把端口输入吞作确认 ----------
 MOCK_PORT=18443 MOCK_PROTO=udp; export MOCK_PORT MOCK_PROTO
@@ -1217,10 +1341,11 @@ grep -q '"server": "\[::\]:18443"' "$(net_tuic_etc)/config.json" || fail 'A3 交
 toolbox_network A3 uninstall <<< YES >/dev/null 2>&1 || fail 'A3 自定义端口卸载失败'
 reset
 MOCK_PORT=18443 MOCK_PROTO=tcp; export MOCK_PORT MOCK_PROTO
-out=$(printf 'dest.example.test:8443\ndest.example.test\n18443\nYES\nXRAY\n' | toolbox_network A5 install 2>&1) \
+out=$(printf 'dest.example.test:8443\ndest.example.test\n18443\n[2001:db8::9]\nYES\nXRAY\n' | toolbox_network A5 install 2>&1) \
     || { printf '%s\n' "$out" >&2; fail 'A5 交互自定义端口失败'; }
 grep -q '"port": 18443' "$A5_ETC/config.json" || fail 'A5 监听端口被忽略'
 grep -q '"target": "dest.example.test:8443"' "$A5_ETC/config.json" || fail 'A5 回落端口被忽略'
+grep -qF '@[2001:db8::9]:18443?' "$A5_ETC/vless.txt" || fail 'A5 IPv6 服务器地址或自定义端口未正确导出'
 toolbox_network A5 uninstall <<< YES >/dev/null 2>&1 || fail 'A5 自定义端口卸载失败'
 reset
 
