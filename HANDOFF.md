@@ -2,13 +2,17 @@
 
 更新日期：2026-11-11。本文件记录 Codex 接续后的当前维护入口；原 Hermes 交接已逐字节保存为 [2026-10-31 历史快照](docs/handoff-hermes-20261031.md)。快照中的 Claude Code 称谓、旧测试限制、失败记录及授权说明只描述当时状态，不代表当前分工或新的操作授权。后续工作以 Terry 的当前指示和本文件的证据边界为准。
 
-## 待发布：A5 REALITY 目标检测与客户端地址（2026-11-11）
+## 当前发布：A5 REALITY 目标检测与客户端地址（PR #10，2026-11-11）
 
-分支 `codex/a5-reality-compat-20261111` 基于 `5f44ee4`，尚未合并或部署。修复 OpenSSL 1.1.1/3.0 只有 `New/Reused, TLSv1.3, Cipher is ...` 时的误拒；非零握手/超时一律拒绝。A5 菜单单独询问本服务器公网地址，正确导出 IPv4/IPv6/域名客户端链接并保存为 `0600 vless.txt`；旧 CLI 缺地址生成明确模板，meta 保留八字段。
+PR #10 精确 head `0ec3e2a6add399a50d0c7755b8ca6f8442eb2eb6` 已合并为 `894f7115fc31d24e22b40f35e78ad5a47bfa3b77`，合并树与已验候选一致，分支保留。已上线既有 Worker `terry-toolbox` / `sh.uw.cx`，北京时间 2026-11-11 03:01:47 +08:00。SHA-256 `405b73b8274b984f42e6f675b3d46556d2eff81071af3895e9cb387c43a03492`，752321 字节。
 
-候选 SHA-256 `405b73b8274b984f42e6f675b3d46556d2eff81071af3895e9cb387c43a03492`，752321 字节。开发机冻结 14/14 相关检查、单文件 39 个目标检测模拟场景、15 内嵌模块与四个 Worker 模块一致性均通过；只读公网目标握手通过。未执行用户服务器安装、真实服务管理或公网客户端验收。首轮旧 fixture/依赖问题和完整边界见[修复记录](docs/a5-reality-fix-20261111.md)。Hermes 后续按精确提交复核、合并及现有 Workers 发布流程处理；线上记录仍如下。
+A5 修复 OpenSSL TLS 1.3 摘要误拒，非零握手或超时仍拒绝；服务器地址独立于 SNI，支持 IPv4/IPv6/域名，保存 `0600 vless.txt`；meta 八字段和旧 CLI 模板兼容。只修 A5，不包括 Alpine A2 地址／纯 IPv6 适配。
 
-## 当前发布：LXC BBR 尝试与菜单对齐（PR #9，2026-11-10）
+父级冻结 14/14 定向 runner、单文件 39 个目标检测场景通过，15 个内嵌模块和重建产物一致；独立 changes-only 复核无新增阻塞。Cloudflare 四模块、完整 settings/annotations、workers.dev、域名/DNS 精确回读，14 项公网、10 项下载 smoke/TLS 通过。GitHub 空 checks/status 不是 CI 通过。见[发布记录](docs/release-pr10-20261111.md)与[JSON](docs/release-pr10-20261111.json)；[作者候选记录](docs/a5-reality-fix-20261111.md)保留为历史。
+
+本轮经明确授权使用控制机独立 scratch 做离线回归／构建，未绕过开发机 SSH 身份校验。没有真实安装服务、修改内核／网络或用户机操作，未做本候选原生安装／服务管理或公网客户端验收。欢迎页/router 未变，未重复浏览器 UI。私有证据/回滚根 `/root/.hermes/state/terry-toolbox-cf/pr10-0ec3e2a-20261111/`；`preflight/` 和 `deployment/` 保存旧 PR9 完整内容、配置、域名/DNS和公网。adapter 只适用本次已核实候选，不盲目重跑、重绑定或自动回滚。
+
+## 上一版发布：LXC BBR 尝试与菜单对齐（PR #9，2026-11-10，历史）
 
 [PR #9](https://github.com/TerrySiu98/terry-toolbox/pull/9) 按已审 head `443ac134e78e69815530d2a77a9cf79f82588e05` 合并为 `4aa1369421d7b75e20fe576d7d8dee600cbc1029`，已发布现有 Worker；合并树仅比候选多出 PR #7 的 `AGENTS.md`，运行代码和产物一致。源码分支保留。LXC 宿主默认不必为 BBR；未注册时独立双确认后单次 sysctl 请求，披露可能宿主加载共享模块及失败后仍保留模块，以权限和双回读为准。不直接在容器/未知环境运行 modprobe、提升能力、重试、写持久配置或换内核。Linux 主线 4.15+ 默认按网络命名空间保存，旧内核/共享宿主网络可能影响宿主，厂商内核另验。
 
@@ -71,7 +75,7 @@ git log -3 --oneline
 sha256sum docs/index.html
 ```
 
-脚本哈希应与本文顶部 PR #8 当前发布版本一致。PR 合并与 Worker 发布各自独立，本次二者均已完成；后续文档提交不改变已验脚本字节。后续更新先看回归及当前发布记录，再按下方 Workers 流程备份、发布和回读。
+脚本哈希应与本文顶部 PR #10 当前发布版本一致。PR 合并与 Worker 发布各自独立，本次二者均已完成；后续文档提交不改变已验脚本字节。后续更新先看回归及当前发布记录，再按下方 Workers 流程备份、发布和回读。
 
 ## 首次交付与上一版生产记录
 

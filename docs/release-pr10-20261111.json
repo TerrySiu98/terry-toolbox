@@ -1,0 +1,56 @@
+{
+  "schema": 1,
+  "pr": 10,
+  "reviewed_head": "0ec3e2a6add399a50d0c7755b8ca6f8442eb2eb6",
+  "released_source_commit": "894f7115fc31d24e22b40f35e78ad5a47bfa3b77",
+  "merged_tree_exact": true,
+  "published_utc": "2026-11-10T19:01:47.291131+00:00",
+  "sha256": "405b73b8274b984f42e6f675b3d46556d2eff81071af3895e9cb387c43a03492",
+  "bytes": 752321,
+  "worker": "terry-toolbox",
+  "hostname": "sh.uw.cx",
+  "focused_regression": {
+    "planned": 14,
+    "passed": 14,
+    "tests": [
+      "syntax",
+      "build-test.sh",
+      "dependencies-test.sh",
+      "dependency-entrypoints-test.sh",
+      "entry-test.sh",
+      "network-a5-target-test.sh",
+      "network-alpine-feedback-test.sh",
+      "network-alpine-test.sh",
+      "network-test.sh",
+      "vmess-dispatch-test.sh",
+      "menu-test.py",
+      "entry-feedback-test.py",
+      "deploy-cloudflare-test.py",
+      "worker-test.mjs"
+    ],
+    "changed_sources": [],
+    "descendant_cleanup_complete": true
+  },
+  "bundled_target_cases": 39,
+  "embedded_module_count": 15,
+  "worker_module_count": 4,
+  "independent_review": "No new blocker found; changes-only review of exact head.",
+  "public_checks": 14,
+  "download_smoke_checks": 10,
+  "system_tls_trust": true,
+  "settings_annotations_domain_dns_preserved": true,
+  "github_ci": "No check runs/status contexts; no required checks/rulesets. Not a CI pass.",
+  "execution_boundary": "Owner authorized this release to use isolated controller scratch for offline regressions/build. No native installer/service/kernel/network mutations.",
+  "candidate_secret_scan": {
+    "raw_exit": 1,
+    "findings": 5,
+    "assessed": "All five are unchanged baseline mock fixture/sample nonce/empty-variable false positives; no allowlist added."
+  },
+  "not_verified": [
+    "Native installation and service management of this candidate",
+    "Public VLESS client data path and IPv6 ingress",
+    "User OpenSSL 1.1.1 machine retest",
+    "Browser UI rerun (page/router unchanged)"
+  ],
+  "rollback_previous_sha256": "ac70ac697df7543f2935b625a1f0b6f7de4fd524dad9bd03d42f26a2042e7bab"
+}
