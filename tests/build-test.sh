@@ -60,6 +60,11 @@ out=$(printf 'A5\n0\n' | HOME="$tmp" bash "$artifact" 2>&1)
 # Source the bundle with --help: modules define functions without executing installation.
 bash -c 'source "$1" --help >/dev/null; declare -F toolbox_vmess >/dev/null' _ "$artifact" || fail 'VMess module not bundled'
 bash -c 'source "$1" --help >/dev/null; declare -F toolbox_alpine_swap >/dev/null' _ "$artifact" || fail 'Alpine swap module not bundled'
+bash -c 'source "$1" --help >/dev/null; declare -F toolbox_shadowsocks >/dev/null' _ "$artifact" || fail 'Shadowsocks module not bundled'
+for ss_key in A6 A7; do
+  out=$(printf '%s\n0\n0\n' "$ss_key" | HOME="$tmp" bash "$artifact")
+  [[ $out == *"$ss_key"* && $out == *'Shadowsocks'* && $out == *'返回上一层'* ]] || fail "$ss_key missing from bundle"
+done
 # Every newly supported management action must survive standalone bundling.
 for function in toolbox_require_commands toolbox_require_docker toolbox_require_kernel_headers toolbox_docker_ipv6 toolbox_webssh_container toolbox_tls_acme toolbox_reinstall; do
   bash -c 'source "$1" --help >/dev/null; declare -F "$2" >/dev/null' _ "$artifact" "$function" || fail "$function module not bundled"

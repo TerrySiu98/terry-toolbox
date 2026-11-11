@@ -223,10 +223,12 @@ _tb_network_screen() {
   _tb_row '📡 3. TUIC 服务'
   _tb_row '📡 4. HY2 服务'
   _tb_row '📡 5. Xray 服务'
+  _tb_row '📡 6. Alpine 版 SS'
+  _tb_row '📡 7. SS 服务'
   _tb_sep
   _tb_row '↩️  0. 返回主菜单'
   _tb_bot; printf '\n'
-  _tb_plain ' Alpine 两项仅在 Alpine + OpenRC 可用。' "$TB_DIM"
+  _tb_plain ' Alpine 入口仅限 Alpine + OpenRC。' "$TB_DIM"
   printf '\n'
 }
 _tb_apps_screen() {

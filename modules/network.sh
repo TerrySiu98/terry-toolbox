@@ -72,6 +72,18 @@ toolbox_network_hy2() {
     return 1
 }
 
+# A6/A7 expose distinct Alpine/OpenRC and non-Alpine/systemd backends.
+toolbox_network_ss() {
+    local backend=$1
+    shift
+    if declare -F toolbox_shadowsocks >/dev/null; then
+        toolbox_shadowsocks "$backend" "$@"
+        return $?
+    fi
+    printf 'Shadowsocks 暂时不可用：modules/shadowsocks.sh 未加载；未修改系统。\n' >&2
+    return 1
+}
+
 # A5 已启用：回退限速、目标 TLS 1.3/h2 能力校验、flock 串行化、清单化回滚、
 # 本机 xray 客户端双向认证探针都在安装路径内。别名让直接调用也可用（分发在
 # toolbox_network 里，避免自递归）。
@@ -3449,7 +3461,7 @@ toolbox_network_dns() {
 
 toolbox_network() {
     if (( $# < 1 || $# > 7 )) || { (( $# == 7 )) && [[ ${1:-} != A5 || ${2:-} != *-ws ]]; }; then
-        printf '用法: toolbox_network <A1|A2|A3|A4|A5|B12|B23|B31>\n' >&2
+        printf '用法: toolbox_network <A1|A2|A3|A4|A5|A6|A7|B12|B23|B31>\n' >&2
         printf '     toolbox_network A1  [install <证书> <私钥> <主机名> [端口] | uninstall | status]\n' >&2
         printf '     toolbox_network A2  [install [端口] [回落目标] | uninstall | status]\n' >&2
         printf '     toolbox_network A3  [install|uninstall|status] [证书] [私钥] [主机名] [端口]\n' >&2
@@ -3513,6 +3525,8 @@ toolbox_network() {
             return $?
             ;;
         A4) toolbox_network_hy2 "$@"; return $? ;;
+        A6) toolbox_network_ss alpine "$@"; return $? ;;
+        A7) toolbox_network_ss systemd "$@"; return $? ;;
         A5)
             action=${1:-}
             if [[ -z $action ]]; then
