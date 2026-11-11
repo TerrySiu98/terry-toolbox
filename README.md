@@ -14,9 +14,9 @@
 
 > **开发预览，尚非稳定版。** 源码与单文件脚本已公开。下方功能表同时列出已实测、待真机验收及计划项目，不能视为全部完成；首次使用请选测试机。
 
-> **A6 / A7 SS 发布候选（尚未上线）：** 两系统原生安装/重启/卸载、TCP/UDP 认证传输及安全修补复核已完成；本次准备发布到原入口，仍为开发预览。见[使用方法和验收边界](docs/shadowsocks-candidate.md)。
+> **A6 / A7 SS 已发布（PR #13）：** Alpine/OpenRC 与 Debian/systemd 分开入口，安装/卸载/状态、TCP/UDP 与私有导出已接入；两系统原生与安全修补复核通过。仍为开发预览，公网/手机和速度对比未验。见[当前发布记录](docs/release-shadowsocks-20261111.md)。
 
-> **2026-11-11 HY2 密码显示已发布（PR #12）：** 安装成功后直接在交互终端显示生成密码，并提前说明屏幕/终端日志风险；重定向或非交互输出仍隐藏密码。私有导出文件保留，现有节点密码不变。见[当前发布记录](docs/release-hy2-password-20261111.md)。
+> **2026-11-11 上一版 HY2 密码显示（PR #12，功能保留）：** 安装成功后直接在交互终端显示生成密码，并提前说明屏幕/终端日志风险；重定向或非交互输出仍隐藏密码。私有导出文件保留，现有节点密码不变。见[当前发布记录](docs/release-hy2-password-20261111.md)。
 
 > **2026-11-11 上一版发布（PR #11，功能保留）：** A4 新增无需自有域名的自签向导，连接入口与 SNI 分开填写，三种客户端导出均保留证书指纹。7/7 定向回归、Debian 13.7/KVM 的 25/25 原生检查与 8/8 候选检查通过；发布后完整 Worker/配置回读、14 项公网检查和 10 项下载安全检查通过。公网 UDP 入站与手机导入待用户验证。见[当前发布记录](docs/release-hy2-self-20261111.md)。
 
@@ -84,7 +84,7 @@ bash toolbox.sh
 curl -fsSL sh.uw.cx | sha256sum
 ```
 
-先与 `https://sh.uw.cx/sha256` 及[当前发布记录](docs/release-hy2-password-20261111.md)核对。当前线上脚本绑定 PR #12 合并源码 `4985138694b19203272dcf953671bf1ed4f20ae0` 的 `docs/index.html`；后续文档提交不改变该脚本。**当前发布版本的 SHA-256**：`3d32752cc6863640e66fd9fba3ff1c3ee97e3854ff4181f5ada7e853d038c336`（2026-11-11 HY2 密码显示，765901 字节）。
+先与 `https://sh.uw.cx/sha256` 及[当前发布记录](docs/release-shadowsocks-20261111.md)核对。当前线上脚本绑定 PR #13 合并源码 `5cdafa5921384d0257ca8c83536a780a89975c70` 的 `docs/index.html`；后续文档提交不改变该脚本。**当前发布版本的 SHA-256**：`ca071eb9d8dda96b2c58441f3d07918d0c50d460c303933e097af89f12b07db7`（2026-11-11 A6/A7 Shadowsocks，823673 字节）。
 
 服务端下载的是单文件版本，全部模块已经打包进去，不需要准备其他文件。Debian / Ubuntu 为当前主要支持环境，Alpine 仅部分功能。
 
@@ -99,7 +99,7 @@ curl -fsSL sh.uw.cx | sha256sum
 
 主菜单只有一屏；输入编号回车即可：
 
-- `1` 网络服务：Alpine HY2/Xray、TUIC、HY2、Xray；源码候选另有 Alpine SS / Debian SS（未发布）
+- `1` 网络服务：Alpine HY2/Xray、TUIC、HY2、Xray、Alpine SS（A6）/ Debian SS（A7）
 - `2` BBR 管理（进入显示状态、启用与刷新），`3` 安装基础依赖，`4` 重装系统（目标选择、预检、准备、状态与取消），`5` 常用工具（Docker、应用、体检以外的系统项）
 - `DIAG` 体检（检查只读，缺工具时可确认补装），`99` 重启，`0` 退出
 
@@ -177,9 +177,9 @@ SNI：www.cloudflare.com
 - **历史验证边界：** 首次交付所引用的旧版源码已在独立 Alpine 3.24.2 x86_64 / KVM（kernel 6.18.52）通过菜单安装、32 MiB 实际换页与读回、服务重启、整机重启后自启、未知文件保留和菜单卸载；`fstab`、sysctl、原 swap 表及宿主 swap 保持不变。首部保持不变，数据页实际变化。arm64、其他内核/文件系统、长期负载及真实停止失败后的恢复尚未验收。历史 swap 模拟套件 127 项通过；旧整仓计数不表示本次修改后的全仓结果。
 - 不提供在线扩容、接管手工 swap 或自动修复。不要手工改清单后强制卸载。该功能与 VMess 已包含在当前线上开发预览；上述未验边界保持不变。
 
-### A6 / A7：Shadowsocks（未发布候选）
+### A6 / A7：Shadowsocks（已发布开发预览）
 
-工作区已增加独立入口：`A6` Alpine/OpenRC、`A7` Debian/systemd；安装、卸载、状态与单文件接线已实现。当前线上 PR #12 尚不包含 SS。固定 Xray 26.10.31、`chacha20-ietf-poly1305`、TCP/UDP、0600 客户端导出；无证书，不改已有 HY2/Xray 或防火墙，默认不设置自启。详见[候选使用方法与证据边界](docs/shadowsocks-candidate.md)。公网/手机与速度对比未验，Ubuntu/其他发行版及 IPv6 暂不接受。
+重新运行脚本，输入 `A6`（Alpine/OpenRC）或 `A7`（Debian/systemd），选择 `1 安装 / 2 卸载 / 3 状态`。填写服务器公网 IPv4 或解析至 IPv4 的域名和 TCP/UDP 端口（默认 8388），两次完整 `YES` 后才安装。固定 Xray 26.10.31、`chacha20-ietf-poly1305`、TCP/UDP、0600 客户端导出；无证书，不改已有 HY2/Xray 或防火墙，默认不设置自启。服务端防火墙和云安全组需自行放行所选 TCP 与 UDP 端口；导出链接、Mihomo 条目和 Xray 配置位于 `/etc/terry-toolbox-shadowsocks/`，权限 `0600`。成功交互安装后显示密码，请勿公开截图或日志。Mihomo 条目仍需加入代理组/规则。协议无前向保密，不保证提速。详见[当前发布记录](docs/release-shadowsocks-20261111.md)。公网/手机与速度对比未验，Ubuntu/其他发行版及 IPv6 暂不接受。
 
 ## 功能列表
 
@@ -217,8 +217,8 @@ SNI：www.cloudflare.com
 | `A3` | TUIC | 开发中：固定官方 v1.0.0 静态二进制，自动验证启动与端口归属；认证需客户端实测 |
 | `A4` | Hysteria 2 | 开发预览：自签/已有证书向导及三种带 pin 导出；本次候选通过 Debian 13.7/x86_64/KVM 的安装、IPv4/IPv6 认证与数据面、服务重启和卸载。公网/手机/整机自启/arm64 未验；已发布开发预览 |
 | `A5` | Xray | 开发中：VLESS Reality；VMess + WS + TLS 安装/状态/卸载、自启管理和受控换证，首次交付版本已通过 Debian 13/KVM 两次整机重启、认证传输、真实 ACME 换证同步和卸载；上游已弃用 VMess/WS，仅供兼容 |
-| `A6` | Alpine Shadowsocks | 未发布候选：Alpine + OpenRC，固定 Xray、TCP/UDP、独立服务、安装/卸载/状态；修复版 x86_64/KVM 安装/重启/卸载和 TCP/UDP 正反传输通过；已发现安全阻塞修复并复审关闭 |
-| `A7` | Shadowsocks | 未发布候选：Debian + systemd，与 A6 分开后端；0600 Mihomo/Xray/URI 导出；公网、手机、Ubuntu/其他系统和 IPv6 未验 |
+| `A6` | Alpine Shadowsocks | 已发布开发预览：Alpine + OpenRC，固定 Xray、TCP/UDP、独立服务、安装/卸载/状态；修复版 x86_64/KVM 安装/重启/卸载和 TCP/UDP 正反传输通过；已发现安全阻塞修复并复审关闭 |
+| `A7` | Shadowsocks | 已发布开发预览：Debian + systemd，与 A6 分开后端；0600 Mihomo/Xray/URI 导出；公网、手机、Ubuntu/其他系统和 IPv6 未验 |
 | `B12` | TCP Brutal | 开发中：DKMS 编译 kernel module、开机载入与默认拥塞控制；仅非容器 Debian |
 | `B23` | DNS 切换 | 开发中：仅 systemd-resolved，先查 resolv.conf 归属；验证失败回滚并列出泄漏面 |
 | `B31` | Relay 转发 | 开发中：socat 单单元转发（TCP/UDP），不改 nginx；归属台账、本次创建 claim、完整停止/任务/PID/监听核验后才删除；读取或停止失败保留。旧版无台账单元需人工核实 |

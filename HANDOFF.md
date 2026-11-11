@@ -2,11 +2,13 @@
 
 更新日期：2026-11-11。本文件记录 Codex 接续后的当前维护入口；原 Hermes 交接已逐字节保存为 [2026-10-31 历史快照](docs/handoff-hermes-20261031.md)。快照中的 Claude Code 称谓、旧测试限制、失败记录及授权说明只描述当时状态，不代表当前分工或新的操作授权。后续工作以 Terry 的当前指示和本文件的证据边界为准。
 
-## 工作区候选：A6 Alpine SS / A7 Debian SS（未发布）
+## 当前发布：A6 Alpine SS / A7 Debian SS（PR #13）
 
-`feature/shadowsocks` 新增 `modules/shadowsocks.sh` 与相关测试，原编号不变，按需 loader/build 同步。Alpine/OpenRC 和 Debian/systemd 分开后端，独立服务/目录、固定 Xray 26.10.31、`chacha20-ietf-poly1305`、TCP/UDP、0600 导出，默认不自启。源码、runner、作者原生证据与当前未验证边界见[候选记录](docs/shadowsocks-candidate.md)。最新清理信号窗口修复已通过两系统原生重验与 5 项受影响回归，最终有界补丁独立复审 approve（其完整额外复跑超时不计入通过）；尚未提交、推送或发布，此段不改变下方当前线上版本。
+已上线现有 Worker `terry-toolbox` / `sh.uw.cx`，合并源码 `5cdafa5921384d0257ca8c83536a780a89975c70` 与已验候选 tree 一致，SHA-256 `ca071eb9d8dda96b2c58441f3d07918d0c50d460c303933e097af89f12b07db7`，823673 字节。两系统 x86_64/KVM 生命周期与 TCP/UDP 正反传输、最终安全修补复核通过；11 前次相关检查与 5 受影响补跑是组合覆盖，不是全仓 suite。独立额外 review 脚本 90 秒超时未计通过。四个 Worker 模块、全部 settings/annotations、workers.dev、域名/DNS 精确一致；14 公网/11 下载 smoke/TLS 通过。无 GitHub CI gates，不称 CI 全绿。
 
-## 当前发布：HY2 密码显示（PR #12，2026-11-11）
+独立服务/目录、固定 Xray 26.10.31、`chacha20-ietf-poly1305`、TCP/UDP、0600 导出，默认不自启。公网 SS、手机、速度对比、自启、arm64、Ubuntu/其他发行版、IPv6 未验；本次仅发布分发脚本，不操作用户节点。旧候选记录作为历史保留；当前详情见[发布记录](docs/release-shadowsocks-20261111.md)和[JSON](docs/release-shadowsocks-20261111.json)。
+
+## 上一版发布：HY2 密码显示（PR #12，2026-11-11，历史）
 
 已发布到既有 Worker / `sh.uw.cx`，合并源码 `4985138694b19203272dcf953671bf1ed4f20ae0`。脚本 SHA-256 `3d32752cc6863640e66fd9fba3ff1c3ee97e3854ff4181f5ada7e853d038c336`，765901 字节。安装成功后仅交互终端显示生成密码；提前提示泄露风险，管道/重定向隐藏，私有导出和已有密码不变。源码复核、最终 PTY 与单文件验证通过；四模块/完整设置/域名/DNS、公网 14 项、下载 10 项已核对。未重复原生安装或用户客户端验收。详见[当前发布记录](docs/release-hy2-password-20261111.md)。
 

@@ -1,0 +1,46 @@
+{
+  "status": "published_development_preview",
+  "published_at_utc": "2026-11-11T14:50:26.460793+00:00",
+  "pr": "https://github.com/TerrySiu98/terry-toolbox/pull/13",
+  "reviewed_head": "a12d0967a9b241ff19294b264df6365f75de3649",
+  "code_merge": "5cdafa5921384d0257ca8c83536a780a89975c70",
+  "sha256": "ca071eb9d8dda96b2c58441f3d07918d0c50d460c303933e097af89f12b07db7",
+  "bytes": 823673,
+  "module_sha256": "a3d2c9ff2cb1fdbb2fc0895af4303086405e82c935291d1596831a9f6b0832dd",
+  "embedded_module_count": 16,
+  "provider_modules_exact": true,
+  "settings_domain_dns_unchanged": true,
+  "public_checks": 14,
+  "download_smoke": 11,
+  "tls_system_trust": true,
+  "native_backends": [
+    "Alpine 3.24.4/OpenRC/x86_64/KVM",
+    "Debian 13.7/systemd/x86_64/KVM"
+  ],
+  "focused_coverage": {
+    "previous_checks": 11,
+    "affected_reruns": 5,
+    "single_final_full_suite": false
+  },
+  "independent_patch_review": "approve; original blockers closed",
+  "independent_extra_review_script_timeout": {
+    "seconds": 90,
+    "rc": 124,
+    "counted_as_pass": false
+  },
+  "secret_scan": {
+    "raw_exit_code": 1,
+    "assessed_inherited_non_secret_findings": 4,
+    "allowlist_added": false
+  },
+  "user_nodes_changed": false,
+  "unverified": [
+    "public SS ingress",
+    "phone import",
+    "YouTube A/B speed",
+    "boot enablement",
+    "arm64 execution",
+    "Ubuntu/other distros",
+    "IPv6 ingress"
+  ]
+}

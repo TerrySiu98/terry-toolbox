@@ -1,4 +1,6 @@
-# A6 / A7 Shadowsocks — 未发布候选
+# A6 / A7 Shadowsocks — 发布前候选历史
+
+此文保留发布前事实；此候选随后已通过 PR #13 合并并发布，当前状态见[发布记录](release-shadowsocks-20261111.md)。下文“未发布”仅描述当时阶段。
 
 此变更位于 `feature/shadowsocks` 工作区，尚未提交、推送或发布。当前 `sh.uw.cx` 仍为 README 顶部记录的 PR #12 版本。
 
