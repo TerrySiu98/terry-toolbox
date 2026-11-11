@@ -67,7 +67,7 @@ assert out.count('Alpine 版 HY2') == 2, 'return skipped the network level'
 out, err = run('5\n10\n0\n0\n0\n')
 assert 'B10 WebSSH' in out, 'WebSSH has no management/return page'
 assert '操作未完成或已取消' not in out, 'WebSSH Return ran an installation'
-for key in ('M1', 'A1', 'A2', 'A3', 'A4', 'A5', 'B1', 'B10', 'B12', 'B16', 'B19', 'B23', 'B31', 'M3', 'TLS'):
+for key in ('M1', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'B1', 'B10', 'B12', 'B16', 'B19', 'B23', 'B31', 'M3', 'TLS'):
     out, err = run(f'{key}\n0\n0\n', 40)
     assert '返回上一层' in out and '操作未完成或已取消' not in out, f'{key} cannot return cleanly'
     assert not err, (key, err)
@@ -276,7 +276,7 @@ def terminal_rows(output, legacy_emoji=False):
 
 def render_pages(columns, tty, locale='C.UTF-8', resized=False):
     pages = ['main', 'network', 'apps', 'bye', 'MAIN_BBR', 'MAIN_REINSTALL',
-             'TLS', 'A1', 'A2', 'A3', 'A4', 'A5', 'B1', 'B10', 'B12',
+             'TLS', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'B1', 'B10', 'B12',
              'B16', 'B19', 'B23', 'B31']
     lines = [
         'source ' + shlex.quote(str(SCRIPT)) + ' --help >/dev/null',

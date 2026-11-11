@@ -2,6 +2,10 @@
 
 更新日期：2026-11-11。本文件记录 Codex 接续后的当前维护入口；原 Hermes 交接已逐字节保存为 [2026-10-31 历史快照](docs/handoff-hermes-20261031.md)。快照中的 Claude Code 称谓、旧测试限制、失败记录及授权说明只描述当时状态，不代表当前分工或新的操作授权。后续工作以 Terry 的当前指示和本文件的证据边界为准。
 
+## 工作区候选：A6 Alpine SS / A7 Debian SS（未发布）
+
+`feature/shadowsocks` 新增 `modules/shadowsocks.sh` 与相关测试，原编号不变，按需 loader/build 同步。Alpine/OpenRC 和 Debian/systemd 分开后端，独立服务/目录、固定 Xray 26.10.31、`chacha20-ietf-poly1305`、TCP/UDP、0600 导出，默认不自启。源码、runner、作者原生证据与当前未验证边界见[候选记录](docs/shadowsocks-candidate.md)。最新清理信号窗口修复已通过两系统原生重验与 5 项受影响回归，最终有界补丁独立复审 approve（其完整额外复跑超时不计入通过）；尚未提交、推送或发布，此段不改变下方当前线上版本。
+
 ## 当前发布：HY2 密码显示（PR #12，2026-11-11）
 
 已发布到既有 Worker / `sh.uw.cx`，合并源码 `4985138694b19203272dcf953671bf1ed4f20ae0`。脚本 SHA-256 `3d32752cc6863640e66fd9fba3ff1c3ee97e3854ff4181f5ada7e853d038c336`，765901 字节。安装成功后仅交互终端显示生成密码；提前提示泄露风险，管道/重定向隐藏，私有导出和已有密码不变。源码复核、最终 PTY 与单文件验证通过；四模块/完整设置/域名/DNS、公网 14 项、下载 10 项已核对。未重复原生安装或用户客户端验收。详见[当前发布记录](docs/release-hy2-password-20261111.md)。

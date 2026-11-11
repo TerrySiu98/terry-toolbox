@@ -37,7 +37,7 @@ fi
 source "$TOOLBOX_DIR/modules/entry.sh"
 
 show_list() {
-  printf '%s\n' 'A1 A2 A3 A4 A5' 'B1 B2 B3 B4 B5 B6 B7 B8 B9 B10 B11 B12 B13 B14 B15 B16 B17 B18 B19 B20 B21 B22 B23 B24 B25 B26 B27 B28 B29 B30 B31'
+  printf '%s\n' 'A1 A2 A3 A4 A5 A6 A7' 'B1 B2 B3 B4 B5 B6 B7 B8 B9 B10 B11 B12 B13 B14 B15 B16 B17 B18 B19 B20 B21 B22 B23 B24 B25 B26 B27 B28 B29 B30 B31'
 }
 show_help() {
   printf 'Terry 工具箱 %s\n用法: bash toolbox.sh [--help|--list]\n--list 列出菜单编号；不带参数进入交互菜单。\n' "$TOOLBOX_VERSION"
@@ -45,7 +45,7 @@ show_help() {
 load_modules() {
   [[ ${TOOLBOX_MODULES_LOADED:-0} == 1 ]] && return 0
   local f
-  for f in dependencies apps network system diagnostics hy2 webssh vmess alpine-swap docker-ipv6 webssh-containers tls-acme reinstall-provenance reinstall; do
+  for f in dependencies apps network system diagnostics hy2 shadowsocks webssh vmess alpine-swap docker-ipv6 webssh-containers tls-acme reinstall-provenance reinstall; do
     if [[ ! -r "$TOOLBOX_DIR/modules/$f.sh" ]]; then
       printf '错误：缺少模块 %s/modules/%s.sh。请下载完整项目。\n' "$TOOLBOX_DIR" "$f" >&2
       return 1
@@ -59,7 +59,7 @@ run_action() {
   local key=$1
   case "$key" in
     DIAG) toolbox_diagnostics ;;
-    A1|A2|A3|A4|A5|B12|B23|B31) toolbox_network "$key" ;;
+    A1|A2|A3|A4|A5|A6|A7|B12|B23|B31) toolbox_network "$key" ;;
     B3|B4|B5|B9|B13|B17|B20|B21|B22|B24|B25|B26|B27|B28|B29|B30) toolbox_app "${key#B}" ;;
     MAIN_BBR|MAIN_DEPS|MAIN_REINSTALL|MAIN_REBOOT|B1|B2|B6|B7|B8|B11|B14|B15|B16|B19) toolbox_system "$key" ;;
     B10) toolbox_webssh ;;
@@ -69,7 +69,7 @@ run_action() {
   esac
 }
 _tb_managed_key() {
-  case "$1" in A[1-5]|B1|B10|B12|B16|B19|B23|B31|MAIN_BBR|MAIN_REINSTALL|TLS) return 0;; *) return 1;; esac
+  case "$1" in A[1-7]|B1|B10|B12|B16|B19|B23|B31|MAIN_BBR|MAIN_REINSTALL|TLS) return 0;; *) return 1;; esac
 }
 _toolbox_webssh_container() {
   declare -F toolbox_webssh_container >/dev/null || { printf 'WebSSH 容器模块未加载。\n' >&2; return 1; }
@@ -95,6 +95,7 @@ _tb_service_screen() {
   case "$1" in
     A1) title='A1 Alpine Hysteria 2';; A2) title='A2 Alpine Xray';;
     A3) title='A3 TUIC';; A4) title='A4 Hysteria 2';; A5) title='A5 Xray';;
+    A6) title='A6 Alpine Shadowsocks';; A7) title='A7 Shadowsocks';;
     B1) title='B1 Docker';; B10) title='B10 WebSSH';; B12) title='B12 TCP Brutal';;
     MAIN_BBR) title='M1 BBR 管理';; MAIN_REINSTALL) title='M3 系统重装';; TLS) title='TLS 证书管理';;
     B16) title='B16 网络优化';; B19) title='B19 Alpine 工具';;
@@ -268,13 +269,13 @@ menu() {
         4|DD|M3) key=MAIN_REINSTALL;;
         99|M4) key=MAIN_REBOOT;;
       esac
-    elif [[ $screen == network && $choice =~ ^[1-5]$ ]]; then
+    elif [[ $screen == network && $choice =~ ^[1-7]$ ]]; then
       key=A$choice
     elif [[ $screen == apps && $choice =~ ^([1-9]|[12][0-9]|3[01])$ ]]; then
       key=B$choice
     fi
     case "$key" in
-      DIAG|TLS|MAIN_BBR|MAIN_DEPS|MAIN_REINSTALL|MAIN_REBOOT|A[1-5]|B[1-9]|B[12][0-9]|B3[01]) ;;
+      DIAG|TLS|MAIN_BBR|MAIN_DEPS|MAIN_REINSTALL|MAIN_REBOOT|A[1-7]|B[1-9]|B[12][0-9]|B3[01]) ;;
       *) notice='无效的选择，请按菜单编号输入。'; continue;;
     esac
     if _tb_managed_key "$key"; then
