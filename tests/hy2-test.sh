@@ -102,6 +102,10 @@ case ${1:-} in
         auth=$(sed -n 's/^auth: //p' "$cfg")
         real=$(sed -n "s/^  password: '\(.*\)'/\1/p" "$TOOLBOX_HY2_ETC/config.yaml" 2>/dev/null) || real=''
         [[ -e $SD/accept_any ]] && { printf 'INFO\tconnected to server\n'; exit 0; }
+        pin=$(sed -n 's/^  pinSHA256: //p' "$cfg")
+        actual=$(openssl x509 -in "$TOOLBOX_HY2_ETC/cert.pem" -noout -fingerprint -sha256)
+        actual=${actual#*=}; actual=${actual//:/}; actual=${actual,,}
+        [[ $pin == "$actual" || -e $SD/accept_pin_any ]] || { printf 'FATAL\tno certificate matches the pinned hash\n'; exit 1; }
         [[ -n $real && $auth == "$real" ]] && { printf 'INFO\tconnected to server\n'; exit 0; }
         printf 'FATAL\tauthentication error, HTTP status code: 502\n'
         exit 1
@@ -200,6 +204,9 @@ python3 "$ROOT/tests/certificate-fixture.py" "$work/past.crt" "$work/past.key" \
     20200101000000Z 20200102000000Z --hostname hy2.example.test
 
 GOOD_H=hy2.example.test
+
+# Dedicated HY2 feature tests reuse these guarded privileged boundaries.
+if [[ ${TOOLBOX_HY2_FIXTURE_ONLY:-0} == 1 ]]; then return 0; fi
 
 # 1. sourcing 必须无副作用且只定义入口
 before=$(find "$work" -mindepth 1 | wc -l)
@@ -477,8 +484,9 @@ cmp -s "$work/good.key" "$work/etc/terry-toolbox-hy2/key.pem" || fail '私钥副
 # 元数据、报告内容
 [[ -s $work/etc/terry-toolbox-hy2/meta ]] || fail '缺少 meta'
 [[ $(stat -c %a "$work/etc/terry-toolbox-hy2/meta") == 600 ]] || fail 'meta 权限不是 600'
-grep -q 'hysteria2://' <<< "$out" || fail '未输出客户端链接'
-grep -q 'insecure=1' <<< "$out" || fail '自签证书应提示 insecure'
+[[ $out != *'hysteria2://'* && $out != *"$pw"* ]] || fail '报告泄漏客户端链接/密码'
+grep -q 'hysteria2.txt' <<< "$out" || fail '未输出客户端文件路径'
+grep -q 'pinSHA256=' "$(hy2_etc)/hysteria2.txt" || fail '导出缺少证书指纹'
 grep -q '\[已验证\]' <<< "$out" || fail '未报告验证结果'
 grep -q 'UDP 18443' <<< "$out" || fail '未提示放行端口'
 if grep -q 'server -c' <<< "$out"; then printf '%s\n' "$out" >&2; fail '报告混入内部命令'; fi
@@ -676,7 +684,7 @@ if ! TOOLBOX_HY2_CAFILE=$work/good.crt hy2_tls_trusted "$work/good.crt"; then fa
 if TOOLBOX_HY2_CAFILE=$work/other.crt hy2_tls_trusted "$work/good.crt"; then fail 'HY2 接受错误 CA'; fi
 if TOOLBOX_HY2_CAFILE=$work/missing.crt hy2_tls_trusted "$work/good.crt"; then fail 'HY2 CA 缺失仍受信任'; fi
 export MOCK_PORT=18443
-out=$(printf '%s\n%s\n%s\n18443\nYES\n' "$work/good.crt" "$work/good.key" "$GOOD_H" | TOOLBOX_HY2_CAFILE=$work/good.crt toolbox_hy2 install 2>&1) \
+out=$(printf '2\n%s\n%s\n%s\nhy2.example.test\n18443\nYES\n' "$work/good.crt" "$work/good.key" "$GOOD_H" | TOOLBOX_HY2_CAFILE=$work/good.crt toolbox_hy2 install 2>&1) \
     || { printf '%s\n' "$out" >&2; fail 'HY2 交互自定义端口/独立 CA 安装失败'; }
 grep -q '^listen: :18443$' "$(hy2_etc)/config.yaml" || fail 'HY2 交互自定义端口被忽略'
 grep -q '|0|' "$(hy2_etc)/meta" || fail 'HY2 独立 CA 的 meta 仍标 insecure'
@@ -698,7 +706,7 @@ reset
 # 25. 菜单里不带参数：缺的证书/私钥/主机名要逐项提问，端口回车用默认。
 export MOCK_PORT=443
 source "$ROOT/modules/network.sh"
-out=$(printf '%s\n%s\n%s\n\nYES\n' "$work/good.crt" "$work/good.key" "$GOOD_H" | toolbox_network A4 install 2>&1) \
+out=$(printf '2\n%s\n%s\n%s\nhy2.example.test\n\nYES\n' "$work/good.crt" "$work/good.key" "$GOOD_H" | toolbox_network A4 install 2>&1) \
     || { printf '%s\n' "$out" >&2; fail '交互式补全参数后安装失败'; }
 grep -q '^listen: :443$' "$work/etc/terry-toolbox-hy2/config.yaml" || fail '交互式安装端口不是默认 443'
 toolbox_hy2 uninstall <<< 'YES' >/dev/null 2>&1 || fail '交互式安装后卸载失败'
