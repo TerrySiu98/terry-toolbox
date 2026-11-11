@@ -1,0 +1,57 @@
+{
+  "status": "verified_unpublished_candidate",
+  "base_commit": "520d9f8b8a6a1cf0dd40a7c0ddef51e88852a8b4",
+  "source_sha256": {
+    "modules/hy2.sh": "26e2166eb13cb92cdf9a91d178f90e2cc8def01553ade97ab35063b46b204742",
+    "tests/hy2-test.sh": "9ed8d29cecc3c2e1af0bae3c66889f08ad30f544ca7cc86d83e0a4b5353dd602",
+    "tests/hy2-self-cert-test.sh": "436fa12b6f5e8aec097cfe44bda94d392b4c9a57439c9bd6ba4b64b95e85020e"
+  },
+  "artifact_sha256": "89b784c7ac51ccec51654a2fa78fd9d3afcc593c355bd88761dc47e2ed6245fa",
+  "native_checks": 25,
+  "native_protocol_case_counts": {
+    "self-v4-protocol": 15,
+    "restart-protocol": 3,
+    "self-v6-protocol": 15
+  },
+  "signal_controls": 16,
+  "pidfd_preflight": "native positive, missing os API, missing signal API, kernel ENOSYS and before-mutation rejection verified",
+  "smoke_checks": 8,
+  "parent_frozen_runner": {
+    "checks": 7,
+    "names": [
+      "syntax",
+      "build-test.sh",
+      "dependencies-test.sh",
+      "entry-test.sh",
+      "hy2-self-cert-test.sh",
+      "hy2-test.sh",
+      "menu-test.py"
+    ],
+    "passed": true,
+    "source_unchanged": true,
+    "descendants_clean": true
+  },
+  "review": "Original signal blocker independently closed on candidate02; final additive pidfd preflight directly reviewed and tested by parent. Final candidate03 natively retested.",
+  "native_system": "Debian 13.7/x86_64/KVM",
+  "not_tested": [
+    "public_inbound",
+    "phone_import",
+    "VM_reboot_autostart",
+    "arm64",
+    "older_Python_kernel_combinations"
+  ],
+  "committed": false,
+  "pushed": false,
+  "deployed": false,
+  "test_guest_stopped": true,
+  "publication": {
+    "status": "pending",
+    "previous_sha256": "405b73b8274b984f42e6f675b3d46556d2eff81071af3895e9cb387c43a03492"
+  },
+  "review_release_addendum": {
+    "independent_controls": 16,
+    "original_finding": "R1: consented optional dependency installation precedes pidfd preflight",
+    "disposition": "Retain the established y-confirmed dependency-install contract; reject unsupported pidfd before HY2-owned files/services, not before separately authorized package changes. Broad zero-system-mutation claim withdrawn. No product code changed.",
+    "code_blockers_remaining": 0
+  }
+}
