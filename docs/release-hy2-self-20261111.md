@@ -2,7 +2,7 @@
 
 ## 状态
 
-最终候选已验收，待发布；此记录不表示 `sh.uw.cx` 已更新。
+**已发布现有 Worker `terry-toolbox` / `sh.uw.cx`。** 北京时间 2026-11-11T12:53:19.073601+08:00。PR [#11](https://github.com/TerrySiu98/terry-toolbox/pull/11) 的 head `23955bcb78466c7a5284594c3dfeefae4482644f` 已合并为 `48205b5b66d2f8cd26262f3cc0ed2bae0769ce1b`，树完全一致，源分支保留。后续文档提交不改变脚本。
 
 - 基线：`520d9f8b8a6a1cf0dd40a7c0ddef51e88852a8b4`。
 - 候选脚本 SHA-256：`89b784c7ac51ccec51654a2fa78fd9d3afcc593c355bd88761dc47e2ed6245fa`，765304 字节。
@@ -28,4 +28,6 @@
 
 ## 发布与回退
 
-沿用现有 Worker 和域名，发布前保留完整旧四模块、settings/annotations、workers.dev、域名/DNS 及公网内容；只允许精确目标单次上传，不重新绑定域名。完成后按实际提供方和公网读回更新本节。旧版 SHA-256 为 `405b73b8274b984f42e6f675b3d46556d2eff81071af3895e9cb387c43a03492`；回退仅恢复分发脚本，不卸载用户已安装的 HY2。
+沿用现有 Worker 和域名，发布前保留完整旧四模块、settings/annotations、workers.dev、域名/DNS 及公网内容；只允许精确目标单次上传，不重新绑定域名。实际单次完整上传已完成：四模块逐字节匹配，完整 settings/annotations、workers.dev、域名/DNS 保持不变；14 项公网普通/随机参数 URL、路由/哈希及 10 项下载安全 smoke/TLS 通过。欢迎页/router 未改，本轮未重复浏览器 UI。GitHub 没有 checks/status 或 required gates，不称 CI 通过。旧版 SHA-256 为 `405b73b8274b984f42e6f675b3d46556d2eff81071af3895e9cb387c43a03492`；回退仅恢复分发脚本，不卸载用户已安装的 HY2。
+
+私有回退快照与原始证据由维护者保留；原候选验收、审查发现和 scanner 非零报告不覆盖。秘密扫描 index/commit 保留 4 个继承非秘密命中，分别为公开 WebSocket 样例 nonce 和空 Bash 变量；均与基线精确一致，无新增 allowlist。

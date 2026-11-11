@@ -1,5 +1,4 @@
 {
-  "status": "verified_unpublished_candidate",
   "base_commit": "520d9f8b8a6a1cf0dd40a7c0ddef51e88852a8b4",
   "source_sha256": {
     "modules/hy2.sh": "26e2166eb13cb92cdf9a91d178f90e2cc8def01553ade97ab35063b46b204742",
@@ -40,12 +39,27 @@
     "arm64",
     "older_Python_kernel_combinations"
   ],
-  "committed": false,
-  "pushed": false,
-  "deployed": false,
+  "committed": true,
+  "pushed": true,
+  "deployed": true,
   "test_guest_stopped": true,
   "publication": {
-    "status": "pending",
+    "status": "verified",
+    "pr": 11,
+    "head": "23955bcb78466c7a5284594c3dfeefae4482644f",
+    "merge_commit": "48205b5b66d2f8cd26262f3cc0ed2bae0769ce1b",
+    "utc": "2026-11-11T04:53:19.073601+00:00",
+    "worker": "terry-toolbox",
+    "hostname": "sh.uw.cx",
+    "artifact_sha256": "89b784c7ac51ccec51654a2fa78fd9d3afcc593c355bd88761dc47e2ed6245fa",
+    "artifact_bytes": 765304,
+    "settings_preserved": true,
+    "dns_preserved": true,
+    "public_checks": 14,
+    "download_smoke": 10,
+    "tls_system_trust": true,
+    "github_checks": 0,
+    "github_statuses": 0,
     "previous_sha256": "405b73b8274b984f42e6f675b3d46556d2eff81071af3895e9cb387c43a03492"
   },
   "review_release_addendum": {
@@ -53,5 +67,7 @@
     "original_finding": "R1: consented optional dependency installation precedes pidfd preflight",
     "disposition": "Retain the established y-confirmed dependency-install contract; reject unsupported pidfd before HY2-owned files/services, not before separately authorized package changes. Broad zero-system-mutation claim withdrawn. No product code changed.",
     "code_blockers_remaining": 0
-  }
+  },
+  "candidate_historical_status": "verified_unpublished_candidate",
+  "status": "published_verified"
 }
