@@ -7681,7 +7681,8 @@ _hy2_install() {
         printf '  私钥    : %s（复制到 %s，权限 600）\n' "$key" "$etc"
     fi
     printf '  单元    : %s\n' "$unit"
-    printf '  认证    : 随机密码仅存文件，不打印；客户端必须支持证书 SHA-256 pin\n'
+    printf '  认证    : 随机密码保存为私有文件；成功后在交互终端显示密码，请勿分享屏幕或终端日志\n'
+    printf '            非交互或输出重定向时不回显；客户端必须支持证书 SHA-256 pin\n'
     printf '  导出    : %s/{hysteria2.txt,client.yaml,mihomo.yaml}（0600）\n' "$etc"
     printf '  信任    : 按叶证书指纹信任；不支持 pin 的客户端不得去掉指纹使用\n'
     printf '  防火墙  : 不改动；需自行放行 UDP %s\n' "$port"
@@ -7856,12 +7857,20 @@ EOF
     hy2_place 0600 "$tmp/meta" "$etc/meta" || { rm -rf -- "$tmp"; hy2_rollback; return 1; }
     rm -rf -- "$tmp"
 
-    hy2_report "$host" "$port" "$mode"
+    hy2_report "$host" "$port" "$mode" "$pass"
 }
 
 hy2_report() {
-    local port=$2 mode=$3
+    local port=$2 mode=$3 password=$4
     printf '\n安装完成，服务 %s 已设为开机自启。\n' "$HY2_UNIT_NAME"
+    # Only the successful interactive flow may expose the generated password.
+    # Do not bypass redirected output with /dev/tty or write it to stderr.
+    if [[ -t 0 && -t 1 ]]; then
+        printf '以下为节点密码，请勿分享屏幕或终端日志。\n'
+        printf 'HY2 密码：%s\n' "$password"
+    else
+        printf '非交互或输出已重定向：密码不回显，请从下方私有导出文件取用。\n'
+    fi
     printf '客户端导入文件（0600，含密码，请通过安全渠道取用）：\n'
     printf '  %s/hysteria2.txt\n  %s/client.yaml\n  %s/mihomo.yaml\n' "$(hy2_etc)" "$(hy2_etc)" "$(hy2_etc)"
     printf '官方 Hysteria 使用 insecure:true + pinSHA256 校验证书指纹，不是裸跳过校验。\n'
