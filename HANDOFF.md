@@ -2,6 +2,8 @@
 
 更新日期：2026-11-11。本文件记录 Codex 接续后的当前维护入口；原 Hermes 交接已逐字节保存为 [2026-10-31 历史快照](docs/handoff-hermes-20261031.md)。快照中的 Claude Code 称谓、旧测试限制、失败记录及授权说明只描述当时状态，不代表当前分工或新的操作授权。后续工作以 Terry 的当前指示和本文件的证据边界为准。
 
+2026-11-12 目录与接续约定见[开发环境](docs/DEVELOPMENT-ENVIRONMENT.md)。Mac mini 保留源码、Git 与必要资料，执行和构建仍在专用开发服务器；实际连接和私有证据位置由项目受保护记录提供。目录更新不改变以下发布事实或授权重跑历史操作。
+
 ## 当前发布：A6 Alpine SS / A7 Debian SS（PR #13）
 
 已上线现有 Worker `terry-toolbox` / `sh.uw.cx`，合并源码 `5cdafa5921384d0257ca8c83536a780a89975c70` 与已验候选 tree 一致，SHA-256 `ca071eb9d8dda96b2c58441f3d07918d0c50d460c303933e097af89f12b07db7`，823673 字节。两系统 x86_64/KVM 生命周期与 TCP/UDP 正反传输、最终安全修补复核通过；11 前次相关检查与 5 受影响补跑是组合覆盖，不是全仓 suite。独立额外 review 脚本 90 秒超时未计通过。四个 Worker 模块、全部 settings/annotations、workers.dev、域名/DNS 精确一致；14 公网/11 下载 smoke/TLS 通过。无 GitHub CI gates，不称 CI 全绿。
@@ -201,7 +203,7 @@ python3 scripts/deploy-cloudflare.py
 
 ## 首次交付的历史证据索引
 
-私有证据根可移至维护者自己的仓库外目录。本次本地根为 `/Users/terrysiu/ChatGPT/toolbox-private/evidence/`；下列为相对该根的路径，仅作定位，不把私有文件复制进 Git 或公开附件。
+私有证据根位于维护者受保护的仓库外目录，实际旧端来源与恢复位置记在项目私有环境记录中；下列相对路径和哈希保留为历史索引，不把个人绝对路径、私有文件或原始日志复制进 Git 或公开附件。目录迁移不代表这些证据已经搬迁。
 
 | 项目 | 私有证据 | 冻结源码 / 校验 |
 | --- | --- | --- |

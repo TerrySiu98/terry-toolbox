@@ -6,6 +6,7 @@ __pycache__/
 .wrangler/
 
 # Local environment and deployment credentials
+.private/
 .env
 .env.*
 .dev.vars
