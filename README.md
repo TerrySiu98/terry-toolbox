@@ -256,6 +256,8 @@ SNI：www.cloudflare.com
 
 ## 开发与测试
 
+开发位置、Mac mini 源码目录与受保护连接入口见[开发环境](docs/DEVELOPMENT-ENVIRONMENT.md)；下面的测试、构建和发布工具命令在已核对的专用开发服务器执行。
+
 菜单编号与「启动检测后进分层菜单」的交互参照 [jht.one](https://jht.one)（jinhuaitao）的公开脚本，脚本实现独立；上游未附版权与许可声明，因此本仓库不代为标注上游许可证。本仓库自身也尚未声明许可证，公开可读不代表已授予开源许可。
 
 源码、欢迎页与 Worker 路由均已公开。默认回归只模拟特权命令，文件写入使用临时路径；设置 `TOOLBOX_NETWORK_REAL_TESTS=1` 后，网络套件另启用本机回环 TLS 和真实 socat 往返，但不安装系统服务。在隔离 Debian/Ubuntu Linux 测试机准备 Bash 4+、Python 3.11+（含 cryptography、PyYAML）、Node.js 20+、OpenSSL、编译工具、APT/dpkg、jq、socat 和测试依赖后运行完整默认套件。默认临时目录为受保护的 `/root/.cache/terry-toolbox-tests`，可用 `TOOLBOX_TEST_TMPDIR` 指定 `/root/` 下无符号链接、私有且父目录不可被其他用户写入的路径（完整套件的 ACME fixture 要求 `/root/`）：
